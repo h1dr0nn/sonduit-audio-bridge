@@ -34,6 +34,13 @@ file-level-copyleft licence: it permits derivative works and commercial
 distribution, and it does **not** reach across process or module boundaries
 the way the GPL does.
 
+**The reference checkout is pinned to
+`d789743c248b11d1df7e5ecc546b1bc60b90cd91` (2026-08-11).** A floating reference
+would not do: the protocol facts in [protocol.md](./protocol.md) were read out
+of a specific state of that tree, and if upstream changes the wire format, an
+unpinned note would make it look as though this project had described the new
+one. Anything read from a later commit has to be recorded as such.
+
 The obligations that bind Sonduit, quoted from the licence text in
 `third_party/reference/scream/LICENSE`:
 

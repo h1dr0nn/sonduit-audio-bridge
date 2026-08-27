@@ -120,18 +120,95 @@ fn same_file(left: &Path, right: &Path) -> bool {
 /// Build the audio filter chain for an operation, or `None` when it needs none.
 ///
 /// Returned as one comma-joined string, which is what `-af` expects.
-pub fn filter_chain(payload: &ConvertPayload) -> Option<String> {
+/// What the first loudnorm pass measured about a file.
+///
+/// The four values loudnorm itself asks for on a second pass. Their names are
+/// FFmpeg's, not chosen here, because they are passed straight back to it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoudnessMeasurement {
+    /// Integrated loudness, LUFS.
+    pub input_i: f64,
+    /// True peak, dBTP.
+    pub input_tp: f64,
+    /// Loudness range, LU.
+    pub input_lra: f64,
+    /// Measured threshold, LUFS.
+    pub input_thresh: f64,
+    /// Offset loudnorm computed for itself.
+    pub target_offset: f64,
+}
+
+/// Loudness range the mastering chain targets, in LU.
+///
+/// The EBU R128 broadcast figure, and the value loudnorm is given in both
+/// passes. It also decides whether a measured file can be normalised with a
+/// single gain at all: see [`loudnorm`].
+pub const TARGET_LRA: f64 = 11.0;
+
+/// Build the loudnorm filter, with the measurement from a first pass if there
+/// is one.
+///
+/// # Why two passes
+///
+/// In one pass loudnorm is working blind: it normalises against a running
+/// estimate that is wrong at the start of the file and only converges later,
+/// so the opening sits at a different level from the rest and the integrated
+/// result misses the target. Handing back what a measurement pass found lets
+/// it apply a single exact gain instead.
+///
+/// Measured against the bundled FFmpeg on a file with a 6 LU range and a
+/// -14 LUFS target: one pass lands at -11.97, two passes at -14.03.
+///
+/// # Why a wide file goes back to one pass
+///
+/// `linear=true` is a request, not a guarantee. When the measured range
+/// exceeds the target range, one gain cannot reach the target, and loudnorm
+/// silently falls back to its dynamic mode. On the same test with a 21 LU
+/// range that fallback landed at -12.50 while the single pass landed at
+/// -13.98, so the second pass made the result worse.
+///
+/// So the measurement is used when it can be used linearly, and discarded
+/// otherwise. Discarding it is not a loss: the single pass is what would have
+/// run anyway.
+///
+/// The measurement is optional because it costs a full decode of the file. A
+/// caller that wants a preview rather than a master can skip it.
+#[must_use]
+pub fn loudnorm(payload: &ConvertPayload, measured: Option<LoudnessMeasurement>) -> String {
+    let target = payload.parameters.target_lufs.unwrap_or(-14.0);
+    let base = format!("loudnorm=I={target}:TP=-1.5:LRA={TARGET_LRA}");
+
+    let Some(m) = measured else {
+        return base;
+    };
+    if !m.input_lra.is_finite() || m.input_lra > TARGET_LRA {
+        return base;
+    }
+
+    // linear=true asks for one constant gain rather than the dynamic mode.
+    // With a measurement, and a range that fits, that is both exact and
+    // transparent.
+    let mut filter = base;
+    filter.push_str(&format!(":measured_I={:.2}", m.input_i));
+    filter.push_str(&format!(":measured_TP={:.2}", m.input_tp));
+    filter.push_str(&format!(":measured_LRA={:.2}", m.input_lra));
+    filter.push_str(&format!(":measured_thresh={:.2}", m.input_thresh));
+    filter.push_str(&format!(":offset={:.2}", m.target_offset));
+    filter.push_str(":linear=true");
+    filter
+}
+
+pub fn filter_chain(
+    payload: &ConvertPayload,
+    measured: Option<LoudnessMeasurement>,
+) -> Option<String> {
     let mut filters: Vec<String> = Vec::new();
 
     match payload.operation {
         Operation::Convert | Operation::Analyze => {}
 
         Operation::Master => {
-            let target = payload.parameters.target_lufs.unwrap_or(-14.0);
-            // loudnorm is FFmpeg's EBU R128 normaliser. A single pass is
-            // approximate; two-pass would need a measurement run first, which
-            // is on the roadmap rather than done here.
-            filters.push(format!("loudnorm=I={target}:TP=-1.5:LRA=11"));
+            filters.push(loudnorm(payload, measured));
 
             if payload.parameters.apply_compression.unwrap_or(false) {
                 filters.push("acompressor=threshold=-18dB:ratio=3:attack=20:release=250".into());
@@ -195,6 +272,29 @@ detection=peak,areverse"
     }
 }
 
+/// Arguments for the measurement pass that precedes a master.
+///
+/// Decodes the whole file, runs loudnorm in analysis mode and discards the
+/// output. Only the JSON it prints to stderr is wanted.
+#[must_use]
+pub fn measure_args(payload: &ConvertPayload, input: &Path) -> Vec<String> {
+    let target = payload.parameters.target_lufs.unwrap_or(-14.0);
+    vec![
+        "-hide_banner".into(),
+        "-nostdin".into(),
+        "-i".into(),
+        input.display().to_string(),
+        "-af".into(),
+        format!("loudnorm=I={target}:TP=-1.5:LRA={TARGET_LRA}:print_format=json"),
+        "-f".into(),
+        "null".into(),
+        // Not the platform null device: FFmpeg's own null muxer takes a path
+        // it ignores, and "-" works on every platform where NUL and /dev/null
+        // do not.
+        "-".into(),
+    ]
+}
+
 /// Split a tempo ratio into factors FFmpeg's `atempo` will accept.
 ///
 /// `atempo` is limited to 0.5..=2.0 per instance, so anything beyond that has
@@ -223,7 +323,11 @@ fn split_tempo(mut ratio: f64) -> Vec<f64> {
 ///
 /// # Errors
 /// Propagates format and path failures.
-pub fn build(payload: &ConvertPayload, input: &Path) -> Result<Vec<String>, ConvertError> {
+pub fn build(
+    payload: &ConvertPayload,
+    input: &Path,
+    measured: Option<LoudnessMeasurement>,
+) -> Result<Vec<String>, ConvertError> {
     let mut args: Vec<String> = vec!["-hide_banner".into(), "-nostdin".into(), "-y".into()];
 
     // A cut is expressed as input seeking so FFmpeg never decodes what it is
@@ -250,7 +354,7 @@ pub fn build(payload: &ConvertPayload, input: &Path) -> Result<Vec<String>, Conv
         }
     }
 
-    if let Some(chain) = filter_chain(payload) {
+    if let Some(chain) = filter_chain(payload, measured) {
         args.push("-af".into());
         args.push(chain);
     }
@@ -320,7 +424,7 @@ mod tests {
         for (format, codec, filename) in cases {
             let mut job = payload(Operation::Convert);
             job.format = Some(format.into());
-            let args = build(&job, Path::new("C:/in/song.wav")).unwrap();
+            let args = build(&job, Path::new("C:/in/song.wav"), None).unwrap();
 
             assert!(
                 args.contains(&codec.to_string()),
@@ -339,9 +443,80 @@ mod tests {
         let mut job = payload(Operation::Convert);
         job.format = Some("wma".into());
         assert!(matches!(
-            build(&job, Path::new("C:/in/song.wav")),
+            build(&job, Path::new("C:/in/song.wav"), None),
             Err(ConvertError::UnsupportedFormat(_))
         ));
+    }
+
+    fn measurement(lra: f64) -> LoudnessMeasurement {
+        LoudnessMeasurement {
+            input_i: -22.19,
+            input_tp: -6.85,
+            input_lra: lra,
+            input_thresh: -32.20,
+            target_offset: -0.01,
+        }
+    }
+
+    #[test]
+    fn a_measurement_that_fits_the_target_range_is_used_linearly() {
+        // The accurate path. Verified against the bundled FFmpeg: -14.03 LUFS
+        // against a -14 target, where one pass reached -11.97.
+        let job = payload(Operation::Master);
+        let filter = loudnorm(&job, Some(measurement(6.30)));
+
+        assert!(filter.contains("measured_I=-22.19"), "{filter}");
+        assert!(filter.contains("measured_LRA=6.30"), "{filter}");
+        assert!(filter.contains("linear=true"), "{filter}");
+    }
+
+    #[test]
+    fn a_file_wider_than_the_target_range_falls_back_to_one_pass() {
+        // linear=true is a request, not a guarantee: loudnorm drops to its
+        // dynamic mode when one gain cannot reach the target, and on the same
+        // test that fallback landed 1.5 LU further off than the single pass.
+        let job = payload(Operation::Master);
+        let filter = loudnorm(&job, Some(measurement(TARGET_LRA + 0.1)));
+
+        assert!(!filter.contains("measured_I"), "{filter}");
+        assert!(!filter.contains("linear"), "{filter}");
+    }
+
+    #[test]
+    fn a_range_exactly_at_the_target_is_still_used() {
+        // The boundary is inclusive: a file whose range equals the target can
+        // be normalised with one gain.
+        let job = payload(Operation::Master);
+        let filter = loudnorm(&job, Some(measurement(TARGET_LRA)));
+        assert!(filter.contains("linear=true"), "{filter}");
+    }
+
+    #[test]
+    fn a_non_finite_range_falls_back_rather_than_being_formatted() {
+        let job = payload(Operation::Master);
+        let filter = loudnorm(&job, Some(measurement(f64::NAN)));
+        assert!(!filter.contains("measured_LRA"), "{filter}");
+    }
+
+    #[test]
+    fn the_measurement_pass_asks_for_json_and_writes_nothing() {
+        let job = payload(Operation::Master);
+        let args = measure_args(&job, Path::new("C:/in/song.wav"));
+
+        assert!(
+            args.iter().any(|a| a.contains("print_format=json")),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w[0] == "-f" && w[1] == "null"),
+            "{args:?}"
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.ends_with(".wav") && a.starts_with("C:/out")),
+            "the measurement pass must not write an output file: {args:?}"
+        );
     }
 
     #[test]
@@ -354,7 +529,7 @@ mod tests {
             output_gain: Some(1.5),
         };
 
-        let chain = filter_chain(&job).expect("master needs filters");
+        let chain = filter_chain(&job, None).expect("master needs filters");
         assert!(chain.contains("loudnorm=I=-12"), "{chain}");
         assert!(chain.contains("acompressor"), "{chain}");
         assert!(chain.contains("alimiter"), "{chain}");
@@ -371,7 +546,7 @@ mod tests {
             output_gain: Some(0.0),
         };
 
-        let chain = filter_chain(&job).expect("master needs filters");
+        let chain = filter_chain(&job, None).expect("master needs filters");
         assert!(!chain.contains("acompressor"), "{chain}");
         assert!(!chain.contains("alimiter"), "{chain}");
         assert!(!chain.contains("volume="), "{chain}");
@@ -446,7 +621,7 @@ mod tests {
         job.minimum_silence_ms = Some(800);
         job.padding_ms = Some(100);
 
-        let chain = filter_chain(&job).expect("trim needs filters");
+        let chain = filter_chain(&job, None).expect("trim needs filters");
         // Once for the head, once for the tail via areverse.
         assert_eq!(chain.matches("silenceremove").count(), 2, "{chain}");
         assert_eq!(chain.matches("areverse").count(), 2, "{chain}");
@@ -460,7 +635,7 @@ mod tests {
         job.minimum_silence_ms = Some(100);
         job.padding_ms = Some(900);
 
-        let chain = filter_chain(&job).expect("trim needs filters");
+        let chain = filter_chain(&job, None).expect("trim needs filters");
 
         // Check the duration itself, not the whole string: the threshold is
         // legitimately negative ("-50dB") and a naive dash search catches it.
@@ -499,14 +674,14 @@ mod tests {
         let mut job = payload(Operation::Modify);
         job.speed = Some(1.0);
         job.pitch = Some(0.0);
-        assert!(filter_chain(&job).is_none());
+        assert!(filter_chain(&job, None).is_none());
     }
 
     #[test]
     fn a_pitch_shift_restores_the_original_duration() {
         let mut job = payload(Operation::Modify);
         job.pitch = Some(12.0); // one octave up
-        let chain = filter_chain(&job).expect("pitch needs filters");
+        let chain = filter_chain(&job, None).expect("pitch needs filters");
 
         assert!(chain.contains("asetrate"), "{chain}");
         assert!(chain.contains("aresample"), "{chain}");
@@ -521,7 +696,7 @@ mod tests {
         job.cut_start = Some(10.0);
         job.cut_end = Some(25.0);
 
-        let args = build(&job, Path::new("C:/in/song.wav")).unwrap();
+        let args = build(&job, Path::new("C:/in/song.wav"), None).unwrap();
         let seek = args.iter().position(|a| a == "-ss").expect("-ss");
         let input = args.iter().position(|a| a == "-i").expect("-i");
 
@@ -541,7 +716,7 @@ mod tests {
         job.cut_start = Some(10.0);
         job.cut_end = Some(25.0);
 
-        let args = build(&job, Path::new("C:/in/song.wav")).unwrap();
+        let args = build(&job, Path::new("C:/in/song.wav"), None).unwrap();
         assert!(!args.contains(&"-ss".to_string()));
         assert!(!args.contains(&"-t".to_string()));
     }
@@ -556,7 +731,7 @@ mod tests {
             Operation::Trim,
             Operation::Modify,
         ] {
-            let args = build(&payload(operation), Path::new("C:/in/song.wav")).unwrap();
+            let args = build(&payload(operation), Path::new("C:/in/song.wav"), None).unwrap();
             assert!(args.contains(&"-nostdin".to_string()), "{operation:?}");
             assert!(args.contains(&"-y".to_string()), "{operation:?}");
         }

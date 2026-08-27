@@ -7,9 +7,14 @@ implementation. See [licensing.md](./licensing.md) for why that distinction
 matters.
 
 Source of every claim below, unless stated otherwise:
-`third_party/reference/scream/Scream/` at the commit cloned into this
-workspace, specifically `savedata.cpp`, `savedata.h`, `adapter.cpp`,
-`minstream.cpp` and `scream.h`.
+`third_party/reference/scream/Scream/` at commit
+`d789743c248b11d1df7e5ecc546b1bc60b90cd91` (2026-08-11), specifically
+`savedata.cpp`, `savedata.h`, `adapter.cpp`, `minstream.cpp` and `scream.h`.
+
+The commit is named rather than left as "whatever is checked out". These are
+claims about someone else's wire format, and if upstream changes it, an
+unpinned reference would make this document look like a description of the new
+one when it is a description of the old.
 
 A wire format is a fact about bytes on a network, not a creative work. Reading
 the sender to learn what bytes it emits is the same activity as capturing them

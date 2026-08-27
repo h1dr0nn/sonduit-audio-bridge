@@ -15,7 +15,10 @@
 //! mapping from a UI job to a command line is unit tested without FFmpeg
 //! present.
 
-mod args;
+// Public so an example can build the same arguments the application does and
+// run them against a real FFmpeg. A mastering chain that is only ever checked
+// by reading it is a mastering chain nobody has measured.
+pub mod args;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -24,10 +27,14 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// What the user asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     /// Change container and codec.
+    ///
+    /// The default, because it is the one that changes the audio least: a
+    /// payload that arrived without an operation should not silently master.
+    #[default]
     Convert,
     /// Loudness normalise, compress, limit.
     Master,
@@ -56,7 +63,7 @@ pub struct MasterParameters {
 ///
 /// Field names match what the frontend already posts; unknown fields are
 /// ignored so the two sides can move independently.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ConvertPayload {
     /// What to do.
     pub operation: Operation,
@@ -231,7 +238,18 @@ fn last_meaningful_line(output: &str) -> String {
 }
 
 fn run_one(ffmpeg: &Path, payload: &ConvertPayload, input: &Path) -> Result<String, ConvertError> {
-    let arguments = args::build(payload, input)?;
+    // Mastering measures first. One pass leaves loudnorm normalising against a
+    // running estimate that is wrong at the start of the file, so the opening
+    // seconds sit at a different level from the rest and the integrated result
+    // misses the target. A failed measurement is not fatal: the job falls back
+    // to the single pass, which is what it did before.
+    let measured = if payload.operation == Operation::Master {
+        measure_loudness(ffmpeg, payload, input)
+    } else {
+        None
+    };
+
+    let arguments = args::build(payload, input, measured)?;
     let destination = args::output_path(payload, input)?;
 
     let output = std::process::Command::new(ffmpeg)
@@ -248,6 +266,56 @@ fn run_one(ffmpeg: &Path, payload: &ConvertPayload, input: &Path) -> Result<Stri
             detail: last_meaningful_line(&String::from_utf8_lossy(&output.stderr)),
         })
     }
+}
+
+/// Run the measurement pass and parse what loudnorm reported.
+///
+/// Returns `None` when the pass fails or the output cannot be parsed, so the
+/// caller falls back to a single pass rather than failing the job. An
+/// approximate master is better than no master.
+fn measure_loudness(
+    ffmpeg: &Path,
+    payload: &ConvertPayload,
+    input: &Path,
+) -> Option<args::LoudnessMeasurement> {
+    let output = std::process::Command::new(ffmpeg)
+        .args(args::measure_args(payload, input))
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+
+    parse_loudnorm_json(&String::from_utf8_lossy(&output.stderr))
+}
+
+/// Pull the five values loudnorm prints as JSON out of its stderr.
+///
+/// Hand-parsed rather than deserialised: FFmpeg prints the block among its own
+/// progress output, every value is quoted whether or not it is a number, and
+/// pulling in a JSON dependency to read five floats out of a log would be the
+/// larger mistake.
+fn parse_loudnorm_json(text: &str) -> Option<args::LoudnessMeasurement> {
+    fn field(text: &str, name: &str) -> Option<f64> {
+        let key = format!("\"{name}\"");
+        let at = text.find(&key)?;
+        let rest = &text[at + key.len()..];
+        let start = rest.find('"')? + 1;
+        let end = start + rest[start..].find('"')?;
+        // loudnorm reports "-inf" for a file with no signal in it, which is
+        // not a measurement anything can be normalised against.
+        rest[start..end]
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+    }
+
+    Some(args::LoudnessMeasurement {
+        input_i: field(text, "input_i")?,
+        input_tp: field(text, "input_tp")?,
+        input_lra: field(text, "input_lra")?,
+        input_thresh: field(text, "input_thresh")?,
+        target_offset: field(text, "target_offset")?,
+    })
 }
 
 fn operation_name(operation: Operation) -> String {
@@ -444,6 +512,60 @@ fn suggest_preset(lufs: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A real loudnorm JSON block, as FFmpeg prints it among its own output.
+    const LOUDNORM_OUTPUT: &str = r#"
+[Parsed_loudnorm_0 @ 0000021d] 
+{
+	"input_i" : "-22.19",
+	"input_tp" : "-6.85",
+	"input_lra" : "0.00",
+	"input_thresh" : "-32.20",
+	"output_i" : "-13.99",
+	"output_tp" : "-1.50",
+	"output_lra" : "0.00",
+	"output_thresh" : "-24.00",
+	"normalization_type" : "dynamic",
+	"target_offset" : "-0.01"
+}
+"#;
+
+    #[test]
+    fn a_loudnorm_block_is_parsed_out_of_ffmpeg_output() {
+        let measured = parse_loudnorm_json(LOUDNORM_OUTPUT).expect("should parse");
+
+        assert!((measured.input_i - -22.19).abs() < 1e-9);
+        assert!((measured.input_tp - -6.85).abs() < 1e-9);
+        assert!((measured.input_lra - 0.0).abs() < 1e-9);
+        assert!((measured.input_thresh - -32.20).abs() < 1e-9);
+        assert!((measured.target_offset - -0.01).abs() < 1e-9);
+    }
+
+    #[test]
+    fn output_with_no_loudnorm_block_yields_nothing_rather_than_zeroes() {
+        // A measurement of zero would be applied as a real correction and
+        // would be wrong by whatever the file's actual loudness is.
+        assert!(parse_loudnorm_json("").is_none());
+        assert!(parse_loudnorm_json("frame= 100 fps=0.0 q=-0.0 size=N/A").is_none());
+    }
+
+    #[test]
+    fn a_block_missing_a_field_is_refused() {
+        let partial = r#"{ "input_i" : "-22.19", "input_tp" : "-6.85" }"#;
+        assert!(parse_loudnorm_json(partial).is_none());
+    }
+
+    #[test]
+    fn a_silent_file_measuring_negative_infinity_is_refused() {
+        // loudnorm reports -inf for a file with no signal. Nothing can be
+        // normalised against it, and parsing it as a number would produce a
+        // gain of infinity.
+        let silent = r#"{
+            "input_i" : "-inf", "input_tp" : "-inf", "input_lra" : "0.00",
+            "input_thresh" : "-inf", "target_offset" : "0.00"
+        }"#;
+        assert!(parse_loudnorm_json(silent).is_none());
+    }
+
     use super::*;
 
     #[test]
