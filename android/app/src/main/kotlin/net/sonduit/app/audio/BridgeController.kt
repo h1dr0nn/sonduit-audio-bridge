@@ -55,6 +55,8 @@ object BridgeController {
         val sampleRate: UInt,
         val channels: UByte,
         val playbackError: String?,
+        val driftPpm: Double?,
+        val correctionPpm: Double,
     ) {
         companion object {
             val EMPTY = Snapshot(
@@ -71,6 +73,8 @@ object BridgeController {
                 sampleRate = 0u,
                 channels = 0u,
                 playbackError = null,
+                driftPpm = null,
+                correctionPpm = 0.0,
             )
         }
     }
@@ -134,6 +138,8 @@ object BridgeController {
                 sampleRate = native.sampleRate,
                 channels = native.channels,
                 playbackError = native.playbackError,
+                driftPpm = native.driftPpm,
+                correctionPpm = native.correctionPpm,
             )
         } catch (error: Exception) {
             Log.e(TAG, "telemetry failed", error)

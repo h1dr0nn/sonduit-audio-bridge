@@ -1,2 +1,60 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Line endings
+#
+# eol=lf, not bare text=auto. Without it a Windows checkout stores CRLF in the
+# working tree, and the shell scripts and the Gradle wrapper stop being
+# executable on any other machine.
+* text=auto eol=lf
+
+# Binaries. Without these git tries to normalise line endings inside them and
+# corrupts the file.
+*.png binary
+*.ico binary
+*.icns binary
+*.jar binary
+*.apk binary
+*.keystore binary
+*.jks binary
+*.exe binary
+*.so binary
+*.dll binary
+*.wav binary
+
+# ---------------------------------------------------------------------------
+# Language statistics
+# ---------------------------------------------------------------------------
+#
+# Left alone, GitHub reports this as a JavaScript project. It is not: the audio
+# path is Rust, the desktop shell is React, and the phone app is Kotlin. The
+# skew comes from counting eleven translation files and a vendored wrapper as
+# though somebody wrote them.
+#
+# linguist-detectable=false removes a path from the statistics without hiding
+# it; the files still render and still diff normally.
+
+# Eleven locales of the same key set, generated from the English one and
+# translated. Nearly 19000 lines, which is more than the entire Rust codebase,
+# and none of it is code anyone reads.
+desktop/src/i18n/locales/*.json linguist-detectable=false
+
+# Lockfiles are machine-written.
+Cargo.lock linguist-generated=true
+desktop/package-lock.json linguist-generated=true
+
+# The Gradle wrapper ships with Gradle. It is committed so a clean checkout can
+# build without Gradle installed, but it is not this project's code.
+android/gradlew linguist-vendored=true
+android/gradlew.bat linguist-vendored=true
+android/gradle/wrapper/** linguist-vendored=true
+
+# Documentation counts as documentation, not as source.
+docs/** linguist-documentation=true
+*.md linguist-documentation=true
+
+# Build and tooling configuration.
+.github/** linguist-detectable=false
+*.yml linguist-detectable=false
+*.toml linguist-detectable=false
+
+# Icons Tauri generated from icons/app-icon.svg.
+desktop/src-tauri/icons/** linguist-generated=true
+android/app/src/main/res/mipmap-*/** linguist-generated=true

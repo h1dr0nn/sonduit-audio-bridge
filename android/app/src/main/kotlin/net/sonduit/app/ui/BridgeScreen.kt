@@ -201,6 +201,24 @@ private fun TelemetryGrid(telemetry: BridgeController.Snapshot) {
                 modifier = Modifier.weight(1f),
             )
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Stat(
+                label = stringResource(R.string.stat_drift),
+                // Absent until the estimator has about 25 seconds of history.
+                // A dash says "not measured yet"; a zero would claim the
+                // clocks match.
+                value = telemetry.driftPpm?.let { "%+.1f".format(it) }
+                    ?: stringResource(R.string.value_unknown),
+                unit = "ppm",
+                modifier = Modifier.weight(1f),
+            )
+            Stat(
+                label = stringResource(R.string.stat_correction),
+                value = "%+.1f".format(telemetry.correctionPpm),
+                unit = "ppm",
+                modifier = Modifier.weight(1f),
+            )
+        }
         if (telemetry.packetsMalformed > 0uL) {
             // Only shown when it is non-zero. A permanent row of zeroes teaches
             // the user to stop reading the panel.

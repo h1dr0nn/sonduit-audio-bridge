@@ -11,5 +11,11 @@ authors.workspace = true
 [dependencies]
 thiserror.workspace = true
 
+# Asynchronous resampling for drift correction. default-features = false drops
+# the FFT resampler and with it realfft and num-complex: the polynomial
+# resampler is what an audio callback can afford, and pulling an FFT stack into
+# every Android ABI for code that is never called is waste.
+rubato = { version = "0.16", default-features = false }
+
 [lints]
 workspace = true

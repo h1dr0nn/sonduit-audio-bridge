@@ -27,6 +27,8 @@ pub mod jitter;
 pub mod metrics;
 pub mod packet;
 pub mod processor;
+pub mod ratio;
+pub mod resample;
 pub mod ring;
 
 pub use format::{BitDepth, Format};
@@ -69,4 +71,11 @@ pub enum Error {
     /// Wire format version this build does not understand.
     #[error("unsupported wire format version {0}")]
     UnsupportedVersion(u8),
+
+    /// A resampler could not be built or run for this configuration.
+    ///
+    /// Distinct from the format errors above: the format is representable on
+    /// the wire, but the resampler refused the chunk size or the ratio.
+    #[error("resampler rejected this configuration")]
+    Resampler,
 }

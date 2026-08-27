@@ -8,33 +8,43 @@ operating systems allow.
 
 ## Status
 
-**Early scaffolding. Not usable yet.**
+**Both ends are built. Neither has been heard.**
 
-What exists and is verified:
+What exists and is verified on a machine:
 
-- The shared Rust core: wire protocol, ring buffer, adaptive jitter buffer and
-  drift estimation, with 83 tests including an end-to-end run over a real UDP
-  socket that asserts on the resulting WAV file.
-- The desktop shell: it builds, runs, and renders. Custom window chrome,
-  native acrylic backdrop, light and dark themes, eleven languages.
-- Full CI, release automation and language linting.
+- **Windows capture.** WASAPI loopback with a silent render stream to keep the
+  engine clocking. Three seconds of wall time produces exactly 144000 frames at
+  48 kHz across 300 blocks, and a 440 Hz tone playing on the desktop is
+  captured at -21.1 dBFS.
+- **The desktop send path, end to end.** `cargo run -p sonduit-desktop --example
+  bridge_loopback` opens real capture, sends over a real socket, decodes what
+  arrives and writes a WAV. Three seconds: 501 datagrams sent, 501 received,
+  none malformed, none lost.
+- **The Android app.** Compose UI, a `mediaPlayback` foreground service, AAudio
+  output, and a receive path tested against real UDP sockets. The debug APK
+  assembles with the Rust library inside it.
+- **Drift correction that works.** A simulated ten-minute session at 50 ppm,
+  which empties an uncorrected buffer completely, settles within 3 ms of target
+  in both directions.
+- **The audio editor.** Convert, master, trim and modify, run through a bundled
+  LGPL FFmpeg. Every mode was verified against the real binary.
+- 196 Rust tests, full CI, release automation and language linting.
 
-What does not exist yet:
+What has not been done:
 
-- Audio capture on Windows. `sonduit-capture-win` is scaffolding.
-- The Android app. `android/` holds only `gradle.properties`; there is no
-  Gradle project yet.
-- Therefore: **no audio has ever been played through this.** See
+- **No audio has ever been played through this.** There is no Android device
+  here. Every latency figure below is a budget, not a measurement, and whether
+  AAudio grants exclusive low-latency mode on any real phone is unknown. See
   [docs/environment.md](docs/environment.md).
-
-Two things you should know before forming expectations:
-
-- **Windows does not yet see the phone as a selectable output device.** That
+- **USB tethering has never been tried.** Carrier entitlement can veto it, and
+  that is the largest risk to [ADR-004](docs/adr/ADR-004-transport.md).
+- **Discovery has no pairing or authentication.** Anyone on the network can
+  answer a probe. Not acceptable for a release; tracked in
+  [docs/roadmap.md](docs/roadmap.md).
+- **Windows does not see the phone as a selectable output device.** That
   requires a signed kernel driver, and the prebuilt driver this project
-  intended to reuse turns out to be unusable. The reasoning is in
+  intended to reuse turns out to be unusable. See
   [ADR-002](docs/adr/ADR-002-desktop-capture.md).
-- **The latency figures below are budgets, not measurements.** Nothing has been
-  measured. See [docs/latency-budget.md](docs/latency-budget.md).
 
 ## Targets
 
@@ -49,13 +59,13 @@ Bluetooth is explicitly out of scope as a transport.
 
 ```text
 crates/
-  sonduit-core/               protocol, ring buffer, jitter, drift. No I/O, no platform code
+  sonduit-core/               protocol, ring buffer, jitter, drift, resampling. No I/O, no platform code
   sonduit-transport/          UDP, discovery, sources and sinks
   sonduit-capture-win/        WASAPI capture
   sonduit-playback-android/   AAudio playback
   sonduit-ffi/                UniFFI surface for the Android app
-desktop/                      Tauri v2 app: src/ frontend, src-tauri/ shell
-android/                      Gradle project (not written yet)
+desktop/                      Tauri v2 app: src/ React frontend, src-tauri/ Rust shell
+android/                      Gradle project: Kotlin and Compose, Rust through UniFFI
 driver/                       vendored driver and install scripts (empty, see ADR-002)
 docs/                         architecture decisions, research, protocol, budget
 tools/                        linting and version derivation

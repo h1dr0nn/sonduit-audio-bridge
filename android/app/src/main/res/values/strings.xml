@@ -17,6 +17,12 @@
     <string name="stat_loss">Loss</string>
     <string name="stat_packets">Packets</string>
     <string name="stat_malformed">Malformed</string>
+    <string name="stat_drift">Clock drift</string>
+    <string name="stat_correction">Correction</string>
+
+    <!-- Shown where a value has not been measured yet, which is not the same
+         as a value that was measured as zero. -->
+    <string name="value_unknown">—</string>
 
     <string name="hint_same_network">The phone and the computer must be on the same network, or connected by USB tethering.</string>
 

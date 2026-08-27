@@ -20,9 +20,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use sonduit_core::drift::{DriftConfig, DriftEstimator};
 use sonduit_core::format::Format;
 use sonduit_core::jitter::{JitterBuffer, JitterConfig};
 use sonduit_core::packet::{ScreamPacket, SonduitPacket};
+use sonduit_core::ratio::{RatioConfig, RatioController};
+use sonduit_core::resample::DriftResampler;
 use sonduit_playback_android::{CallbackSource, JitterSource};
 use sonduit_transport::{classify, discovery, Wire, DEFAULT_PORT};
 
@@ -33,6 +36,14 @@ uniffi::setup_scaffolding!();
 /// Short enough that stopping feels immediate, long enough that an idle
 /// session is not spinning.
 const RECV_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Packets between drift corrections.
+///
+/// At 6 ms packets this is four times a second, matching the rate the UI
+/// samples telemetry at. Crystal drift is a physical constant of the two
+/// devices and does not change from moment to moment, so correcting faster
+/// would only chase jitter.
+const PACKETS_PER_CORRECTION: u32 = 40;
 
 /// Bridge lifecycle state, mirrored into the Android UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Enum)]
@@ -108,6 +119,13 @@ pub struct BridgeTelemetry {
     /// device is opened by the receive thread after the first packet and there
     /// is no call left to fail.
     pub playback_error: Option<String>,
+    /// Measured clock difference, positive when the sender runs fast.
+    ///
+    /// `None` until the estimator has enough observations, which takes about
+    /// 25 seconds. Reporting a number before then would be reporting noise.
+    pub drift_ppm: Option<f64>,
+    /// Correction currently being applied, in parts per million.
+    pub correction_ppm: f64,
 }
 
 /// State shared between the receive thread and the FFI callers.
@@ -123,6 +141,10 @@ struct Shared {
     playback: Mutex<Option<sonduit_playback_android::Playback>>,
     /// Why playback could not be opened, surfaced through telemetry.
     playback_error: Mutex<Option<String>>,
+    /// Drift as last measured, and the correction last applied.
+    ///
+    /// Written by the receive thread, read by whoever asks for telemetry.
+    drift: Mutex<(Option<f64>, f64)>,
 }
 
 /// A handle the Android app holds for the lifetime of a session.
@@ -193,6 +215,11 @@ impl Bridge {
             .lock()
             .ok()
             .and_then(|value| value.clone());
+        let (drift_ppm, correction_ppm) = shared
+            .drift
+            .lock()
+            .map(|value| *value)
+            .unwrap_or((None, 0.0));
 
         // try_lock: telemetry is a nice-to-have, and blocking here would put
         // the UI thread behind the audio callback.
@@ -203,6 +230,8 @@ impl Bridge {
                 sample_rate: format.map_or(0, |f| f.sample_rate),
                 channels: format.map_or(0, |f| f.channels),
                 playback_error,
+                drift_ppm,
+                correction_ppm,
                 ..BridgeTelemetry::default()
             };
         };
@@ -221,6 +250,8 @@ impl Bridge {
             sample_rate: format.map_or(0, |f| f.sample_rate),
             channels: format.map_or(0, |f| f.channels),
             playback_error,
+            drift_ppm,
+            correction_ppm,
         }
     }
 
@@ -277,6 +308,7 @@ impl Bridge {
             #[cfg(target_os = "android")]
             playback: Mutex::new(None),
             playback_error: Mutex::new(None),
+            drift: Mutex::new((None, 0.0)),
         });
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -399,6 +431,19 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     let start = std::time::Instant::now();
     let mut datagram = [0_u8; sonduit_transport::MAX_DATAGRAM_BYTES];
     let mut seen_audio = false;
+
+    // Drift correction. The estimator measures, the controller decides, the
+    // resampler applies. All three are rebuilt when the format changes, since
+    // none of what they learned about the old stream applies to the new one.
+    let mut estimator: Option<DriftEstimator> = None;
+    let mut controller = RatioController::new(RatioConfig::default());
+    let mut resampler: Option<DriftResampler> = None;
+    // Frames the sender has produced, accumulated across sequence wraps. The
+    // packet timestamp is 32 bits and wraps in about 25 hours, which is well
+    // inside a plausible session.
+    let mut sender_frames = 0_u64;
+    let mut previous_timestamp: Option<u32> = None;
+    let mut since_correction = 0_u32;
     // Scream carries no sequence number, so one is synthesised on arrival.
     // Reordering cannot be repaired for that wire format, which is a property
     // of the protocol and not of this code.
@@ -457,12 +502,71 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             }
         };
 
+        if changed {
+            // Everything learned about the previous stream is about a
+            // different clock pair and a different rate.
+            estimator = Some(DriftEstimator::new(DriftConfig::for_rate(
+                format.sample_rate,
+            )));
+            controller.reset();
+            resampler = DriftResampler::new(format, pcm.len() / format.bytes_per_frame()).ok();
+            sender_frames = 0;
+            previous_timestamp = None;
+            since_correction = 0;
+        }
+
+        // The sender's own frame count, which is the clock being compared
+        // against the receiver's monotonic time. Differencing wrapped
+        // timestamps rather than using them directly is what survives the wrap.
+        let step =
+            previous_timestamp.map_or(0, |previous| u64::from(timestamp.wrapping_sub(previous)));
+        sender_frames += step;
+        previous_timestamp = Some(timestamp);
+
+        if let Some(estimator) = estimator.as_mut() {
+            estimator.observe(sender_frames, arrival);
+        }
+
+        // Resample before the packet enters the buffer, not on the way out:
+        // the audio callback is realtime and a resampler whose output length
+        // varies is exactly what it must not contain.
+        let pcm = match resampler.as_mut() {
+            Some(resampler) => match resampler.process(&pcm) {
+                Ok(resampled) => resampled.to_vec(),
+                // A chunk that does not match what the resampler was built for
+                // is passed through uncorrected rather than dropped. Slightly
+                // wrong timing beats a hole in the audio.
+                Err(_) => pcm,
+            },
+            None => pcm,
+        };
+
         if let Ok(mut source) = shared.source.lock() {
             if changed {
                 *source =
                     JitterSource::new(JitterBuffer::new(format, JitterConfig::default()), format);
             }
             source.buffer_mut().push(sequence, timestamp, arrival, pcm);
+        }
+
+        since_correction += 1;
+        if since_correction >= PACKETS_PER_CORRECTION {
+            since_correction = 0;
+            let drift_ppm = estimator.as_ref().and_then(DriftEstimator::drift_ppm);
+
+            if let Ok(source) = shared.source.lock() {
+                controller.update(
+                    source.buffer().depth_ms(),
+                    source.buffer().target_ms(),
+                    drift_ppm,
+                );
+            }
+            if let Some(resampler) = resampler.as_mut() {
+                resampler.set_ratio(controller.ratio());
+            }
+            if let Ok(mut slot) = shared.drift.lock() {
+                *slot = (drift_ppm, controller.correction_ppm());
+            }
         }
 
         if changed {
