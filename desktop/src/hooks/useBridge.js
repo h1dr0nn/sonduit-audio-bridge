@@ -1,16 +1,22 @@
 /**
  * Single source of truth for bridge state in the UI.
  *
- * The audio path does not exist yet: `sonduit-core` is scaffolded but the
- * desktop shell has no commands to drive it and no telemetry event stream to
- * subscribe to. Rather than scatter fake numbers through the pages, every
- * screen reads this hook, and this hook reports `available: false` with empty
- * readings until the core is wired in.
+ * The backend owns every number. This hook does no arithmetic: it subscribes
+ * to the telemetry event, and asks for a snapshot once on mount so a window
+ * opened over a running session does not render an empty shell for a quarter
+ * of a second.
  *
- * Wiring it later means replacing the body with a Tauri event subscription;
- * the shape returned here is the shape the event will carry. Tracked as the
- * first desktop milestone in docs/roadmap.md.
+ * Only one subscription exists no matter how many components call the hook.
+ * Each page mounting its own listener would multiply the event traffic by the
+ * number of pages, and a page unmounting would tear down a listener another
+ * page still needed.
  */
+
+import { useCallback, useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+const TELEMETRY_EVENT = 'sonduit://telemetry';
 
 export const EMPTY_TELEMETRY = {
   latencyMs: null,
@@ -21,6 +27,8 @@ export const EMPTY_TELEMETRY = {
   latePackets: null,
   reorderedPackets: null,
   uptimeSeconds: null,
+  packetsSent: null,
+  audioSeconds: null,
 };
 
 export const EMPTY_SESSION = {
@@ -28,15 +36,121 @@ export const EMPTY_SESSION = {
   sampleRate: null,
   channels: null,
   bitDepth: null,
+  target: null,
   transport: null,
+  wire: null,
 };
 
+const EMPTY_SNAPSHOT = {
+  available: false,
+  status: 'disconnected',
+  session: null,
+  telemetry: EMPTY_TELEMETRY,
+  error: null,
+};
+
+/**
+ * Whether the Tauri backend is reachable.
+ *
+ * The Vite dev server serves the same bundle in a plain browser, where invoke
+ * would reject on every call. Checking once keeps the console clean.
+ */
+function hasBackend() {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/** Module-scoped store, so every consumer shares one subscription. */
+const store = {
+  snapshot: EMPTY_SNAPSHOT,
+  devices: [],
+  subscribers: new Set(),
+  unlisten: null,
+  started: false,
+};
+
+function publish() {
+  store.subscribers.forEach((notify) => notify());
+}
+
+function setSnapshot(next) {
+  store.snapshot = next ?? EMPTY_SNAPSHOT;
+  publish();
+}
+
+async function ensureSubscribed() {
+  if (store.started || !hasBackend()) return;
+  store.started = true;
+
+  try {
+    setSnapshot(await invoke('bridge_snapshot'));
+  } catch {
+    // A snapshot that cannot be read is not fatal; the event stream is the
+    // real source and the empty state is correct until one arrives.
+  }
+
+  try {
+    store.unlisten = await listen(TELEMETRY_EVENT, (event) => {
+      setSnapshot(event.payload);
+    });
+  } catch {
+    store.started = false;
+  }
+}
+
 export function useBridge() {
+  const [, forceRender] = useState(0);
+
+  useEffect(() => {
+    const notify = () => forceRender((count) => count + 1);
+    store.subscribers.add(notify);
+    ensureSubscribed();
+
+    return () => {
+      store.subscribers.delete(notify);
+      // The listener is deliberately not torn down here. Navigating between
+      // pages unmounts consumers constantly, and re-registering on every
+      // navigation drops events in the gap.
+    };
+  }, []);
+
+  const scan = useCallback(async () => {
+    if (!hasBackend()) return [];
+    const devices = await invoke('bridge_scan');
+    store.devices = devices;
+    publish();
+    return devices;
+  }, []);
+
+  const start = useCallback(async (options = {}) => {
+    const session = await invoke('bridge_start', {
+      options: {
+        target: options.target ?? null,
+        bind: options.bind ?? null,
+        screamCompatible: options.screamCompatible ?? false,
+      },
+    });
+    // The first event is up to a quarter of a second away, and a button that
+    // does nothing visible for that long reads as broken.
+    setSnapshot({ ...store.snapshot, status: 'connecting', session, error: null });
+    return session;
+  }, []);
+
+  const stop = useCallback(async () => {
+    await invoke('bridge_stop');
+    setSnapshot({ ...store.snapshot, status: 'disconnected', session: null });
+  }, []);
+
+  const { snapshot } = store;
+
   return {
-    available: false,
-    status: 'disconnected',
-    devices: [],
-    session: EMPTY_SESSION,
-    telemetry: EMPTY_TELEMETRY,
+    available: snapshot.available,
+    status: snapshot.status,
+    error: snapshot.error,
+    devices: store.devices,
+    session: snapshot.session ?? EMPTY_SESSION,
+    telemetry: snapshot.telemetry ?? EMPTY_TELEMETRY,
+    scan,
+    start,
+    stop,
   };
 }

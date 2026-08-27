@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[lib]
+name = "sonduit_desktop"
+path = "src/lib.rs"
+
 [[bin]]
 name = "sonduit"
 path = "src/main.rs"
@@ -27,6 +31,11 @@ tauri-plugin-fs = "2"
 tauri-plugin-store = "2.4.1"
 tauri-plugin-log = "2.7.1"
 tauri-plugin-process = "2.3.1"
+
+# Capture is Windows-only, so the dependency is too: the workspace still has to
+# build on the Linux runner that checks the core and the Android targets.
+[target.'cfg(windows)'.dependencies]
+sonduit-capture-win.workspace = true
 
 [features]
 # Used for production builds, or when devPath points at the filesystem.

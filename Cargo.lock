@@ -3304,6 +3304,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sonduit-capture-win",
  "sonduit-core",
  "sonduit-transport",
  "tauri",

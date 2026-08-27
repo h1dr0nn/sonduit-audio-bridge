@@ -24,6 +24,7 @@ authors = ["Sonduit contributors"]
 # requirement, which cargo-deny rejects under [bans] wildcards = "deny".
 sonduit-core = { path = "crates/sonduit-core", version = "0.1.0" }
 sonduit-transport = { path = "crates/sonduit-transport", version = "0.1.0" }
+sonduit-capture-win = { path = "crates/sonduit-capture-win", version = "0.1.0" }
 
 thiserror = "2"
 tracing = "0.1"

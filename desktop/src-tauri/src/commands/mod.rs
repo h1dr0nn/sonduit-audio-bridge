@@ -1,8 +1,11 @@
 //! IPC commands exposed to the frontend layer.
 
+use crate::bridge::{
+    self, BridgeSnapshot, BridgeState, DiscoveredDevice, SessionInfo, StartOptions,
+};
 use crate::convert::{self, BackendResult, ConvertPayload};
 use crate::core::window::apply_backdrop;
-use tauri::{AppHandle, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow};
 
 /// Liveness probe used by the frontend to confirm the Tauri backend is up.
 #[tauri::command]
@@ -42,4 +45,41 @@ pub async fn analyze_audio(
     tauri::async_runtime::spawn_blocking(move || convert::analyze(&app, payload))
         .await
         .map_err(|error| format!("background task failed: {error}"))
+}
+
+/// The bridge state as it stands right now.
+///
+/// The UI subscribes to the telemetry event, but a window that has just
+/// mounted has not received one yet and would otherwise render an empty shell
+/// over a running session.
+#[tauri::command]
+pub fn bridge_snapshot(state: State<'_, BridgeState>) -> BridgeSnapshot {
+    state.snapshot()
+}
+
+/// Broadcast a discovery probe and return whatever answered.
+///
+/// Blocking for as long as the scan window, so it runs off the async runtime.
+#[tauri::command]
+pub async fn bridge_scan() -> Result<Vec<DiscoveredDevice>, String> {
+    tauri::async_runtime::spawn_blocking(bridge::discover)
+        .await
+        .map_err(|error| format!("background task failed: {error}"))?
+        .map_err(Into::into)
+}
+
+/// Start capturing system audio and sending it.
+#[tauri::command]
+pub fn bridge_start(
+    app: AppHandle,
+    state: State<'_, BridgeState>,
+    options: StartOptions,
+) -> Result<SessionInfo, String> {
+    bridge::start(&app, &state, options).map_err(Into::into)
+}
+
+/// Stop the running session. Not an error if none is running.
+#[tauri::command]
+pub fn bridge_stop(state: State<'_, BridgeState>) -> Result<(), String> {
+    bridge::stop(&state).map_err(Into::into)
 }

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod discovery;
+pub mod packetize;
 pub mod sink;
 pub mod source;
 

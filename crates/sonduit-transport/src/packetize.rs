@@ -1,0 +1,294 @@
+//! Turning a PCM byte stream into wire datagrams.
+//!
+//! Kept free of sockets so the framing rules can be tested without a network:
+//! a capture callback hands over whatever the engine happened to have ready,
+//! which is never a whole number of packets, so the leftover has to be carried
+//! across calls. Getting that wrong produces audio that is subtly wrong rather
+//! than obviously broken, which is the worst kind of bug to find later.
+
+use sonduit_core::format::{Format, PCM_PAYLOAD_BYTES};
+use sonduit_core::packet::{ScreamPacket, SonduitPacket};
+
+use crate::{TransportError, Wire};
+
+/// Frames a PCM stream into fixed-size datagrams.
+///
+/// Owns the sequence number and the frame timestamp, both of which must
+/// advance by exactly one packet each, and the partial packet left over when a
+/// capture block does not divide evenly.
+#[derive(Debug)]
+pub struct Packetizer {
+    format: Format,
+    wire: Wire,
+    /// PCM that arrived but did not fill a packet.
+    pending: Vec<u8>,
+    sequence: u16,
+    /// Frames sent so far, which is the timestamp of the next packet.
+    ///
+    /// Wraps deliberately: the receiver compares deltas, and a `u32` of frames
+    /// at 48 kHz wraps after about 25 hours.
+    timestamp_frames: u32,
+    packets: u64,
+}
+
+impl Packetizer {
+    /// A packetizer for `format`, emitting `wire` datagrams.
+    #[must_use]
+    pub fn new(format: Format, wire: Wire) -> Self {
+        Self {
+            format,
+            wire,
+            pending: Vec::with_capacity(PCM_PAYLOAD_BYTES * 2),
+            sequence: 0,
+            timestamp_frames: 0,
+            packets: 0,
+        }
+    }
+
+    /// Bytes of PCM in one packet.
+    #[must_use]
+    pub const fn payload_bytes(&self) -> usize {
+        PCM_PAYLOAD_BYTES
+    }
+
+    /// Packets emitted so far.
+    #[must_use]
+    pub const fn packets(&self) -> u64 {
+        self.packets
+    }
+
+    /// PCM held back because it did not fill a packet.
+    #[must_use]
+    pub fn pending_bytes(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Sequence number the next packet will carry.
+    #[must_use]
+    pub const fn next_sequence(&self) -> u16 {
+        self.sequence
+    }
+
+    /// Feed captured PCM, calling `emit` once per complete datagram.
+    ///
+    /// PCM that does not fill a packet is retained, so a caller may push
+    /// arbitrary block sizes. `emit` returning an error stops the run
+    /// immediately, and the packet that failed is not retried: resending it
+    /// later would arrive behind audio that has already moved on.
+    ///
+    /// # Errors
+    /// Propagates whatever `emit` returns, and reports encoding failures.
+    pub fn push<F>(&mut self, pcm: &[u8], mut emit: F) -> Result<(), TransportError>
+    where
+        F: FnMut(&[u8]) -> Result<(), TransportError>,
+    {
+        self.pending.extend_from_slice(pcm);
+
+        let mut datagram = vec![0_u8; self.datagram_bytes()];
+        let mut consumed = 0;
+
+        while self.pending.len() - consumed >= PCM_PAYLOAD_BYTES {
+            let payload = &self.pending[consumed..consumed + PCM_PAYLOAD_BYTES];
+            match self.wire {
+                Wire::Sonduit => SonduitPacket {
+                    format: self.format,
+                    sequence: self.sequence,
+                    timestamp_frames: self.timestamp_frames,
+                    flags: 0,
+                    pcm: payload,
+                }
+                .encode(&mut datagram)?,
+                Wire::Scream => ScreamPacket::encode(&self.format, payload, &mut datagram)?,
+            }
+
+            consumed += PCM_PAYLOAD_BYTES;
+            self.sequence = self.sequence.wrapping_add(1);
+            self.timestamp_frames = self
+                .timestamp_frames
+                .wrapping_add(self.frames_per_packet() as u32);
+            self.packets += 1;
+
+            let result = emit(&datagram);
+            if result.is_err() {
+                self.pending.drain(..consumed);
+                return result;
+            }
+        }
+
+        self.pending.drain(..consumed);
+        Ok(())
+    }
+
+    const fn frames_per_packet(&self) -> usize {
+        PCM_PAYLOAD_BYTES / self.format.bytes_per_frame()
+    }
+
+    fn datagram_bytes(&self) -> usize {
+        match self.wire {
+            Wire::Sonduit => SonduitPacket::encoded_len(PCM_PAYLOAD_BYTES),
+            Wire::Scream => sonduit_core::packet::SCREAM_PACKET_BYTES,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sonduit_core::packet::SONDUIT_HEADER_BYTES;
+
+    fn collect(wire: Wire, blocks: &[usize]) -> (Vec<Vec<u8>>, Packetizer) {
+        let mut packetizer = Packetizer::new(Format::stereo_48k(), wire);
+        let mut sent = Vec::new();
+        let mut value = 0_u8;
+        for &size in blocks {
+            let block: Vec<u8> = (0..size)
+                .map(|_| {
+                    value = value.wrapping_add(1);
+                    value
+                })
+                .collect();
+            packetizer
+                .push(&block, |datagram| {
+                    sent.push(datagram.to_vec());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        (sent, packetizer)
+    }
+
+    #[test]
+    fn a_block_smaller_than_a_packet_emits_nothing_and_is_retained() {
+        let (sent, packetizer) = collect(Wire::Sonduit, &[100]);
+
+        assert!(sent.is_empty());
+        assert_eq!(packetizer.pending_bytes(), 100);
+    }
+
+    #[test]
+    fn pcm_split_across_blocks_is_rejoined_without_loss_or_duplication() {
+        // This is the case a capture callback actually produces: the engine
+        // hands over whatever it had ready, which is not a whole packet.
+        let block = PCM_PAYLOAD_BYTES / 3;
+        let (sent, packetizer) = collect(Wire::Sonduit, &[block, block, block, block]);
+
+        assert_eq!(sent.len(), 1, "one packet from three thirds plus a spare");
+        assert_eq!(packetizer.pending_bytes(), block);
+
+        let emitted: usize = sent.iter().map(|d| d.len() - SONDUIT_HEADER_BYTES).sum();
+        assert_eq!(emitted + packetizer.pending_bytes(), block * 4);
+    }
+
+    #[test]
+    fn the_payload_bytes_come_through_in_order() {
+        let mut packetizer = Packetizer::new(Format::stereo_48k(), Wire::Sonduit);
+        let pcm: Vec<u8> = (0..PCM_PAYLOAD_BYTES * 2)
+            .map(|index| (index % 251) as u8)
+            .collect();
+
+        let mut rejoined = Vec::new();
+        packetizer
+            .push(&pcm, |datagram| {
+                rejoined.extend_from_slice(&datagram[SONDUIT_HEADER_BYTES..]);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(rejoined, pcm, "reassembled payload must equal the input");
+    }
+
+    #[test]
+    fn sequence_and_timestamp_advance_by_exactly_one_packet() {
+        let mut packetizer = Packetizer::new(Format::stereo_48k(), Wire::Sonduit);
+        let frames_per_packet = (PCM_PAYLOAD_BYTES / 4) as u32;
+
+        let mut headers = Vec::new();
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES * 3], |datagram| {
+                let packet = SonduitPacket::decode(datagram).unwrap();
+                headers.push((packet.sequence, packet.timestamp_frames));
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            headers,
+            vec![(0, 0), (1, frames_per_packet), (2, frames_per_packet * 2)]
+        );
+    }
+
+    #[test]
+    fn the_sequence_wraps_rather_than_overflowing() {
+        // Sixteen bits at 48 kHz wraps in under fifteen minutes, so this is a
+        // normal event during any real session, not an edge case.
+        let mut packetizer = Packetizer::new(Format::stereo_48k(), Wire::Sonduit);
+        for _ in 0..u16::MAX {
+            packetizer
+                .push(&vec![0_u8; PCM_PAYLOAD_BYTES], |_| Ok(()))
+                .unwrap();
+        }
+        assert_eq!(packetizer.next_sequence(), u16::MAX);
+
+        let mut wrapped = None;
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES * 2], |datagram| {
+                let packet = SonduitPacket::decode(datagram).unwrap();
+                wrapped.get_or_insert(packet.sequence);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(wrapped, Some(u16::MAX));
+        assert_eq!(packetizer.next_sequence(), 1);
+    }
+
+    #[test]
+    fn scream_datagrams_are_the_fixed_size_the_protocol_requires() {
+        let (sent, _) = collect(Wire::Scream, &[PCM_PAYLOAD_BYTES * 2]);
+
+        assert_eq!(sent.len(), 2);
+        for datagram in sent {
+            assert_eq!(datagram.len(), sonduit_core::packet::SCREAM_PACKET_BYTES);
+        }
+    }
+
+    #[test]
+    fn a_failing_emit_stops_immediately_and_does_not_resend_the_failed_packet() {
+        let mut packetizer = Packetizer::new(Format::stereo_48k(), Wire::Sonduit);
+        let mut attempts = 0;
+
+        let result = packetizer.push(&vec![0_u8; PCM_PAYLOAD_BYTES * 4], |_| {
+            attempts += 1;
+            if attempts == 2 {
+                return Err(TransportError::Io(std::io::Error::other("link down")));
+            }
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(attempts, 2, "stops at the failure, does not carry on");
+        assert_eq!(packetizer.pending_bytes(), PCM_PAYLOAD_BYTES * 2);
+        // The failed packet's sequence is spent. Reusing the number would make
+        // the receiver see a duplicate; leaving the gap tells it the truth.
+        assert_eq!(packetizer.next_sequence(), 2);
+    }
+
+    #[test]
+    fn a_recovered_link_carries_on_from_the_next_sequence() {
+        let mut packetizer = Packetizer::new(Format::stereo_48k(), Wire::Sonduit);
+        let _ = packetizer.push(&vec![0_u8; PCM_PAYLOAD_BYTES], |_| {
+            Err(TransportError::Io(std::io::Error::other("link down")))
+        });
+
+        let mut sequences = Vec::new();
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES], |datagram| {
+                sequences.push(SonduitPacket::decode(datagram).unwrap().sequence);
+                Ok(())
+            })
+            .unwrap();
+
+        // The receiver sees a one-packet gap, which is exactly what happened.
+        assert_eq!(sequences, vec![1]);
+    }
+}
