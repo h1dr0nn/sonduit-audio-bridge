@@ -1,30 +1,34 @@
 import React from 'react';
+import { FiAlertCircle, FiAlertTriangle, FiCheckCircle, FiInfo } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
 
-const tones = {
-  info: 'from-white/80 to-white/50 text-slate-900 dark:from-white/10 dark:to-white/5 dark:text-slate-50',
-  success: 'from-emerald-500/20 to-emerald-400/10 text-emerald-800 dark:from-emerald-400/20 dark:to-emerald-300/10 dark:text-emerald-50',
-  warning: 'from-amber-400/20 to-amber-300/10 text-amber-800 dark:from-amber-300/20 dark:to-amber-200/10 dark:text-amber-50',
+/**
+ * Toast appearance by tone.
+ *
+ * `error` was missing while five call sites in the editor were sending it, so
+ * every failure the user could hit rendered in the neutral info style with an
+ * information icon. A message that says something went wrong and looks like a
+ * notice is a message people scroll past.
+ *
+ * The colours are the semantic tokens from index.css rather than Tailwind
+ * palette names, so a change to the theme reaches these too.
+ */
+const TONES = {
+  info: { icon: FiInfo, text: 'text-ink', accent: 'text-ink-soft' },
+  success: { icon: FiCheckCircle, text: 'text-ink', accent: 'text-ok' },
+  warning: { icon: FiAlertTriangle, text: 'text-ink', accent: 'text-warn' },
+  error: { icon: FiAlertCircle, text: 'text-ink', accent: 'text-danger' },
 };
 
 export function ToastMessage({ title, message, tone = 'info' }) {
+  const { icon: Icon, text, accent } = TONES[tone] ?? TONES.info;
+
   return (
-    <div
-      className={cn(
-        'relative overflow-hidden rounded-2xl border px-4 py-3 shadow-lg ring-1 ring-white/30 backdrop-blur-[28px] transition duration-smooth',
-        'dark:ring-white/10',
-        'bg-gradient-to-br',
-        tones[tone] || tones.info,
-      )}
-    >
-      <div className="flex items-center gap-3">
-        <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-white/70 text-sm font-semibold text-accent shadow-inner dark:bg-white/10 dark:text-white">
-          ⓘ
-        </span>
-        <div className="space-y-1">
-          <p className="text-sm font-semibold leading-5">{title}</p>
-          <p className="text-xs text-slate-600 dark:text-slate-300">{message}</p>
-        </div>
+    <div className={cn('card-sunken flex items-start gap-3 px-4 py-3', text)}>
+      <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', accent)} strokeWidth={2} />
+      <div className="min-w-0">
+        {title && <p className="text-sm font-semibold leading-5">{title}</p>}
+        <p className="text-xs leading-relaxed text-ink-soft">{message}</p>
       </div>
     </div>
   );

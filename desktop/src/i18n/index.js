@@ -8,6 +8,6 @@ export function useTranslation() {
   const language = settings.language ?? FALLBACK_LANGUAGE;
   return {
     language,
-    t: (key) => translate(language, key),
+    t: (key, values) => translate(language, key, values),
   };
 }

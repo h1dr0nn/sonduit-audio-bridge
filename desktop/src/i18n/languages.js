@@ -42,9 +42,22 @@ export const LANGUAGES = [
  * Falls back to English, then to the key itself so a missing string is visible
  * during development rather than rendering as an empty node.
  */
-export function translate(language, key) {
+export function translate(language, key, values) {
   const bundle = bundles[language] ?? bundles[FALLBACK_LANGUAGE];
-  return bundle[key] ?? bundles[FALLBACK_LANGUAGE][key] ?? key;
+  const text = bundle[key] ?? bundles[FALLBACK_LANGUAGE][key] ?? key;
+
+  if (!values) return text;
+
+  // Four strings carry `{{name}}` placeholders and four call sites pass values
+  // for them. The values were being dropped, so the application was showing
+  // "Detected {{content}} content." on screen.
+  //
+  // A placeholder with nothing supplied is left as it is rather than blanked:
+  // a visible `{{count}}` is a bug report, and an empty gap is a sentence that
+  // looks deliberate and reads as nonsense.
+  return text.replace(/\{\{(\w+)\}\}/g, (whole, name) =>
+    Object.hasOwn(values, name) ? String(values[name]) : whole,
+  );
 }
 
 /**

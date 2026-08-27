@@ -218,20 +218,30 @@ export function MenuDropdown({ onNavigate, onOpenPalette, onToggleSidebar, t }) 
     const width = sub.offsetWidth;
     const height = sub.offsetHeight;
 
+    const maxHeight = window.innerHeight - EDGE_MARGIN * 2;
+
     let left = panelRect.right + SUBMENU_GAP;
     if (left + width > window.innerWidth - EDGE_MARGIN) {
-      left = panelRect.left - width - SUBMENU_GAP;
+      const flipped = panelRect.left - width - SUBMENU_GAP;
+      // Flipping is only an improvement if the other side has the room. When
+      // neither does, pull the panel back inside rather than letting it sit on
+      // top of the one it cascaded from.
+      left =
+        flipped >= EDGE_MARGIN
+          ? flipped
+          : Math.max(EDGE_MARGIN, window.innerWidth - EDGE_MARGIN - width);
     }
-    left = Math.max(EDGE_MARGIN, left);
 
     let top = rowRect.top - 4;
-    if (top + height > window.innerHeight - EDGE_MARGIN) {
-      top = window.innerHeight - EDGE_MARGIN - height;
+    if (top + Math.min(height, maxHeight) > window.innerHeight - EDGE_MARGIN) {
+      top = window.innerHeight - EDGE_MARGIN - Math.min(height, maxHeight);
     }
     top = Math.max(EDGE_MARGIN, top);
 
     setSubStyle((previous) =>
-      previous.left === left && previous.top === top ? previous : { position: 'fixed', left, top },
+      previous.left === left && previous.top === top && previous.maxHeight === maxHeight
+        ? previous
+        : { position: 'fixed', left, top, maxHeight },
     );
     // Deliberately not keyed on `menus`: that array is rebuilt on every render,
     // and re-running a measurement that ends in setState would never settle.
@@ -397,7 +407,8 @@ export function MenuDropdown({ onNavigate, onOpenPalette, onToggleSidebar, t }) 
                   aria-label={menu.label}
                   style={subStyle}
                   className={cn(
-                    'z-50 min-w-52 rounded-inner border border-line-soft bg-card p-1 shadow-raised',
+                    'scroll-area z-50 min-w-52 rounded-inner border border-line-soft',
+                    'bg-card p-1 shadow-raised',
                   )}
                 >
                   {menu.items.map((item, itemIndex) => {
