@@ -4,19 +4,11 @@ import { Store } from '@tauri-apps/plugin-store';
 const STORE_FILENAME = 'settings.json';
 const store = new Store(STORE_FILENAME);
 
-const DEFAULT_SETTINGS = {
-  // Configuration
-  defaultFormat: 'AAC',
-  outputLocation: 'Same as source',
-  customOutputFolder: '',
-  autoClear: false,
-  notifications: true,
-  
-  // Advanced
-  concurrentFiles: '2',
-  maxFileSize: '500',
-  enableLogging: false,
-  
+export const DEFAULT_SETTINGS = {
+  // Audio bridge
+  targetBufferMs: 30,
+  preferredTransport: 'auto',
+
   // Appearance
   accentColor: '#007AFF',
   fontSize: 'medium',
@@ -27,7 +19,6 @@ export function useSettings() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  // Load settings on mount
   useEffect(() => {
     const loadSettings = async () => {
       try {
@@ -35,7 +26,6 @@ export function useSettings() {
         if (savedSettings) {
           setSettings({ ...DEFAULT_SETTINGS, ...savedSettings });
         } else {
-          // First run: save defaults
           await store.set('settings', DEFAULT_SETTINGS);
           await store.save();
         }
@@ -48,7 +38,6 @@ export function useSettings() {
     loadSettings();
   }, []);
 
-  // Save settings when they change
   useEffect(() => {
     if (!isLoaded) return;
 
@@ -64,11 +53,11 @@ export function useSettings() {
   }, [settings, isLoaded]);
 
   const updateSetting = (key, value) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
+    setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
   const updateSettings = (updates) => {
-    setSettings(prev => ({ ...prev, ...updates }));
+    setSettings((prev) => ({ ...prev, ...updates }));
   };
 
   const resetSettings = async () => {

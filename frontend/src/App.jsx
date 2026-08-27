@@ -1,27 +1,26 @@
 import React, { useState } from 'react';
-import { HomePage } from './pages/HomePage';
+import { ConnectionPage } from './pages/ConnectionPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SettingsProvider } from './context/SettingsContext';
+import { useTheme } from './hooks/useTheme';
+
+const APP_VERSION = __APP_VERSION__;
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState('home');
-  
-  // Lifted state to persist across navigation
-  const [files, setFiles] = useState([]);
-  const [outputFolder, setOutputFolder] = useState('');
+  const [currentPage, setCurrentPage] = useState('connection');
+  const { theme, toggleTheme } = useTheme();
 
   return (
     <SettingsProvider>
-      {currentPage === 'home' ? (
-        <HomePage 
-          onOpenSettings={() => setCurrentPage('settings')} 
-          files={files}
-          setFiles={setFiles}
-          outputFolder={outputFolder}
-          setOutputFolder={setOutputFolder}
-        />
+      {currentPage === 'connection' ? (
+        <ConnectionPage onOpenSettings={() => setCurrentPage('settings')} />
       ) : (
-        <SettingsPage onBack={() => setCurrentPage('home')} />
+        <SettingsPage
+          onBack={() => setCurrentPage('connection')}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          version={APP_VERSION}
+        />
       )}
     </SettingsProvider>
   );

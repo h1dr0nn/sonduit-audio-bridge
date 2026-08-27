@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-const STORAGE_KEY = 'sound-converter-theme';
+const STORAGE_KEY = 'sonduit-theme';
 
 export function useTheme(defaultTheme = 'light') {
   const [theme, setTheme] = useState(() => {
