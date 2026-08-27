@@ -22,7 +22,7 @@
 
 import { createWriteStream, existsSync, mkdirSync, rmSync, statSync, readdirSync, copyFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
@@ -100,27 +100,41 @@ if (source.archive === 'zip') {
   execFileSync('tar', ['-xJf', archivePath, '-C', work], { stdio: 'inherit' });
 }
 
-/** Find the binary anywhere under `dir`. Archive layouts change between builds. */
-function findBinary(dir, name) {
+/** Find a file by name anywhere under `dir`. Archive layouts change between builds. */
+function findFile(dir, name) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
-      const found = findBinary(path, name);
+      const found = findFile(path, name);
       if (found) return found;
-    } else if (entry.name === name) {
+    } else if (entry.name.toLowerCase() === name.toLowerCase()) {
       return path;
     }
   }
   return null;
 }
 
-const extracted = findBinary(work, source.binary);
+const extracted = findFile(work, source.binary);
 if (!extracted) {
   console.error(`${source.binary} not found in the archive`);
   process.exit(1);
 }
 
 copyFileSync(extracted, destination);
+
+// The LGPL requires the licence text to travel with the binary, so the build
+// fails without it rather than shipping something that cannot legally be
+// distributed. BtbN includes it in the archive; taking it from there rather
+// than committing a copy means it always matches the build being shipped.
+const licence = findFile(work, 'LICENSE.txt') ?? findFile(work, 'COPYING.LGPLv2.1');
+if (!licence) {
+  console.error('no licence text in the archive; refusing to ship an unlicensed binary');
+  rmSync(work, { recursive: true, force: true });
+  process.exit(1);
+}
+copyFileSync(licence, join(dirname(destination), 'FFMPEG-LICENSE.txt'));
+console.log(`installed ${join(dirname(destination), 'FFMPEG-LICENSE.txt')}`);
+
 rmSync(work, { recursive: true, force: true });
 
 const size = (statSync(destination).size / 1024 / 1024).toFixed(1);

@@ -1,5 +1,8 @@
 {
   "about": "Giới thiệu",
+  "about.bundled": "Phan mem di kem",
+  "about.bundledNote": "Phan mem ben thu ba duoc phan phoi trong bo cai nay",
+  "about.licenceLocation": "Toan van giay phep duoc cai cung ung dung, tai binaries/FFMPEG-LICENSE.txt.",
   "about.license": "Giấy phép",
   "about.repository": "Kho mã nguồn",
   "about.tagline": "Cầu nối âm thanh hệ thống độ trễ thấp từ Windows sang Android",

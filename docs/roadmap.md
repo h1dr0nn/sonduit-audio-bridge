@@ -69,7 +69,6 @@ Honest list of things that exist but are not finished.
 | The drift estimator is not reset on route change or suspend, only on format change | `sonduit-ffi` |
 | Discovery is authenticated but the audio stream is not encrypted | ADR-006, see section 1.2 |
 | No aggregated third-party licence file is shipped | `licensing.md` section 5 |
-| FFmpeg LGPL notice is not shown in About, and no LGPL text ships in the bundle | `licensing.md` section 2.2 |
 | Mastering uses a single loudnorm pass; two-pass would be more accurate | `convert/args.rs` |
 | The bundled FFmpeg is 110 MB, which dominates the installer size | `tools/fetch-ffmpeg.mjs` |
 | The Scream driver commit is not pinned | `licensing.md`; a floating reference is not good enough |

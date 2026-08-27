@@ -1,5 +1,8 @@
 {
   "about": "Informazioni",
+  "about.bundled": "Software incluso",
+  "about.bundledNote": "Software di terze parti distribuito in questo programma di installazione",
+  "about.licenceLocation": "Il testo completo della licenza viene installato insieme all applicazione, in binaries/FFMPEG-LICENSE.txt.",
   "about.license": "Licenza",
   "about.repository": "Repository",
   "about.tagline": "Ponte audio di sistema a bassa latenza da Windows ad Android",

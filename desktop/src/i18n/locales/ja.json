@@ -1,5 +1,8 @@
 {
   "about": "情報",
+  "about.bundled": "同梱ソフトウェア",
+  "about.bundledNote": "このインストーラーに含まれるサードパーティ製ソフトウェア",
+  "about.licenceLocation": "ライセンス全文はアプリケーションと一緒に binaries/FFMPEG-LICENSE.txt へインストールされます。",
   "about.license": "ライセンス",
   "about.repository": "リポジトリ",
   "about.tagline": "Windows から Android への低遅延システム音声ブリッジ",

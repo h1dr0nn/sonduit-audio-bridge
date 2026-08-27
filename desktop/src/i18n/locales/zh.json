@@ -1,5 +1,8 @@
 {
   "about": "关于",
+  "about.bundled": "随附软件",
+  "about.bundledNote": "此安装程序中分发的第三方软件",
+  "about.licenceLocation": "完整许可证文本随应用程序一起安装在 binaries/FFMPEG-LICENSE.txt。",
   "about.license": "许可证",
   "about.repository": "代码仓库",
   "about.tagline": "从 Windows 到 Android 的低延迟系统音频桥接",

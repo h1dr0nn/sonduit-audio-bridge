@@ -1,5 +1,8 @@
 {
   "about": "About",
+  "about.bundled": "Bundled software",
+  "about.bundledNote": "Third-party software distributed inside this installer",
+  "about.licenceLocation": "The full licence text is installed alongside the application, in binaries/FFMPEG-LICENSE.txt.",
   "about.license": "License",
   "about.repository": "Repository",
   "about.tagline": "Low latency system audio bridge from Windows to Android",

@@ -107,9 +107,16 @@ Obligations that follow, none of which touch this project's own licence:
 release, and git history is permanent. `.gitignore` excludes
 `desktop/src-tauri/binaries/`, and CI fetches it before building.
 
-Not yet done: the About screen does not display the FFmpeg notice, and the
-bundle carries no LGPL text file. Both are tracked in
-[roadmap.md](./roadmap.md).
+Both obligations are met. `tools/fetch-ffmpeg.mjs` copies the licence text out
+of the same archive the binary came from, into
+`desktop/src-tauri/binaries/FFMPEG-LICENSE.txt`, which Tauri bundles alongside
+`ffmpeg.exe`. Taking it from the archive rather than committing a copy means it
+always matches the build being shipped, and the fetch fails outright if the
+archive has no licence in it rather than producing something that cannot
+legally be distributed.
+
+The About screen lists FFmpeg, its licence, the fact that it is unmodified,
+where it came from, and where the full text is installed.
 
 ---
 

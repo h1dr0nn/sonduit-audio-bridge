@@ -1,5 +1,8 @@
 {
   "about": "정보",
+  "about.bundled": "포함된 소프트웨어",
+  "about.bundledNote": "이 설치 프로그램에 함께 배포되는 서드파티 소프트웨어",
+  "about.licenceLocation": "전체 라이선스 문서는 애플리케이션과 함께 binaries/FFMPEG-LICENSE.txt 에 설치됩니다.",
   "about.license": "라이선스",
   "about.repository": "저장소",
   "about.tagline": "Windows에서 Android로 연결하는 저지연 시스템 오디오 브리지",

@@ -1,5 +1,8 @@
 {
   "about": "О программе",
+  "about.bundled": "Встроенное ПО",
+  "about.bundledNote": "Стороннее программное обеспечение, поставляемое в этом установщике",
+  "about.licenceLocation": "Полный текст лицензии устанавливается вместе с приложением, в binaries/FFMPEG-LICENSE.txt.",
   "about.license": "Лицензия",
   "about.repository": "Репозиторий",
   "about.tagline": "Аудиомост с низкой задержкой из Windows в Android",

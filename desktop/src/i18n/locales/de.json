@@ -1,5 +1,8 @@
 {
   "about": "Über",
+  "about.bundled": "Mitgelieferte Software",
+  "about.bundledNote": "Software Dritter, die in diesem Installationsprogramm enthalten ist",
+  "about.licenceLocation": "Der vollstaendige Lizenztext wird mit der Anwendung installiert, in binaries/FFMPEG-LICENSE.txt.",
   "about.license": "Lizenz",
   "about.repository": "Repository",
   "about.tagline": "Systemaudio-Bruecke mit geringer Latenz von Windows nach Android",
