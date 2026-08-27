@@ -104,13 +104,30 @@ commits on `develop`; squash before merging. The linter rejects both.
 node tools/lint/check-commits.mjs origin/develop..HEAD
 ```
 
+## Set this up once
+
+```bash
+git config core.hooksPath tools/hooks
+```
+
+That makes `tools/hooks/commit-msg` reject a commit message the project's own
+linter would reject. It is not optional in practice: history here is the only
+archive there is, so a bad subject line cannot be fixed after the fact, and
+four of them reached `main` before the hook existed. They are recorded in
+`tools/lint/commit-baseline`.
+
 ## Before every commit
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+node tools/lint/check-source-ascii.mjs
+node tools/version.mjs check
 ```
+
+On Linux, add `--exclude sonduit-desktop` to the clippy and test commands: it
+is a Tauri application and wants GTK and webkit headers there for no benefit.
 
 **Never commit while red. Never commit code that has not been run.**
 

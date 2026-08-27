@@ -1,0 +1,10 @@
+#!/bin/sh
+# Reject a commit message the project's own linter would reject.
+#
+# This exists because the linter was twice run only after pushing, and the
+# violations then could not be fixed: history in this repository is the only
+# archive there is, so a bad subject line is permanent. Catching it here costs
+# nothing and is the only point at which it is still fixable.
+#
+# Enable with: git config core.hooksPath tools/hooks
+exec node tools/lint/check-commits.mjs --message "$1"
