@@ -12,7 +12,7 @@ import { TelemetryPage } from './pages/TelemetryPage';
 
 function Shell() {
   const [page, setPage] = useState('connection');
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const { t } = useTranslation();
 
   // The native acrylic tint lives in Rust and cannot read the webview's stored
@@ -29,7 +29,7 @@ function Shell() {
         <main className="scroll-area min-w-0 flex-1 pr-1">
           {page === 'connection' && <ConnectionPage />}
           {page === 'telemetry' && <TelemetryPage />}
-          {page === 'settings' && <SettingsPage theme={theme} onToggleTheme={toggleTheme} />}
+          {page === 'settings' && <SettingsPage theme={theme} onSetTheme={setTheme} />}
           {page === 'about' && <AboutPage />}
         </main>
       </div>

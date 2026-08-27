@@ -1,6 +1,8 @@
 import React from 'react';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { NumberField } from '../components/ui/NumberField';
+import { Select } from '../components/ui/Select';
 import { SettingRow } from '../components/ui/SettingRow';
 import { useSettingsContext } from '../context/SettingsContext';
 import { useTranslation, LANGUAGES } from '../i18n';
@@ -9,6 +11,7 @@ import { cn } from '../utils/cn';
 const ACCENT_COLORS = ['#7c93e8', '#007aff', '#5856d6', '#2fa96b', '#d99b28', '#d9503f'];
 const FONT_SIZES = ['small', 'medium', 'large'];
 const TRANSPORTS = ['auto', 'wifi', 'usb'];
+const THEMES = ['light', 'dark'];
 
 const TRANSPORT_LABEL_KEY = {
   auto: 'connection.transportAuto',
@@ -16,12 +19,7 @@ const TRANSPORT_LABEL_KEY = {
   usb: 'connection.transportUsb',
 };
 
-const controlClass = cn(
-  'h-9 rounded-pill border border-line-soft bg-sunken px-3 text-sm text-ink',
-  'outline-none transition-colors duration-fast ease-out hover:border-line-strong',
-);
-
-export function SettingsPage({ theme, onToggleTheme }) {
+export function SettingsPage({ theme, onSetTheme }) {
   const { settings, updateSetting, resetSettings } = useSettingsContext();
   const { t } = useTranslation();
 
@@ -33,9 +31,13 @@ export function SettingsPage({ theme, onToggleTheme }) {
 
       <Card title={t('settings.appearance')}>
         <SettingRow label={t('settings.theme')} description={t('settings.themeDesc')}>
-          <Button onClick={onToggleTheme} size="sm">
-            {theme === 'dark' ? t('common.dark') : t('common.light')}
-          </Button>
+          <Select
+            className="w-36"
+            ariaLabel={t('settings.theme')}
+            value={theme}
+            onChange={onSetTheme}
+            options={THEMES.map((mode) => ({ value: mode, label: t(`common.${mode}`) }))}
+          />
         </SettingRow>
 
         <SettingRow label={t('settings.accentColor')} description={t('settings.accentColorDesc')}>
@@ -44,12 +46,13 @@ export function SettingsPage({ theme, onToggleTheme }) {
               key={color}
               type="button"
               aria-label={color}
+              aria-pressed={settings.accentColor === color}
               onClick={() => updateSetting('accentColor', color)}
               style={{ backgroundColor: color }}
               className={cn(
                 'h-6 w-6 rounded-pill transition-transform duration-fast ease-out',
                 settings.accentColor === color
-                  ? 'ring-2 ring-offset-2 ring-[var(--text-primary)] ring-offset-[var(--surface-card)]'
+                  ? 'ring-2 ring-[var(--text-primary)] ring-offset-2 ring-offset-[var(--surface-card)]'
                   : 'hover:scale-110',
               )}
             />
@@ -57,59 +60,53 @@ export function SettingsPage({ theme, onToggleTheme }) {
         </SettingRow>
 
         <SettingRow label={t('settings.fontSize')} description={t('settings.fontSizeDesc')}>
-          <select
+          <Select
+            className="w-36"
+            ariaLabel={t('settings.fontSize')}
             value={settings.fontSize}
-            onChange={(event) => updateSetting('fontSize', event.target.value)}
-            className={controlClass}
-          >
-            {FONT_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {t(`common.${size}`)}
-              </option>
-            ))}
-          </select>
+            onChange={(next) => updateSetting('fontSize', next)}
+            options={FONT_SIZES.map((size) => ({ value: size, label: t(`common.${size}`) }))}
+          />
         </SettingRow>
 
         <SettingRow label={t('settings.language')} description={t('settings.languageDesc')}>
-          <select
+          <Select
+            className="w-36"
+            ariaLabel={t('settings.language')}
             value={settings.language}
-            onChange={(event) => updateSetting('language', event.target.value)}
-            className={controlClass}
-          >
-            {LANGUAGES.map((language) => (
-              <option key={language.code} value={language.code}>
-                {language.label}
-              </option>
-            ))}
-          </select>
+            onChange={(next) => updateSetting('language', next)}
+            options={LANGUAGES.map((language) => ({
+              value: language.code,
+              label: language.label,
+            }))}
+          />
         </SettingRow>
       </Card>
 
       <Card title={t('settings.audio')}>
         <SettingRow label={t('settings.targetBuffer')} description={t('settings.targetBufferDesc')}>
-          <input
-            type="number"
+          <NumberField
+            ariaLabel={t('settings.targetBuffer')}
+            value={settings.targetBufferMs}
+            onChange={(next) => updateSetting('targetBufferMs', next)}
             min={5}
             max={200}
             step={5}
-            value={settings.targetBufferMs}
-            onChange={(event) => updateSetting('targetBufferMs', Number(event.target.value))}
-            className={cn(controlClass, 'w-24 text-right font-mono tabular-nums')}
+            unit="ms"
           />
         </SettingRow>
 
         <SettingRow label={t('connection.transport')}>
-          <select
+          <Select
+            className="w-36"
+            ariaLabel={t('connection.transport')}
             value={settings.preferredTransport}
-            onChange={(event) => updateSetting('preferredTransport', event.target.value)}
-            className={controlClass}
-          >
-            {TRANSPORTS.map((transport) => (
-              <option key={transport} value={transport}>
-                {t(TRANSPORT_LABEL_KEY[transport])}
-              </option>
-            ))}
-          </select>
+            onChange={(next) => updateSetting('preferredTransport', next)}
+            options={TRANSPORTS.map((transport) => ({
+              value: transport,
+              label: t(TRANSPORT_LABEL_KEY[transport]),
+            }))}
+          />
         </SettingRow>
 
         <SettingRow label={t('settings.reset')} description={t('settings.resetDesc')}>
