@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 
 // Version has a single owner. The desktop shell never declares its own; it
 // reads whatever the Tauri config was generated with.
-const tauriConfigPath = fileURLToPath(new URL('../src-tauri/tauri.conf.json', import.meta.url));
+const tauriConfigPath = fileURLToPath(new URL('./src-tauri/tauri.conf.json', import.meta.url));
 const { version } = JSON.parse(readFileSync(tauriConfigPath, 'utf8'));
 
 export default defineConfig({

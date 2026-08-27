@@ -1,0 +1,16 @@
+[package]
+name = "sonduit-transport"
+description = "UDP transport and device discovery for Sonduit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+sonduit-core.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

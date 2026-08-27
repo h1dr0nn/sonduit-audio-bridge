@@ -1,0 +1,25 @@
+[package]
+name = "sonduit-playback-android"
+description = "Android AAudio playback for Sonduit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+sonduit-core.workspace = true
+thiserror.workspace = true
+
+# AAudio only exists on Android. Everywhere else this crate compiles to its
+# platform-independent parts so `cargo test --workspace` works on any host.
+#
+# ndk rather than the oboe crate: see ADR-003. The oboe crate is pinned to
+# Oboe 1.8.1 and has had no release since March 2024, while ndk::audio is
+# maintained and is what cpal migrated to.
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", features = ["audio", "api-level-27"] }
+
+[lints]
+workspace = true

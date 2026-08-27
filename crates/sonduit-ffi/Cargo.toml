@@ -1,0 +1,21 @@
+[package]
+name = "sonduit-ffi"
+description = "UniFFI bindings exposing sonduit-core to the Android app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib"]
+name = "sonduit_ffi"
+
+[dependencies]
+sonduit-core.workspace = true
+sonduit-transport.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

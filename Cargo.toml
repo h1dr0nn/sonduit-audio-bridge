@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sonduit-core",
+    "crates/sonduit-transport",
+    "crates/sonduit-capture-win",
+    "crates/sonduit-playback-android",
+    "crates/sonduit-ffi",
+    "desktop/src-tauri",
+]
+
+# The version lives here and nowhere else. Gradle and Tauri read it from this
+# file through tools/version.mjs; never edit a version in two places.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/h1dr0nn/sonduit-audio-bridge"
+authors = ["Sonduit contributors"]
+
+[workspace.dependencies]
+sonduit-core = { path = "crates/sonduit-core" }
+sonduit-transport = { path = "crates/sonduit-transport" }
+
+thiserror = "2"
+tracing = "0.1"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# The audio path must not allocate or panic on the hot loop. These lints do not
+# prove that, but they catch the obvious ways of getting it wrong.
+undocumented_unsafe_blocks = "warn"
+panic_in_result_fn = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# Debug builds still have to keep up with realtime audio, so the core is
+# optimised even in dev. Without this the jitter buffer tests are unbearable
+# and a debug run cannot be used to judge behaviour at all.
+[profile.dev.package.sonduit-core]
+opt-level = 2
+
+[profile.dev.package.sonduit-transport]
+opt-level = 2
