@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">Bat dau nghe</string>
+    <string name="action_stop">Dung</string>
+    <string name="status_idle">Chua nghe</string>
+    <string name="status_waiting">Dang nghe, chua co am thanh</string>
+    <string name="status_streaming_short">Dang phat</string>
+    <string name="status_streaming">Dang phat %1$d kHz, dem %2$d ms</string>
+    <string name="format_summary">%1$d kHz, %2$d kenh</string>
+    <string name="stat_buffer">Bo dem</string>
+    <string name="stat_jitter">Jitter</string>
+    <string name="stat_loss">Mat goi</string>
+    <string name="stat_packets">Goi tin</string>
+    <string name="stat_malformed">Goi hong</string>
+    <string name="stat_drift">Lech dong ho</string>
+    <string name="stat_correction">Hieu chinh</string>
+    <string name="pairing_title">Ma ghep noi</string>
+    <string name="pairing_new">Ma moi</string>
+    <string name="pairing_hint">Nhap ma nay tren may tinh truoc khi quet. Khong co no thi may tinh se khong thay dien thoai.</string>
+    <string name="hint_same_network">Dien thoai va may tinh phai cung mang, hoac ket noi bang USB tethering.</string>
+    <string name="channel_name">Cau noi</string>
+    <string name="channel_description">Hien khi Sonduit dang phat am thanh tu may tinh.</string>
+</resources>

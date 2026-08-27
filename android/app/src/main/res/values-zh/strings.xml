@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">开始接收</string>
+    <string name="action_stop">停止</string>
+    <string name="status_idle">未接收</string>
+    <string name="status_waiting">正在接收，暂无音频</string>
+    <string name="status_streaming_short">正在播放</string>
+    <string name="status_streaming">正在播放 %1$d kHz，缓冲 %2$d ms</string>
+    <string name="format_summary">%1$d kHz，%2$d 声道</string>
+    <string name="stat_buffer">缓冲</string>
+    <string name="stat_jitter">抖动</string>
+    <string name="stat_loss">丢包</string>
+    <string name="stat_packets">数据包</string>
+    <string name="stat_malformed">格式错误</string>
+    <string name="stat_drift">时钟漂移</string>
+    <string name="stat_correction">校正</string>
+    <string name="pairing_title">配对码</string>
+    <string name="pairing_new">新代码</string>
+    <string name="pairing_hint">搜索前请在电脑上输入此代码。否则这台手机不会出现在列表中。</string>
+    <string name="hint_same_network">手机和电脑必须在同一网络，或通过 USB 网络共享连接。</string>
+    <string name="channel_name">桥接</string>
+    <string name="channel_description">在 Sonduit 播放电脑音频时显示。</string>
+</resources>

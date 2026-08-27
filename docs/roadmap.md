@@ -73,7 +73,6 @@ Honest list of things that exist but are not finished.
 | The bundled FFmpeg is 110 MB, which dominates the installer size | `tools/fetch-ffmpeg.mjs` |
 | The Scream driver commit is not pinned | `licensing.md`; a floating reference is not good enough |
 | `driver/` is empty | ADR-002 |
-| Android strings are English only, while the desktop has eleven languages | `android/app/src/main/res/values` |
 
 ---
 

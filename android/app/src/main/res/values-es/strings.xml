@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">Empezar a escuchar</string>
+    <string name="action_stop">Detener</string>
+    <string name="status_idle">Sin escuchar</string>
+    <string name="status_waiting">Escuchando, sin audio todavia</string>
+    <string name="status_streaming_short">Reproduciendo</string>
+    <string name="status_streaming">Reproduciendo %1$d kHz, %2$d ms en bufer</string>
+    <string name="format_summary">%1$d kHz, %2$d canales</string>
+    <string name="stat_buffer">Bufer</string>
+    <string name="stat_jitter">Jitter</string>
+    <string name="stat_loss">Perdida</string>
+    <string name="stat_packets">Paquetes</string>
+    <string name="stat_malformed">Con errores</string>
+    <string name="stat_drift">Deriva de reloj</string>
+    <string name="stat_correction">Correccion</string>
+    <string name="pairing_title">Codigo de emparejamiento</string>
+    <string name="pairing_new">Codigo nuevo</string>
+    <string name="pairing_hint">Escribe este codigo en el ordenador antes de buscar. Sin el, este telefono no aparecera.</string>
+    <string name="hint_same_network">El telefono y el ordenador deben estar en la misma red, o conectados por USB.</string>
+    <string name="channel_name">Puente</string>
+    <string name="channel_description">Se muestra mientras Sonduit reproduce audio de un ordenador.</string>
+</resources>

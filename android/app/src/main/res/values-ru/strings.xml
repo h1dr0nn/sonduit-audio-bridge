@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">Начать приём</string>
+    <string name="action_stop">Остановить</string>
+    <string name="status_idle">Не принимает</string>
+    <string name="status_waiting">Приём идёт, звука пока нет</string>
+    <string name="status_streaming_short">Воспроизведение</string>
+    <string name="status_streaming">Воспроизведение %1$d кГц, буфер %2$d мс</string>
+    <string name="format_summary">%1$d кГц, каналов: %2$d</string>
+    <string name="stat_buffer">Буфер</string>
+    <string name="stat_jitter">Джиттер</string>
+    <string name="stat_loss">Потери</string>
+    <string name="stat_packets">Пакеты</string>
+    <string name="stat_malformed">Повреждённые</string>
+    <string name="stat_drift">Расхождение часов</string>
+    <string name="stat_correction">Коррекция</string>
+    <string name="pairing_title">Код сопряжения</string>
+    <string name="pairing_new">Новый код</string>
+    <string name="pairing_hint">Введите этот код на компьютере перед поиском. Без него телефон не появится в списке.</string>
+    <string name="hint_same_network">Телефон и компьютер должны быть в одной сети или соединены по USB.</string>
+    <string name="channel_name">Мост</string>
+    <string name="channel_description">Показывается, пока Sonduit воспроизводит звук с компьютера.</string>
+</resources>

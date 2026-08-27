@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">受信を開始</string>
+    <string name="action_stop">停止</string>
+    <string name="status_idle">受信していません</string>
+    <string name="status_waiting">受信中、まだ音声はありません</string>
+    <string name="status_streaming_short">再生中</string>
+    <string name="status_streaming">%1$d kHz を再生中、バッファ %2$d ms</string>
+    <string name="format_summary">%1$d kHz, %2$d チャンネル</string>
+    <string name="stat_buffer">バッファ</string>
+    <string name="stat_jitter">ジッター</string>
+    <string name="stat_loss">損失</string>
+    <string name="stat_packets">パケット</string>
+    <string name="stat_malformed">不正なパケット</string>
+    <string name="stat_drift">クロック誤差</string>
+    <string name="stat_correction">補正</string>
+    <string name="pairing_title">ペアリングコード</string>
+    <string name="pairing_new">新しいコード</string>
+    <string name="pairing_hint">検索する前にパソコンでこのコードを入力してください。入力しないとこの端末は表示されません。</string>
+    <string name="hint_same_network">端末とパソコンは同じネットワークにあるか、USB テザリングで接続されている必要があります。</string>
+    <string name="channel_name">ブリッジ</string>
+    <string name="channel_description">Sonduit がパソコンの音声を再生している間に表示されます。</string>
+</resources>

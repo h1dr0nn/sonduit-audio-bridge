@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">Commencer l ecoute</string>
+    <string name="action_stop">Arreter</string>
+    <string name="status_idle">A l arret</string>
+    <string name="status_waiting">A l ecoute, pas encore de son</string>
+    <string name="status_streaming_short">Lecture</string>
+    <string name="status_streaming">Lecture %1$d kHz, %2$d ms en tampon</string>
+    <string name="format_summary">%1$d kHz, %2$d canaux</string>
+    <string name="stat_buffer">Tampon</string>
+    <string name="stat_jitter">Gigue</string>
+    <string name="stat_loss">Pertes</string>
+    <string name="stat_packets">Paquets</string>
+    <string name="stat_malformed">Malformes</string>
+    <string name="stat_drift">Derive d horloge</string>
+    <string name="stat_correction">Correction</string>
+    <string name="pairing_title">Code de couplage</string>
+    <string name="pairing_new">Nouveau code</string>
+    <string name="pairing_hint">Saisissez ce code sur l ordinateur avant de rechercher. Sans lui, ce telephone n apparaitra pas.</string>
+    <string name="hint_same_network">Le telephone et l ordinateur doivent etre sur le meme reseau, ou relies en USB.</string>
+    <string name="channel_name">Pont</string>
+    <string name="channel_description">Affiche pendant que Sonduit lit le son d un ordinateur.</string>
+</resources>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">수신 시작</string>
+    <string name="action_stop">중지</string>
+    <string name="status_idle">수신 안 함</string>
+    <string name="status_waiting">수신 중, 아직 오디오 없음</string>
+    <string name="status_streaming_short">재생 중</string>
+    <string name="status_streaming">%1$d kHz 재생 중, 버퍼 %2$d ms</string>
+    <string name="format_summary">%1$d kHz, %2$d 채널</string>
+    <string name="stat_buffer">버퍼</string>
+    <string name="stat_jitter">지터</string>
+    <string name="stat_loss">손실</string>
+    <string name="stat_packets">패킷</string>
+    <string name="stat_malformed">손상된 패킷</string>
+    <string name="stat_drift">클럭 드리프트</string>
+    <string name="stat_correction">보정</string>
+    <string name="pairing_title">페어링 코드</string>
+    <string name="pairing_new">새 코드</string>
+    <string name="pairing_hint">검색하기 전에 컴퓨터에 이 코드를 입력하세요. 입력하지 않으면 이 휴대폰은 표시되지 않습니다.</string>
+    <string name="hint_same_network">휴대폰과 컴퓨터가 같은 네트워크에 있거나 USB 테더링으로 연결되어야 합니다.</string>
+    <string name="channel_name">브리지</string>
+    <string name="channel_description">Sonduit 가 컴퓨터의 오디오를 재생하는 동안 표시됩니다.</string>
+</resources>

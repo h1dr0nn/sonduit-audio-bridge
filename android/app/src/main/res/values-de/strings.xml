@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name and value_unknown are deliberately not translated:
+         one is a product name and the other is a dash. -->
+    <string name="action_start">Zuhoeren starten</string>
+    <string name="action_stop">Stoppen</string>
+    <string name="status_idle">Hoert nicht zu</string>
+    <string name="status_waiting">Hoert zu, noch kein Ton</string>
+    <string name="status_streaming_short">Spielt</string>
+    <string name="status_streaming">Spielt %1$d kHz, %2$d ms gepuffert</string>
+    <string name="format_summary">%1$d kHz, %2$d Kanaele</string>
+    <string name="stat_buffer">Puffer</string>
+    <string name="stat_jitter">Jitter</string>
+    <string name="stat_loss">Verlust</string>
+    <string name="stat_packets">Pakete</string>
+    <string name="stat_malformed">Fehlerhaft</string>
+    <string name="stat_drift">Taktabweichung</string>
+    <string name="stat_correction">Korrektur</string>
+    <string name="pairing_title">Kopplungscode</string>
+    <string name="pairing_new">Neuer Code</string>
+    <string name="pairing_hint">Diesen Code am Computer eingeben, bevor gesucht wird. Ohne ihn erscheint dieses Telefon nicht.</string>
+    <string name="hint_same_network">Telefon und Computer muessen im selben Netzwerk sein oder per USB-Tethering verbunden.</string>
+    <string name="channel_name">Bruecke</string>
+    <string name="channel_description">Wird angezeigt, waehrend Sonduit Ton von einem Computer wiedergibt.</string>
+</resources>
