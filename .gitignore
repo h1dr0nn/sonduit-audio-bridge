@@ -203,3 +203,6 @@ src-tauri/gen/
 
 # Node dependencies (never tracked)
 node_modules/
+
+# Reference clones for research only. Read, never build, never vendor.
+third_party/reference/
