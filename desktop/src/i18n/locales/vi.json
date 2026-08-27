@@ -61,6 +61,8 @@
   "connection.multicast": "Multicast, moi may nhan",
   "connection.noDevices": "Chưa tìm thấy thiết bị nào",
   "connection.noEndpoint": "Chưa cài thiết bị ảo",
+  "connection.pairingCode": "Ma ghep noi",
+  "connection.pairingHint": "Sau chu so hien tren ung dung Sonduit o dien thoai",
   "connection.sampleRate": "Tần số lấy mẫu",
   "connection.scan": "Dò tìm",
   "connection.scanning": "Dang quet",

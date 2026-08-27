@@ -61,6 +61,8 @@
   "connection.multicast": "Multicast, любой приёмник",
   "connection.noDevices": "Устройства пока не найдены",
   "connection.noEndpoint": "Виртуальное устройство не установлено",
+  "connection.pairingCode": "Код сопряжения",
+  "connection.pairingHint": "Шесть цифр, показанных в приложении Sonduit на телефоне",
   "connection.sampleRate": "Частота дискретизации",
   "connection.scan": "Поиск",
   "connection.scanning": "Поиск",

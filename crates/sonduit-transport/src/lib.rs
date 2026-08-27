@@ -9,6 +9,7 @@
 
 pub mod discovery;
 pub mod packetize;
+pub mod pairing;
 pub mod sink;
 pub mod source;
 

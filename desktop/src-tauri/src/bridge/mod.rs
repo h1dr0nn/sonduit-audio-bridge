@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use sonduit_core::format::Format;
 use sonduit_transport::packetize::Packetizer;
+use sonduit_transport::pairing::{PairingCode, NONCE_BYTES};
 use sonduit_transport::{discovery, TransportError, Wire, DEFAULT_PORT};
 use tauri::{AppHandle, Emitter};
 
@@ -99,6 +100,10 @@ pub enum BridgeError {
     /// An address the user supplied could not be parsed.
     #[error("{0} is not a valid address")]
     BadAddress(String),
+
+    /// The pairing code was not six digits.
+    #[error("the pairing code must be six digits")]
+    BadPairingCode,
 }
 
 impl From<BridgeError> for String {
@@ -170,12 +175,43 @@ fn default_target() -> SocketAddr {
     SocketAddr::from((sonduit_transport::DEFAULT_MULTICAST_GROUP, DEFAULT_PORT))
 }
 
-/// Broadcast a discovery probe and collect the replies.
+/// A nonce for one scan.
+///
+/// Freshness is what stops a captured announcement being replayed at the next
+/// scan, so this must not be derived from anything an observer can predict
+/// from a previous probe.
+fn scan_nonce() -> [u8; NONCE_BYTES] {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+
+    let local = 0_u8;
+    let address = std::ptr::addr_of!(local) as u64;
+
+    let mut nonce = [0_u8; NONCE_BYTES];
+    nonce[..8].copy_from_slice(&(now as u64).to_le_bytes());
+    nonce[8..].copy_from_slice(&address.rotate_left(29).to_le_bytes());
+    nonce
+}
+
+/// Broadcast a discovery probe and collect the replies that prove they know
+/// the pairing code.
+///
+/// Replies that do not verify are dropped without comment. There is nothing
+/// useful to tell the user about a device that answered and failed: it is
+/// either a typo in the code or a device that should not be offered, and
+/// naming it would make the second one look like the first.
 ///
 /// # Errors
-/// Returns [`BridgeError::Network`] when the socket cannot be bound or the
+/// Returns [`BridgeError::BadPairingCode`] for a code that is not six digits,
+/// and [`BridgeError::Network`] when the socket cannot be bound or the
 /// broadcast is refused.
-pub fn discover() -> Result<Vec<DiscoveredDevice>, BridgeError> {
+pub fn discover(code: &str) -> Result<Vec<DiscoveredDevice>, BridgeError> {
+    let code = PairingCode::parse(code).ok_or(BridgeError::BadPairingCode)?;
+    let nonce = scan_nonce();
+
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .map_err(|error| BridgeError::Network(error.to_string()))?;
     socket
@@ -185,7 +221,7 @@ pub fn discover() -> Result<Vec<DiscoveredDevice>, BridgeError> {
         .set_read_timeout(Some(Duration::from_millis(200)))
         .map_err(|error| BridgeError::Network(error.to_string()))?;
 
-    let probe = discovery::encode_probe();
+    let probe = discovery::encode_probe(&nonce);
     let broadcast = SocketAddr::from((Ipv4Addr::BROADCAST, discovery::DISCOVERY_PORT));
     // A single probe is enough on a wired link and often not enough on WiFi,
     // where the first broadcast after an idle period is regularly dropped.
@@ -203,7 +239,8 @@ pub fn discover() -> Result<Vec<DiscoveredDevice>, BridgeError> {
         let Ok((length, from)) = socket.recv_from(&mut datagram) else {
             continue;
         };
-        let Some(announcement) = discovery::decode_announce(&datagram[..length]) else {
+        let Some(announcement) = discovery::decode_announce(&datagram[..length], &nonce, &code)
+        else {
             continue;
         };
         let address = discovery::audio_address(from, &announcement);

@@ -27,6 +27,7 @@ use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
 use sonduit_core::resample::DriftResampler;
 use sonduit_playback_android::{CallbackSource, JitterSource};
+use sonduit_transport::pairing::PairingCode;
 use sonduit_transport::{classify, discovery, Wire, DEFAULT_PORT};
 
 uniffi::setup_scaffolding!();
@@ -153,6 +154,11 @@ pub struct Bridge {
     inner: Mutex<Option<Running>>,
     shared: Mutex<Option<Arc<Shared>>>,
     device_name: Mutex<String>,
+    /// The code this device will answer probes with.
+    ///
+    /// Generated once per process rather than per session, so a user who stops
+    /// and starts the bridge does not have to retype it on the desktop.
+    pairing: Mutex<PairingCode>,
 }
 
 struct Running {
@@ -177,6 +183,30 @@ impl Bridge {
             inner: Mutex::new(None),
             shared: Mutex::new(None),
             device_name: Mutex::new("Sonduit".to_string()),
+            pairing: Mutex::new(PairingCode::from_seed(random_seed())),
+        }
+    }
+
+    /// The pairing code to show the user.
+    ///
+    /// The desktop will not accept this device's announcement without it, so
+    /// it has to be on screen before a scan is useful.
+    #[must_use]
+    pub fn pairing_code(&self) -> String {
+        self.pairing
+            .lock()
+            .map(|code| code.to_display())
+            .unwrap_or_default()
+    }
+
+    /// Generate a new pairing code.
+    ///
+    /// For a user who believes the old one has been seen by someone else. Any
+    /// desktop paired with the previous code stops being able to find this
+    /// device, which is the point.
+    pub fn regenerate_pairing_code(&self) {
+        if let Ok(mut code) = self.pairing.lock() {
+            *code = PairingCode::from_seed(random_seed());
         }
     }
 
@@ -331,9 +361,14 @@ impl Bridge {
                 .lock()
                 .map(|guard| guard.clone())
                 .unwrap_or_else(|_| "Sonduit".to_string());
+            let code = self
+                .pairing
+                .lock()
+                .map(|code| code.clone())
+                .map_err(|_| FfiError::NotRunning)?;
             std::thread::Builder::new()
                 .name("sonduit-announce".into())
-                .spawn(move || announce_loop(&stop, &name, port))
+                .spawn(move || announce_loop(&stop, &name, port, &code))
                 .map_err(|error| FfiError::Transport {
                     reason: error.to_string(),
                 })?
@@ -625,7 +660,10 @@ fn open_playback(shared: &Arc<Shared>, format: Format) {
 fn open_playback(_shared: &Arc<Shared>, _format: Format) {}
 
 /// Answer discovery probes so the desktop can find this device.
-fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16) {
+///
+/// Each reply is tagged against the probe's own nonce, so it proves this
+/// device knows the pairing code without putting the code on the wire.
+fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16, code: &PairingCode) {
     let Ok(socket) = UdpSocket::bind(SocketAddr::from((
         Ipv4Addr::UNSPECIFIED,
         discovery::DISCOVERY_PORT,
@@ -635,20 +673,55 @@ fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16) {
     let _ = socket.set_broadcast(true);
     let _ = socket.set_read_timeout(Some(RECV_TIMEOUT));
 
-    let reply = discovery::encode_announce(name, audio_port);
     let mut datagram = [0_u8; 256];
 
     while !stop.load(Ordering::Relaxed) {
         let Ok((length, from)) = socket.recv_from(&mut datagram) else {
             continue;
         };
-        if discovery::peek_kind(&datagram[..length]) == Some(discovery::MessageKind::Probe) {
-            // Reply straight back to the prober rather than broadcasting: the
-            // answer concerns one machine, and broadcasting it would wake
-            // every device on the network.
-            let _ = socket.send_to(&reply, from);
-        }
+        // A probe with no readable nonce is either malformed or an older
+        // protocol version, and there is nothing to authenticate against
+        // either way.
+        let Some(nonce) = discovery::probe_nonce(&datagram[..length]) else {
+            continue;
+        };
+
+        // The reply is built per probe rather than once, because the tag
+        // covers that probe's nonce. That is what stops it being replayed.
+        let reply = discovery::encode_announce(name, audio_port, &nonce, code);
+
+        // Straight back to the prober rather than broadcast: the answer
+        // concerns one machine, and broadcasting it would wake every device on
+        // the network and hand them all a tag to study.
+        let _ = socket.send_to(&reply, from);
     }
+}
+
+/// A seed for a pairing code.
+///
+/// Not a cryptographic generator, and it does not need to be one: the code is
+/// six digits shown on a screen and typed by hand, so its strength is bounded
+/// by that regardless. What it does need is to be unpredictable to someone who
+/// is not looking at the screen. The clock supplies the entropy, the stack
+/// address supplies whatever ASLR gives, and the counter stops two codes
+/// generated in the same nanosecond from matching.
+fn random_seed() -> u64 {
+    use std::sync::atomic::AtomicU64;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos() as u64);
+    let local = 0_u8;
+    let address = std::ptr::addr_of!(local) as u64;
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    nanos
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(address.rotate_left(17))
+        .wrapping_add(counter)
 }
 
 #[cfg(test)]

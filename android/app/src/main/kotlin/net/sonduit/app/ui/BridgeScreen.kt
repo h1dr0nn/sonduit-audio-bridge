@@ -22,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -46,8 +47,10 @@ fun BridgeScreen(
     telemetry: BridgeController.Snapshot,
     running: Boolean,
     error: String?,
+    pairingCode: String,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onRegenerateCode: () -> Unit,
 ) {
     val colors = LocalSonduitColors.current
 
@@ -66,6 +69,8 @@ fun BridgeScreen(
         )
 
         StatusCard(telemetry = telemetry, running = running)
+
+        PairingCard(code = pairingCode, onRegenerate = onRegenerateCode)
 
         if (error != null) {
             Card {
@@ -112,6 +117,50 @@ fun BridgeScreen(
             color = colors.faint,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/**
+ * The code the desktop needs before it will accept this device.
+ *
+ * Shown whether or not a session is running, because the desktop scans before
+ * the phone is streaming anything and the user needs the code at that moment.
+ * Spaced in threes: six digits read back correctly that way and not as a
+ * single number.
+ */
+@Composable
+private fun PairingCard(code: String, onRegenerate: () -> Unit) {
+    val spaced = if (code.length == 6) "${code.take(3)} ${code.drop(3)}" else code
+
+    Card {
+        Text(
+            text = stringResource(R.string.pairing_title).uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = LocalSonduitColors.current.faint,
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = spaced,
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            TextButton(onClick = onRegenerate) {
+                Text(
+                    text = stringResource(R.string.pairing_new),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+        Text(
+            text = stringResource(R.string.pairing_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = LocalSonduitColors.current.faint,
         )
     }
 }

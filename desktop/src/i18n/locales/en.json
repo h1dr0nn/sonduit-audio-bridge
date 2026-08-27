@@ -61,6 +61,8 @@
   "connection.multicast": "Multicast, any listener",
   "connection.noDevices": "No devices found yet",
   "connection.noEndpoint": "Virtual device not installed",
+  "connection.pairingCode": "Pairing code",
+  "connection.pairingHint": "The six digits shown in the Sonduit app on your phone",
   "connection.sampleRate": "Sample rate",
   "connection.scan": "Scan",
   "connection.scanning": "Scanning",

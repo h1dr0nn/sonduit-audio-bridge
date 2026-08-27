@@ -22,6 +22,7 @@ export function ConnectionPage() {
 
   const [target, setTarget] = useState(NO_TARGET);
   const [typed, setTyped] = useState('');
+  const [pairing, setPairing] = useState('');
   const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState(null);
@@ -38,13 +39,13 @@ export function ConnectionPage() {
     setScanning(true);
     setFailure(null);
     try {
-      await scan();
+      await scan(pairing);
     } catch (reason) {
       setFailure(String(reason));
     } finally {
       setScanning(false);
     }
-  }, [scan]);
+  }, [scan, pairing]);
 
   const handleStart = useCallback(async () => {
     setBusy(true);
@@ -114,7 +115,7 @@ export function ConnectionPage() {
             <Button
               size="sm"
               icon={FiRefreshCw}
-              disabled={!available || scanning}
+              disabled={!available || scanning || pairing.replace(/\D/g, '').length !== 6}
               onClick={handleScan}
             >
               {scanning ? t('connection.scanning') : t('connection.scan')}
@@ -154,7 +155,18 @@ export function ConnectionPage() {
             </ul>
           )}
 
-          <div className="mt-4 border-t border-line-soft pt-4">
+          <div className="mt-4 flex flex-col gap-4 border-t border-line-soft pt-4">
+            <TextField
+              id="pairing-code"
+              label={t('connection.pairingCode')}
+              hint={t('connection.pairingHint')}
+              placeholder="000000"
+              inputMode="numeric"
+              maxLength={7}
+              value={pairing}
+              disabled={running}
+              onChange={(event) => setPairing(event.target.value)}
+            />
             <TextField
               id="manual-address"
               label={t('connection.address')}

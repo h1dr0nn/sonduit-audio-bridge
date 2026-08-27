@@ -119,6 +119,28 @@ object BridgeController {
 
     fun isRunning(): Boolean = running
 
+    /**
+     * The code the desktop has to be given before it will accept this device.
+     *
+     * Read from Rust rather than generated here: the announce thread needs the
+     * same value, and two copies of a secret are one copy too many.
+     */
+    fun pairingCode(): String = try {
+        bridge.pairingCode()
+    } catch (error: Exception) {
+        Log.e(TAG, "pairing code unavailable", error)
+        ""
+    }
+
+    /** Replace the pairing code. Any desktop paired with the old one stops working. */
+    fun regeneratePairingCode() {
+        try {
+            bridge.regeneratePairingCode()
+        } catch (error: Exception) {
+            Log.e(TAG, "could not regenerate the pairing code", error)
+        }
+    }
+
     /** A snapshot for the UI. Safe to call from any thread. */
     fun telemetry(): Snapshot {
         if (!running) return Snapshot.EMPTY

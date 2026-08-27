@@ -113,9 +113,11 @@ export function useBridge() {
     };
   }, []);
 
-  const scan = useCallback(async () => {
+  const scan = useCallback(async (code) => {
     if (!hasBackend()) return [];
-    const devices = await invoke('bridge_scan');
+    // The backend refuses a code that is not six digits, and every device that
+    // cannot prove it knows this one is dropped before it reaches the list.
+    const devices = await invoke('bridge_scan', { code });
     store.devices = devices;
     publish();
     return devices;

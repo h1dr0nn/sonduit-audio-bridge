@@ -57,12 +57,13 @@ pub fn bridge_snapshot(state: State<'_, BridgeState>) -> BridgeSnapshot {
     state.snapshot()
 }
 
-/// Broadcast a discovery probe and return whatever answered.
+/// Broadcast a discovery probe and return the devices that answered with a
+/// tag proving they know `code`.
 ///
 /// Blocking for as long as the scan window, so it runs off the async runtime.
 #[tauri::command]
-pub async fn bridge_scan() -> Result<Vec<DiscoveredDevice>, String> {
-    tauri::async_runtime::spawn_blocking(bridge::discover)
+pub async fn bridge_scan(code: String) -> Result<Vec<DiscoveredDevice>, String> {
+    tauri::async_runtime::spawn_blocking(move || bridge::discover(&code))
         .await
         .map_err(|error| format!("background task failed: {error}"))?
         .map_err(Into::into)

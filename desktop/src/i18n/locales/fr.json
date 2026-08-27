@@ -61,6 +61,8 @@
   "connection.multicast": "Multicast, tout recepteur",
   "connection.noDevices": "Aucun appareil trouvé pour l’instant",
   "connection.noEndpoint": "Périphérique virtuel non installé",
+  "connection.pairingCode": "Code de couplage",
+  "connection.pairingHint": "Les six chiffres affiches dans Sonduit sur le telephone",
   "connection.sampleRate": "Fréquence d’échantillonnage",
   "connection.scan": "Rechercher",
   "connection.scanning": "Recherche",

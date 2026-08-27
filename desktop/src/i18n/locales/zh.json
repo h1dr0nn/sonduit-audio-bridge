@@ -61,6 +61,8 @@
   "connection.multicast": "组播，任意接收端",
   "connection.noDevices": "尚未发现设备",
   "connection.noEndpoint": "未安装虚拟设备",
+  "connection.pairingCode": "配对码",
+  "connection.pairingHint": "手机上 Sonduit 应用显示的六位数字",
   "connection.sampleRate": "采样率",
   "connection.scan": "扫描",
   "connection.scanning": "搜索中",

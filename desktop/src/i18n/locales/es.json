@@ -61,6 +61,8 @@
   "connection.multicast": "Multicast, cualquier receptor",
   "connection.noDevices": "Aún no se encontraron dispositivos",
   "connection.noEndpoint": "Dispositivo virtual no instalado",
+  "connection.pairingCode": "Codigo de emparejamiento",
+  "connection.pairingHint": "Los seis digitos que muestra la app Sonduit en el telefono",
   "connection.sampleRate": "Frecuencia de muestreo",
   "connection.scan": "Buscar",
   "connection.scanning": "Buscando",

@@ -61,6 +61,8 @@
   "connection.multicast": "マルチキャスト、すべての受信側",
   "connection.noDevices": "デバイスが見つかりません",
   "connection.noEndpoint": "仮想デバイスが未インストール",
+  "connection.pairingCode": "ペアリングコード",
+  "connection.pairingHint": "端末の Sonduit アプリに表示されている 6 桁の数字",
   "connection.sampleRate": "サンプルレート",
   "connection.scan": "スキャン",
   "connection.scanning": "検索中",

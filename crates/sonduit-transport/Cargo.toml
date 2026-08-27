@@ -9,6 +9,11 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Pairing authentication. RustCrypto, both dual MIT/Apache-2.0, both audited
+# and both tiny; writing an HMAC by hand for a security boundary would be a
+# poor trade.
+hmac = "0.12"
+sha2 = "0.10"
 sonduit-core.workspace = true
 thiserror.workspace = true
 

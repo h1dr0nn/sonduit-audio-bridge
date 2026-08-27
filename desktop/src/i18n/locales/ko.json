@@ -61,6 +61,8 @@
   "connection.multicast": "멀티캐스트, 모든 수신기",
   "connection.noDevices": "아직 찾은 기기가 없습니다",
   "connection.noEndpoint": "가상 장치가 설치되지 않음",
+  "connection.pairingCode": "페어링 코드",
+  "connection.pairingHint": "휴대폰의 Sonduit 앱에 표시된 여섯 자리 숫자",
   "connection.sampleRate": "샘플 레이트",
   "connection.scan": "검색",
   "connection.scanning": "검색 중",

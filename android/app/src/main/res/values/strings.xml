@@ -24,6 +24,10 @@
          as a value that was measured as zero. -->
     <string name="value_unknown">—</string>
 
+    <string name="pairing_title">Pairing code</string>
+    <string name="pairing_new">New code</string>
+    <string name="pairing_hint">Type this on the computer before scanning. Without it, this phone will not appear.</string>
+
     <string name="hint_same_network">The phone and the computer must be on the same network, or connected by USB tethering.</string>
 
     <string name="channel_name">Bridge</string>

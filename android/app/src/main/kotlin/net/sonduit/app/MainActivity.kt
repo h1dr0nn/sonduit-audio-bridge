@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
                 var telemetry by remember { mutableStateOf(BridgeController.Snapshot.EMPTY) }
                 var running by remember { mutableStateOf(BridgeController.isRunning()) }
                 var error by remember { mutableStateOf(BridgeController.lastError) }
+                var pairingCode by remember { mutableStateOf(BridgeController.pairingCode()) }
 
                 LaunchedEffect(Unit) {
                     // Four a second, matching the desktop. Fast enough to read
@@ -69,10 +70,15 @@ class MainActivity : ComponentActivity() {
                     telemetry = telemetry,
                     running = running,
                     error = error,
+                    pairingCode = pairingCode,
                     onStart = { startBridge() },
                     onStop = {
                         BridgeService.stop(this@MainActivity)
                         running = false
+                    },
+                    onRegenerateCode = {
+                        BridgeController.regeneratePairingCode()
+                        pairingCode = BridgeController.pairingCode()
                     },
                 )
             }
