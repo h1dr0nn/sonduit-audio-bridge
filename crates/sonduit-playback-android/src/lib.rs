@@ -1,16 +1,21 @@
 //! Android audio playback.
 //!
-//! Only the platform-independent parts compile off Android, so the workspace
-//! builds on any host.
+//! The AAudio binding is Android-only; everything that decides *what* to play
+//! lives here and compiles anywhere, so the interesting logic is tested on the
+//! development machine rather than only on a device.
 //!
-//! # Status
-//!
-//! The AAudio implementation is not written yet; see `docs/roadmap.md`.
 //! ADR-003 records why this targets `ndk::audio` rather than the `oboe` crate.
 
-#![forbid(unsafe_code)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sonduit_core::format::Format;
+use sonduit_core::jitter::{JitterBuffer, PopOutcome};
+
+#[cfg(target_os = "android")]
+pub mod aaudio;
+
+#[cfg(target_os = "android")]
+pub use aaudio::Playback;
 
 /// What the device actually granted, which is often not what was requested.
 ///
@@ -50,17 +55,327 @@ pub enum PlaybackError {
     Platform(String),
 }
 
-/// Open an output stream, requesting exclusive low-latency mode.
+/// Something the audio callback can pull PCM from.
 ///
-/// # Errors
-/// Returns [`PlaybackError::Unsupported`] off Android.
-pub fn open(_format: Format) -> Result<GrantedStream, PlaybackError> {
-    #[cfg(target_os = "android")]
-    {
-        todo!("AAudio stream open via ndk::audio: see docs/roadmap.md")
+/// `fill` runs on a realtime thread. It must not allocate, must not block, and
+/// must never call into the JVM: a GC pause inside an audio callback is an
+/// audible dropout.
+pub trait PcmSource: Send {
+    /// Fill `out` with interleaved samples for `frames` frames.
+    ///
+    /// Returns the frames actually written. Writing fewer than asked for is
+    /// allowed; the caller conceals the remainder with silence.
+    fn fill(&mut self, out: &mut [i16], frames: usize) -> usize;
+}
+
+/// What the audio callback actually holds.
+///
+/// Separate from [`PcmSource`] because the callback has shared access, not
+/// exclusive access: the receive thread is writing into the same buffer. The
+/// blanket implementation below supplies the only sound way to bridge the two,
+/// which is a lock the callback refuses to wait on.
+pub trait CallbackSource: Send + Sync {
+    /// Fill `out` with interleaved samples, returning the frames written.
+    ///
+    /// Must return promptly. Returning zero is always allowed and is heard as
+    /// a brief dropout, which is far better than the dropout caused by making
+    /// a realtime thread wait.
+    fn fill(&self, out: &mut [i16], frames: usize) -> usize;
+}
+
+impl<T: PcmSource> CallbackSource for std::sync::Mutex<T> {
+    fn fill(&self, out: &mut [i16], frames: usize) -> usize {
+        // try_lock, not lock. Blocking a realtime thread on a normal-priority
+        // thread's work is the priority inversion this whole design exists to
+        // avoid; a missed block is silence, an inverted one is a stall.
+        match self.try_lock() {
+            Ok(mut source) => source.fill(out, frames),
+            Err(_) => 0,
+        }
     }
-    #[cfg(not(target_os = "android"))]
-    {
-        Err(PlaybackError::Unsupported)
+}
+
+/// Counters the audio callback maintains, read by the UI thread.
+///
+/// Atomics rather than a mutex: the UI reading telemetry must never be able to
+/// make the audio callback wait.
+#[derive(Debug, Default)]
+pub struct PlaybackCounters {
+    /// Frames handed to the device.
+    pub frames_played: AtomicU64,
+    /// Frames of silence written because the source had nothing.
+    pub frames_underrun: AtomicU64,
+    /// Times the callback ran.
+    pub callbacks: AtomicU64,
+}
+
+impl PlaybackCounters {
+    /// Frames played so far.
+    #[must_use]
+    pub fn frames_played(&self) -> u64 {
+        self.frames_played.load(Ordering::Relaxed)
+    }
+
+    /// Frames of silence emitted to cover an empty source.
+    #[must_use]
+    pub fn frames_underrun(&self) -> u64 {
+        self.frames_underrun.load(Ordering::Relaxed)
+    }
+
+    /// Fraction of played frames that were concealment, in percent.
+    #[must_use]
+    pub fn underrun_percent(&self) -> f64 {
+        let played = self.frames_played();
+        if played == 0 {
+            return 0.0;
+        }
+        self.frames_underrun() as f64 * 100.0 / played as f64
+    }
+}
+
+/// Drains a jitter buffer into the audio callback.
+///
+/// The buffer deals in whole packets and the callback asks for whatever the
+/// device's burst size happens to be, which is never the same number. The
+/// leftover of a partly consumed packet is carried here; without it every
+/// callback would either discard the tail of a packet or stall waiting for a
+/// whole one.
+pub struct JitterSource {
+    buffer: JitterBuffer,
+    format: Format,
+    /// Bytes of the current packet not yet handed to the device.
+    residue: Vec<u8>,
+    /// How far into `residue` the callback has read.
+    offset: usize,
+    /// Frames of silence emitted to cover packets that never arrived.
+    concealed: u64,
+}
+
+impl JitterSource {
+    /// Wrap a jitter buffer.
+    #[must_use]
+    pub fn new(buffer: JitterBuffer, format: Format) -> Self {
+        Self {
+            buffer,
+            format,
+            residue: Vec::new(),
+            offset: 0,
+            concealed: 0,
+        }
+    }
+
+    /// The buffer being drained, for pushing arriving packets into.
+    pub fn buffer_mut(&mut self) -> &mut JitterBuffer {
+        &mut self.buffer
+    }
+
+    /// The buffer being drained, for reading statistics.
+    #[must_use]
+    pub const fn buffer(&self) -> &JitterBuffer {
+        &self.buffer
+    }
+
+    /// Frames of silence emitted because a packet never arrived.
+    ///
+    /// Distinct from an underrun: this is loss the network caused, not the
+    /// application failing to keep up.
+    #[must_use]
+    pub const fn concealed_frames(&self) -> u64 {
+        self.concealed
+    }
+
+    /// Pull the next packet, or a packet's worth of concealment.
+    ///
+    /// Returns false when there is nothing to play at all, which is the
+    /// difference between "the sender stopped" and "one packet was lost".
+    fn refill(&mut self) -> bool {
+        match self.buffer.pop() {
+            PopOutcome::Packet(pcm) => {
+                self.residue = pcm;
+                self.offset = 0;
+                true
+            }
+            PopOutcome::Lost => {
+                // Silence of exactly one packet keeps the timeline aligned.
+                // Skipping the gap instead would shorten playback by a packet
+                // and shift everything after it earlier, which is worse than
+                // the click: the drift estimator would then chase a step that
+                // never happened on the sender.
+                let bytes = self.packet_bytes();
+                self.residue = vec![0; bytes];
+                self.offset = 0;
+                self.concealed += (bytes / self.format.bytes_per_frame()) as u64;
+                true
+            }
+            PopOutcome::Starved => false,
+        }
+    }
+
+    fn packet_bytes(&self) -> usize {
+        sonduit_core::format::PCM_PAYLOAD_BYTES / self.format.bytes_per_frame()
+            * self.format.bytes_per_frame()
+    }
+}
+
+impl PcmSource for JitterSource {
+    fn fill(&mut self, out: &mut [i16], frames: usize) -> usize {
+        let channels = self.format.channels as usize;
+        let wanted = frames * channels;
+        let mut written = 0;
+
+        while written < wanted {
+            if self.offset >= self.residue.len() && !self.refill() {
+                break;
+            }
+
+            let available = (self.residue.len() - self.offset) / 2;
+            let take = available.min(wanted - written);
+            if take == 0 {
+                break;
+            }
+
+            for index in 0..take {
+                let at = self.offset + index * 2;
+                out[written + index] = i16::from_le_bytes([self.residue[at], self.residue[at + 1]]);
+            }
+
+            self.offset += take * 2;
+            written += take;
+        }
+
+        written / channels
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sonduit_core::format::PCM_PAYLOAD_BYTES;
+    use sonduit_core::jitter::JitterConfig;
+
+    fn source() -> JitterSource {
+        let format = Format::stereo_48k();
+        let config = JitterConfig {
+            // One packet of target depth, so tests do not have to push thirty
+            // milliseconds of audio before anything plays.
+            target_ms: 6,
+            min_ms: 6,
+            ..JitterConfig::default()
+        };
+        JitterSource::new(JitterBuffer::new(format, config), format)
+    }
+
+    /// A packet whose every sample is `value`.
+    fn packet(value: i16) -> Vec<u8> {
+        value
+            .to_le_bytes()
+            .iter()
+            .copied()
+            .cycle()
+            .take(PCM_PAYLOAD_BYTES)
+            .collect()
+    }
+
+    fn push(source: &mut JitterSource, sequence: u16, value: i16) {
+        let frames = (PCM_PAYLOAD_BYTES / 4) as u32;
+        source
+            .buffer_mut()
+            .push(sequence, u32::from(sequence) * frames, 0, packet(value));
+    }
+
+    #[test]
+    fn an_empty_buffer_produces_no_frames_rather_than_noise() {
+        // The callback fills the rest with silence. Returning a frame count
+        // that was never written would leave the device playing whatever was
+        // in the buffer.
+        let mut source = source();
+        let mut out = [0_i16; 256];
+        assert_eq!(source.fill(&mut out, 128), 0);
+    }
+
+    #[test]
+    fn a_callback_smaller_than_a_packet_leaves_the_rest_for_the_next_one() {
+        // The device burst size is never a whole packet, so this is the normal
+        // case rather than an edge one.
+        let mut source = source();
+        push(&mut source, 0, 1000);
+
+        let mut out = [0_i16; 64];
+        assert_eq!(source.fill(&mut out, 32), 32);
+        assert!(out.iter().all(|&sample| sample == 1000));
+
+        // The rest of the same packet is still there.
+        let mut out = [0_i16; 64];
+        assert_eq!(source.fill(&mut out, 32), 32);
+        assert!(out.iter().all(|&sample| sample == 1000));
+    }
+
+    #[test]
+    fn a_callback_larger_than_a_packet_spans_packets_without_a_gap() {
+        let mut source = source();
+        push(&mut source, 0, 1000);
+        push(&mut source, 1, 2000);
+
+        let frames_per_packet = PCM_PAYLOAD_BYTES / 4;
+        let mut out = vec![0_i16; frames_per_packet * 2 * 2];
+        let written = source.fill(&mut out, frames_per_packet + 10);
+
+        assert_eq!(written, frames_per_packet + 10);
+        assert_eq!(out[0], 1000, "starts in the first packet");
+        assert_eq!(
+            out[frames_per_packet * 2],
+            2000,
+            "continues straight into the second"
+        );
+    }
+
+    #[test]
+    fn a_lost_packet_becomes_a_packet_of_silence_not_a_skip() {
+        // Skipping would shorten the timeline by a packet and shift everything
+        // after it earlier, which the drift estimator would then chase.
+        let mut source = source();
+        push(&mut source, 0, 1000);
+        push(&mut source, 2, 3000);
+
+        let frames_per_packet = PCM_PAYLOAD_BYTES / 4;
+        let mut out = vec![0_i16; frames_per_packet * 3 * 2];
+        let written = source.fill(&mut out, frames_per_packet * 3);
+
+        assert_eq!(written, frames_per_packet * 3);
+        assert_eq!(out[0], 1000);
+        assert_eq!(out[frames_per_packet * 2], 0, "the gap is silence");
+        assert_eq!(out[frames_per_packet * 4], 3000, "and then packet two");
+        assert_eq!(source.concealed_frames(), frames_per_packet as u64);
+    }
+
+    #[test]
+    fn samples_are_read_back_in_the_byte_order_they_were_sent() {
+        // Getting this wrong is inaudible on a constant tone and catastrophic
+        // on anything else, so it is asserted explicitly.
+        let mut source = source();
+        let frames = (PCM_PAYLOAD_BYTES / 4) as u32;
+        let mut pcm = vec![0_u8; PCM_PAYLOAD_BYTES];
+        pcm[0] = 0x34;
+        pcm[1] = 0x12;
+        source.buffer_mut().push(0, 0, 0, pcm);
+
+        let mut out = [0_i16; 2];
+        source.fill(&mut out, 1);
+        assert_eq!(out[0], 0x1234);
+        let _ = frames;
+    }
+
+    #[test]
+    fn underrun_percent_is_zero_before_anything_plays() {
+        let counters = PlaybackCounters::default();
+        assert_eq!(counters.underrun_percent(), 0.0);
+    }
+
+    #[test]
+    fn underrun_percent_is_the_share_of_concealed_frames() {
+        let counters = PlaybackCounters::default();
+        counters.frames_played.store(1_000, Ordering::Relaxed);
+        counters.frames_underrun.store(25, Ordering::Relaxed);
+        assert_eq!(counters.underrun_percent(), 2.5);
     }
 }

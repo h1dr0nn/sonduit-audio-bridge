@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sonduit</string>
+
+    <string name="action_start">Start listening</string>
+    <string name="action_stop">Stop</string>
+
+    <string name="status_idle">Not listening</string>
+    <string name="status_waiting">Listening, no audio yet</string>
+    <string name="status_streaming_short">Playing</string>
+    <string name="status_streaming">Playing %1$d kHz, %2$d ms buffered</string>
+
+    <string name="format_summary">%1$d kHz, %2$d channels</string>
+
+    <string name="stat_buffer">Buffer</string>
+    <string name="stat_jitter">Jitter</string>
+    <string name="stat_loss">Loss</string>
+    <string name="stat_packets">Packets</string>
+    <string name="stat_malformed">Malformed</string>
+
+    <string name="hint_same_network">The phone and the computer must be on the same network, or connected by USB tethering.</string>
+
+    <string name="channel_name">Bridge</string>
+    <string name="channel_description">Shown while Sonduit is playing audio from a computer.</string>
+</resources>

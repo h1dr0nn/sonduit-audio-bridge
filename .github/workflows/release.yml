@@ -207,16 +207,16 @@ jobs:
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
             build -p sonduit-ffi --release
 
-      # Release signing needs a keystore this repository does not have. The
-      # build stops at an unsigned artifact rather than pretending otherwise;
-      # see docs/roadmap.md.
-      - name: Build APK if the Gradle project exists
-        run: |
-          if [ -f android/settings.gradle ] || [ -f android/settings.gradle.kts ]; then
-            cd android && ./gradlew assembleRelease --no-daemon
-          else
-            echo "::notice::android/ has no Gradle project yet; publishing native libraries only"
-          fi
+      # Release signing needs a keystore this repository does not have, so the
+      # APK this produces is unsigned and cannot be installed as-is. That is
+      # deliberate: an artifact signed with a throwaway debug key looks
+      # installable and locks the application id to a key nobody controls.
+      # See docs/roadmap.md.
+      - name: Build the release APK
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon -PrustRelease
 
       - uses: actions/upload-artifact@v4
         with:
@@ -224,6 +224,7 @@ jobs:
           path: |
             target/*-linux-android*/release/libsonduit_ffi.so
             android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/release/*-unsigned.apk
           if-no-files-found: error
 
   publish:

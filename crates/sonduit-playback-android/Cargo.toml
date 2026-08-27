@@ -19,6 +19,12 @@ thiserror.workspace = true
 # Oboe 1.8.1 and has had no release since March 2024, while ndk::audio is
 # maintained and is what cpal migrated to.
 [target.'cfg(target_os = "android")'.dependencies]
+# api-level-27 matches the minSdk ADR-003 sets. Raising it to reach
+# AAudioStreamBuilder_setUsage (28) and setAllowedCapturePolicy (29) was
+# tempting and would have been wrong: both default to exactly what this app
+# wants, MEDIA and ALLOW_CAPTURE_BY_ALL, so the calls buy nothing while the
+# higher floor would cost devices. Linking a symbol above minSdk fails at load
+# time on the devices below it, not at build time.
 ndk = { version = "0.9", features = ["audio", "api-level-27"] }
 
 [lints]

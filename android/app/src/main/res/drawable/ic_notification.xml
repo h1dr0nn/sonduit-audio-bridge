@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The status bar tints this to a single colour and discards everything else,
+    so it is a flat white silhouette rather than the launcher icon. Using the
+    launcher icon here produces a grey blob on every device.
+
+    No android:tint: the platform applies its own, and referencing an AppCompat
+    theme attribute from a plain Material theme fails resource linking.
+
+    Same mark as the launcher: four bars rising to the centre.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M3,10 h2 v4 h-2 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7.5,7 h2 v10 h-2 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M14.5,7 h2 v10 h-2 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M19,10 h2 v4 h-2 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.5"
+        android:pathData="M10.5,11 h3 v2 h-3 z" />
+</vector>

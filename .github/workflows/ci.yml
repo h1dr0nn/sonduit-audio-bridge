@@ -148,9 +148,9 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      # Cross-compiling the shared Rust is possible today. The Gradle project
-      # does not exist yet, so the APK step is gated rather than faked; see
-      # docs/roadmap.md.
+      # The Rust is checked for every ABI even though only one is needed to
+      # build a debug APK: a linker error on armeabi-v7a is worth catching here
+      # rather than at release time.
       - name: Cross-compile the shared core
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
@@ -158,10 +158,18 @@ jobs:
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
             build -p sonduit-ffi -p sonduit-playback-android --release
 
+      # Gradle drives cargo-ndk itself and generates the UniFFI bindings from
+      # the library it built, so this is the step that proves the Kotlin and
+      # the Rust agree on the interface.
       - name: Build APK
-        run: |
-          if [ -f android/settings.gradle ] || [ -f android/settings.gradle.kts ]; then
-            cd android && ./gradlew assembleDebug --no-daemon
-          else
-            echo "::notice::android/ has no Gradle project yet; skipping APK build"
-          fi
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonduit-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
