@@ -2,32 +2,68 @@
 @tailwind components;
 @tailwind utilities;
 
-html {
-  overflow-x: hidden;
-  background: linear-gradient(to bottom right, #fafafa, #f2f2f7);
-}
-
-html.dark {
-  background: linear-gradient(to bottom right, #101012, #0f0f12);
-}
-
-#root {
-  min-height: 100vh;
-  overflow-x: hidden;
-}
+/* ---------------------------------------------------------------------------
+ * Sonduit design tokens.
+ *
+ * The window is transparent with decorations disabled; the native acrylic
+ * backdrop is applied from Rust (core/window.rs). Everything below paints the
+ * rounded shell that sits on top of it, so `html` and `body` must stay
+ * transparent or the blur is covered up.
+ * ------------------------------------------------------------------------ */
 
 :root {
-  font-family: 'Inter', 'SF Pro Display', 'SF Pro Text', system-ui, -apple-system, sans-serif;
-  color: #0f172a;
-  background: linear-gradient(180deg, #fdfdff 0%, #f2f2f7 100%);
-  min-height: 100vh;
-  overflow-x: hidden;
-  transition: background-color 180ms ease, color 180ms ease;
+  --font-sans: 'Inter', 'SF Pro Display', 'SF Pro Text', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, ui-monospace, monospace;
 
-  /* Fixed layout scale */
-  font-size: 18px;
+  /* Surfaces */
+  --surface-app: rgba(244, 243, 240, 0.82);
+  --surface-card: #ffffff;
+  --surface-sunken: #f1f0ed;
+  --surface-rail: #1b1b1d;
+  --surface-invert: #1b1b1d;
 
-  /* Dynamic text scaling variables (Default: Medium) */
+  /* Text */
+  --text-primary: #17171a;
+  --text-secondary: #6f6f76;
+  --text-tertiary: #9b9ba2;
+  --text-on-invert: #f7f7f5;
+  --text-on-accent: #ffffff;
+
+  /* Lines */
+  --line-soft: rgba(23, 23, 26, 0.07);
+  --line-strong: rgba(23, 23, 26, 0.12);
+
+  /* Accent — user configurable, seeded by useSettings */
+  --accent-color: #7c93e8;
+  --accent-soft: rgba(124, 147, 232, 0.14);
+
+  /* Semantic */
+  --ok: #2fa96b;
+  --warn: #d99b28;
+  --danger: #d9503f;
+
+  /* Titlebar floats over the shell, so it follows the theme */
+  --titlebar-text: rgba(23, 23, 26, 0.78);
+  --titlebar-text-dim: rgba(23, 23, 26, 0.45);
+  --titlebar-hover: rgba(23, 23, 26, 0.08);
+  --titlebar-close-hover: #d9503f;
+
+  /* Radius */
+  --radius-shell: 14px;
+  --radius-card: 22px;
+  --radius-inner: 16px;
+  --radius-pill: 999px;
+
+  /* Elevation — soft and wide, never harsh */
+  --shadow-card: 0 1px 2px rgba(23, 23, 26, 0.04), 0 8px 24px rgba(23, 23, 26, 0.06);
+  --shadow-raised: 0 2px 6px rgba(23, 23, 26, 0.06), 0 16px 40px rgba(23, 23, 26, 0.1);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 140ms;
+  --duration-normal: 200ms;
+
+  /* Dynamic text scaling (SettingsContext writes these) */
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
@@ -36,115 +72,185 @@ html.dark {
   --text-2xl: 1.5rem;
   --text-3xl: 1.875rem;
   --text-4xl: 2.25rem;
+
+  font-family: var(--font-sans);
+  font-size: 16px;
+}
+
+.dark {
+  --surface-app: rgba(26, 26, 30, 0.70);
+  --surface-card: #2a2a31;
+  --surface-sunken: #1f1f25;
+  --surface-rail: #131316;
+  --surface-invert: #f2f1ee;
+
+  --text-primary: #f4f4f2;
+  --text-secondary: #a2a2aa;
+  --text-tertiary: #74747c;
+  --text-on-invert: #17171a;
+
+  --line-soft: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+
+  --accent-soft: rgba(124, 147, 232, 0.2);
+
+  --titlebar-text: rgba(255, 255, 255, 0.88);
+  --titlebar-text-dim: rgba(255, 255, 255, 0.5);
+  --titlebar-hover: rgba(255, 255, 255, 0.12);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-raised: 0 2px 6px rgba(0, 0, 0, 0.34), 0 16px 40px rgba(0, 0, 0, 0.4);
+}
+
+/* The transparent stack: nothing here may paint an opaque background, or the
+ * native acrylic behind the window is hidden. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
 }
 
 body {
-  margin: 0;
-  min-height: 100vh;
-  overflow-x: hidden;
-  background: radial-gradient(circle at 20% 20%, rgba(0, 122, 255, 0.08), transparent 25%),
-    radial-gradient(circle at 80% 0%, rgba(0, 0, 0, 0.06), transparent 30%),
-    #f2f2f7;
-  color: #111827;
-  transition: background-color 180ms ease, color 180ms ease;
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
 }
 
-.dark body {
-  background: radial-gradient(circle at 15% 20%, rgba(255, 255, 255, 0.05), transparent 28%),
-    radial-gradient(circle at 90% 10%, rgba(0, 0, 0, 0.35), transparent 35%),
-    #1c1c1e;
-  color: #e5e7eb;
+/* The rounded shell. Its own translucency lets the acrylic read through. */
+.app-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-app);
+  border-radius: var(--radius-shell);
+  border: 1px solid var(--line-soft);
+  overflow: hidden;
 }
 
-.glass-surface {
-  backdrop-filter: blur(32px);
-  -webkit-backdrop-filter: blur(32px);
+/* ---- Custom window chrome (decorations: false) ---- */
+
+.titlebar {
+  height: 38px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  user-select: none;
+}
+
+.titlebar-drag {
+  flex: 1;
+  height: 100%;
+}
+
+.titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--titlebar-text);
+  pointer-events: none;
+}
+
+.titlebar-controls {
+  display: flex;
+  height: 100%;
+}
+
+.titlebar-btn {
+  width: 44px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--titlebar-text-dim);
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+  transition:
+    background var(--duration-fast) ease,
+    color var(--duration-fast) ease;
+}
+
+.titlebar-btn:hover {
+  background: var(--titlebar-hover);
+  color: var(--titlebar-text);
+}
+
+.titlebar-btn--close:hover {
+  background: var(--titlebar-close-hover);
+  color: #fff;
+}
+
+/* ---- Reusable surfaces ---- */
+
+.card {
+  background: var(--surface-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--line-soft);
+}
+
+.card-sunken {
+  background: var(--surface-sunken);
+  border-radius: var(--radius-inner);
+  border: 1px solid var(--line-soft);
+}
+
+.rail {
+  background: var(--surface-rail);
+  border-radius: var(--radius-pill);
+}
+
+/* ---- Scrollbars ---- */
+
+.scroll-area {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.scroll-area::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--radius-pill);
+}
+
+.scroll-area::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 ::selection {
-  background: rgba(0, 122, 255, 0.2);
-  color: #0f172a;
+  background: var(--accent-soft);
 }
 
-.dark ::selection {
-  background: rgba(0, 122, 255, 0.35);
-  color: #f8fafc;
-}
+/* ---- Motion ---- */
 
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.12);
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-@layer utilities {
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
-  }
-
-  .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
-}
-
-/* Custom Animations */
-@keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-@keyframes pulse-glow {
-
+@keyframes sonduit-pulse {
   0%,
   100% {
-    filter: brightness(1);
+    opacity: 1;
   }
-
   50% {
-    filter: brightness(1.15);
+    opacity: 0.35;
   }
 }
 
-@keyframes shake {
-
-  0%,
-  100% {
-    transform: translateX(0);
-  }
-
-  25% {
-    transform: translateX(-10px);
-  }
-
-  75% {
-    transform: translateX(10px);
-  }
+.animate-live {
+  animation: sonduit-pulse 1.8s var(--ease-out) infinite;
 }
 
-.animate-shimmer {
-  animation: shimmer 2s infinite;
-}
-
-.animate-pulse-glow {
-  animation: pulse-glow 2s ease-in-out infinite;
-}
-
-.animate-shake {
-  animation: shake 0.5s ease-in-out;
+@media (prefers-reduced-motion: reduce) {
+  .animate-live {
+    animation: none;
+  }
 }

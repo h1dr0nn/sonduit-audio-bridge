@@ -1,96 +1,66 @@
 import React from 'react';
-import { FiArrowLeft } from 'react-icons/fi';
-import { Card } from '../components/Card';
+import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
+import { SettingRow } from '../components/ui/SettingRow';
 import { useSettingsContext } from '../context/SettingsContext';
 import { useTranslation, LANGUAGES } from '../i18n';
 import { cn } from '../utils/cn';
-import { themeClasses } from '../utils/themeColors';
 
-const ACCENT_COLORS = ['#007AFF', '#5856D6', '#34C759', '#FF9500', '#FF3B30', '#AF52DE'];
+const ACCENT_COLORS = ['#7c93e8', '#007aff', '#5856d6', '#2fa96b', '#d99b28', '#d9503f'];
 const FONT_SIZES = ['small', 'medium', 'large'];
+const TRANSPORTS = ['auto', 'wifi', 'usb'];
 
-function Row({ label, description, children }) {
-  return (
-    <div className="flex items-center justify-between gap-6 py-3">
-      <div>
-        <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{label}</p>
-        {description && (
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{description}</p>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
+const TRANSPORT_LABEL_KEY = {
+  auto: 'connection.transportAuto',
+  wifi: 'connection.transportWifi',
+  usb: 'connection.transportUsb',
+};
 
-export function SettingsPage({ onBack, theme, onToggleTheme, version }) {
+const controlClass = cn(
+  'h-9 rounded-pill border border-line-soft bg-sunken px-3 text-sm text-ink',
+  'outline-none transition-colors duration-fast ease-out hover:border-line-strong',
+);
+
+export function SettingsPage({ theme, onToggleTheme }) {
   const { settings, updateSetting, resetSettings } = useSettingsContext();
   const { t } = useTranslation();
 
-  const selectClass = cn(
-    'rounded-card border px-3 py-2 text-sm outline-none',
-    'text-slate-900 dark:text-slate-100 dark:[color-scheme:dark]',
-    themeClasses.button,
-  );
-
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 p-8">
-      <header className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label={t('common.back')}
-          className={cn(
-            'rounded-full border p-2.5 transition-colors duration-smooth',
-            themeClasses.button,
-          )}
-        >
-          <FiArrowLeft className="h-5 w-5 text-slate-700 dark:text-slate-200" />
-        </button>
-        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-50">
-          {t('settings.title')}
-        </h1>
+    <div className="flex flex-col gap-4">
+      <header className="px-1">
+        <h1 className="text-3xl font-semibold tracking-tight text-ink">{t('settings.title')}</h1>
       </header>
 
       <Card title={t('settings.appearance')}>
-        <Row label={t('settings.theme')} description={t('settings.themeDesc')}>
-          <button
-            type="button"
-            onClick={onToggleTheme}
-            className={cn(
-              'rounded-full border px-4 py-2 text-sm font-medium transition-colors duration-smooth',
-              themeClasses.button,
-            )}
-          >
+        <SettingRow label={t('settings.theme')} description={t('settings.themeDesc')}>
+          <Button onClick={onToggleTheme} size="sm">
             {theme === 'dark' ? t('common.dark') : t('common.light')}
-          </button>
-        </Row>
+          </Button>
+        </SettingRow>
 
-        <Row label={t('settings.accentColor')} description={t('settings.accentColorDesc')}>
-          <div className="flex gap-2">
-            {ACCENT_COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                aria-label={color}
-                onClick={() => updateSetting('accentColor', color)}
-                style={{ backgroundColor: color }}
-                className={cn(
-                  'h-7 w-7 rounded-full transition-transform duration-smooth',
-                  settings.accentColor === color
-                    ? 'ring-2 ring-slate-900 ring-offset-2 dark:ring-white dark:ring-offset-slate-900'
-                    : 'hover:scale-110',
-                )}
-              />
-            ))}
-          </div>
-        </Row>
+        <SettingRow label={t('settings.accentColor')} description={t('settings.accentColorDesc')}>
+          {ACCENT_COLORS.map((color) => (
+            <button
+              key={color}
+              type="button"
+              aria-label={color}
+              onClick={() => updateSetting('accentColor', color)}
+              style={{ backgroundColor: color }}
+              className={cn(
+                'h-6 w-6 rounded-pill transition-transform duration-fast ease-out',
+                settings.accentColor === color
+                  ? 'ring-2 ring-offset-2 ring-[var(--text-primary)] ring-offset-[var(--surface-card)]'
+                  : 'hover:scale-110',
+              )}
+            />
+          ))}
+        </SettingRow>
 
-        <Row label={t('settings.fontSize')} description={t('settings.fontSizeDesc')}>
+        <SettingRow label={t('settings.fontSize')} description={t('settings.fontSizeDesc')}>
           <select
             value={settings.fontSize}
             onChange={(event) => updateSetting('fontSize', event.target.value)}
-            className={selectClass}
+            className={controlClass}
           >
             {FONT_SIZES.map((size) => (
               <option key={size} value={size}>
@@ -98,13 +68,13 @@ export function SettingsPage({ onBack, theme, onToggleTheme, version }) {
               </option>
             ))}
           </select>
-        </Row>
+        </SettingRow>
 
-        <Row label={t('settings.language')} description={t('settings.languageDesc')}>
+        <SettingRow label={t('settings.language')} description={t('settings.languageDesc')}>
           <select
             value={settings.language}
             onChange={(event) => updateSetting('language', event.target.value)}
-            className={selectClass}
+            className={controlClass}
           >
             {LANGUAGES.map((language) => (
               <option key={language.code} value={language.code}>
@@ -112,11 +82,11 @@ export function SettingsPage({ onBack, theme, onToggleTheme, version }) {
               </option>
             ))}
           </select>
-        </Row>
+        </SettingRow>
       </Card>
 
       <Card title={t('settings.audio')}>
-        <Row label={t('settings.targetBuffer')} description={t('settings.targetBufferDesc')}>
+        <SettingRow label={t('settings.targetBuffer')} description={t('settings.targetBufferDesc')}>
           <input
             type="number"
             min={5}
@@ -124,29 +94,29 @@ export function SettingsPage({ onBack, theme, onToggleTheme, version }) {
             step={5}
             value={settings.targetBufferMs}
             onChange={(event) => updateSetting('targetBufferMs', Number(event.target.value))}
-            className={cn(selectClass, 'w-24 text-right tabular-nums')}
+            className={cn(controlClass, 'w-24 text-right font-mono tabular-nums')}
           />
-        </Row>
-      </Card>
+        </SettingRow>
 
-      <Card title={t('settings.about')}>
-        <Row label={t('settings.version')}>
-          <span className="text-sm tabular-nums text-slate-600 dark:text-slate-300">
-            {version ?? t('common.unknown')}
-          </span>
-        </Row>
-        <Row label={t('settings.reset')} description={t('settings.resetDesc')}>
-          <button
-            type="button"
-            onClick={resetSettings}
-            className={cn(
-              'rounded-full border px-4 py-2 text-sm font-medium transition-colors duration-smooth',
-              themeClasses.button,
-            )}
+        <SettingRow label={t('connection.transport')}>
+          <select
+            value={settings.preferredTransport}
+            onChange={(event) => updateSetting('preferredTransport', event.target.value)}
+            className={controlClass}
           >
+            {TRANSPORTS.map((transport) => (
+              <option key={transport} value={transport}>
+                {t(TRANSPORT_LABEL_KEY[transport])}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
+
+        <SettingRow label={t('settings.reset')} description={t('settings.resetDesc')}>
+          <Button onClick={resetSettings} size="sm">
             {t('settings.reset')}
-          </button>
-        </Row>
+          </Button>
+        </SettingRow>
       </Card>
     </div>
   );

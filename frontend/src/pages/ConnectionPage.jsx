@@ -1,89 +1,100 @@
 import React from 'react';
-import { FiSettings } from 'react-icons/fi';
-import { Card } from '../components/Card';
-import { StatTile } from '../components/StatTile';
-import { StatusPill } from '../components/StatusPill';
+import { FiRefreshCw, FiSmartphone, FiSpeaker } from 'react-icons/fi';
+import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
+import { StatTile } from '../components/ui/StatTile';
+import { StatusPill } from '../components/ui/StatusPill';
+import { useBridge } from '../hooks/useBridge';
 import { useTranslation } from '../i18n';
-import { cn } from '../utils/cn';
-import { themeClasses } from '../utils/themeColors';
 
-/**
- * The bridge core is not wired into the desktop shell yet. Until it is, the
- * panels render their empty state instead of fabricated values. Tracked in
- * docs/roadmap.md.
- */
-const BRIDGE_WIRED = false;
-
-export function ConnectionPage({ onOpenSettings }) {
+export function ConnectionPage() {
   const { t } = useTranslation();
-
-  const devices = [];
-  const telemetry = {
-    latencyMs: null,
-    bufferDepthMs: null,
-    packetLossPct: null,
-    driftPpm: null,
-  };
+  const { available, status, devices, session, telemetry } = useBridge();
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 p-8">
-      <header className="flex items-center justify-between">
+    <div className="flex flex-col gap-4">
+      <header className="flex items-end justify-between gap-4 px-1">
         <div>
-          <h1 className="text-3xl font-semibold text-slate-900 dark:text-slate-50">Sonduit</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {t('connection.subtitle')}
-          </p>
+          <h1 className="text-3xl font-semibold tracking-tight text-ink">
+            {t('connection.title')}
+          </h1>
+          <p className="mt-1 text-sm text-ink-soft">{t('connection.subtitle')}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <StatusPill state="disconnected" label={t('status.disconnected')} />
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            aria-label={t('nav.settings')}
-            className={cn(
-              'rounded-full border p-2.5 transition-colors duration-smooth',
-              themeClasses.button,
-            )}
-          >
-            <FiSettings className="h-5 w-5 text-slate-700 dark:text-slate-200" />
-          </button>
-        </div>
+        <StatusPill state={status} label={t(`status.${status}`)} />
       </header>
 
-      <Card
-        title={t('connection.devices')}
-        actions={
-          <button
-            type="button"
-            disabled={!BRIDGE_WIRED}
-            className={cn(
-              'rounded-full border px-4 py-2 text-sm font-medium transition-colors duration-smooth',
-              'disabled:cursor-not-allowed disabled:opacity-50',
-              themeClasses.button,
-            )}
-          >
-            {t('connection.scan')}
-          </button>
-        }
-      >
-        {devices.length === 0 ? (
-          <p className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">
-            {t('connection.noDevices')}
-          </p>
-        ) : null}
-      </Card>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <Card
+          className="lg:col-span-2"
+          title={t('connection.devices')}
+          actions={
+            <Button size="sm" icon={FiRefreshCw} disabled={!available}>
+              {t('connection.scan')}
+            </Button>
+          }
+        >
+          {devices.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-10 text-center">
+              <FiSmartphone className="h-7 w-7 text-ink-faint" strokeWidth={1.5} />
+              <p className="text-sm text-ink-soft">{t('connection.noDevices')}</p>
+              {!available && <p className="text-xs text-ink-faint">{t('common.notWired')}</p>}
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {devices.map((device) => (
+                <li
+                  key={device.id}
+                  className="card-sunken flex items-center justify-between px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-ink">{device.name}</p>
+                    <p className="truncate font-mono text-xs text-ink-soft">{device.address}</p>
+                  </div>
+                  <Button size="sm" variant="primary">
+                    {t('connection.connect')}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
 
-      <Card title={t('telemetry.title')}>
+        <Card tone="accent" title={t('connection.session')}>
+          <div className="mt-auto flex flex-col gap-3">
+            <div className="flex items-center gap-2 opacity-90">
+              <FiSpeaker className="h-5 w-5" strokeWidth={1.75} />
+              <span className="text-sm">{t('connection.endpoint')}</span>
+            </div>
+            <p className="font-mono text-sm opacity-80">
+              {session.endpoint ?? t('connection.noEndpoint')}
+            </p>
+            <dl className="mt-2 grid grid-cols-3 gap-2 border-t border-white/20 pt-3 text-xs">
+              <div>
+                <dt className="opacity-70">{t('connection.sampleRate')}</dt>
+                <dd className="mt-0.5 font-mono text-sm">{session.sampleRate ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="opacity-70">{t('connection.channels')}</dt>
+                <dd className="mt-0.5 font-mono text-sm">{session.channels ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="opacity-70">{t('connection.bitDepth')}</dt>
+                <dd className="mt-0.5 font-mono text-sm">{session.bitDepth ?? '—'}</dd>
+              </div>
+            </dl>
+          </div>
+        </Card>
+      </div>
+
+      <Card title={t('telemetry.title')} subtitle={t('telemetry.subtitle')}>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatTile label={t('telemetry.latency')} value={telemetry.latencyMs} unit="ms" />
           <StatTile label={t('telemetry.bufferDepth')} value={telemetry.bufferDepthMs} unit="ms" />
           <StatTile label={t('telemetry.packetLoss')} value={telemetry.packetLossPct} unit="%" />
           <StatTile label={t('telemetry.drift')} value={telemetry.driftPpm} unit="ppm" />
         </div>
-        {!BRIDGE_WIRED && (
-          <p className="mt-4 text-center text-sm text-slate-500 dark:text-slate-400">
-            {t('telemetry.noData')}
-          </p>
+        {!available && (
+          <p className="mt-4 text-center text-xs text-ink-faint">{t('telemetry.noData')}</p>
         )}
       </Card>
     </div>

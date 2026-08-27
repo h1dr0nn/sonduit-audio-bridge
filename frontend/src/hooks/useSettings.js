@@ -10,7 +10,7 @@ export const DEFAULT_SETTINGS = {
   preferredTransport: 'auto',
 
   // Appearance
-  accentColor: '#007AFF',
+  accentColor: '#7c93e8',
   fontSize: 'medium',
   language: 'en',
 };

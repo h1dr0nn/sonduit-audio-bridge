@@ -1,10 +1,11 @@
 [package]
-name = "harmonixse"
-version = "1.0.4"
+name = "sonduit-desktop"
+version = "0.1.0"
 edition = "2021"
+publish = false
 
 [[bin]]
-name = "harmonixse"
+name = "sonduit"
 path = "src/main.rs"
 
 [dependencies]
@@ -13,12 +14,8 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 chrono = { version = "0.4", features = ["clock"] }
 tauri-plugin-notification = "2"
-tauri-plugin-fs = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-shell = "2"
 tauri-plugin-store = "2.4.1"
 tauri-plugin-log = "2.7.1"
-tauri-plugin-updater = "2.9.0"
 tauri-plugin-process = "2.3.1"
 
 [features]

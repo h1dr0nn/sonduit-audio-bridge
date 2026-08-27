@@ -4,3 +4,4 @@
 //! the `sonduit-core` crate so it can be shared with the Android target.
 
 pub mod logging;
+pub mod window;
