@@ -39,6 +39,9 @@ jobs:
           echo "checking $range"
           node tools/lint/check-commits.mjs "$range"
 
+      - name: Version tooling tests
+        run: node --test tools/version.test.mjs
+
       - name: Version lives in exactly one place
         run: node tools/version.mjs check
 

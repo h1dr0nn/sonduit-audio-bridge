@@ -33,13 +33,11 @@ jobs:
         name: Derive the version from the commits since the last release
         run: |
           set -e
-          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || echo "")
-          if [ -z "$last" ]; then
-            range="HEAD"
-            echo "no release tag yet; counting from the start of history"
-          else
-            range="${last}..HEAD"
-          fi
+          # version.mjs excludes the Harmonix tags by reachability from
+          # harmonix-final; a plain git describe would pick up v1.0.4 and
+          # compute the next release as 1.1.0. See ADR-008.
+          range=$(node tools/version.mjs range)
+          echo "range: $range"
 
           # The dev counter is the workflow run number, which is monotonic per
           # repository and never reused. See ADR-008.
