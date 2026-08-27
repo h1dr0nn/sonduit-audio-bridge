@@ -107,8 +107,14 @@ impl Format {
     /// Duration of one packet in nanoseconds.
     ///
     /// # Errors
-    /// Propagates [`Format::frames_per_packet`].
+    /// Returns [`Error::BadSampleRate`] for a zero rate, and propagates
+    /// [`Format::frames_per_packet`].
     pub const fn packet_duration_nanos(&self) -> Result<u64, Error> {
+        // Guarded rather than assumed: this is called from the jitter buffer,
+        // which runs beside the audio path and must not be able to panic.
+        if self.sample_rate == 0 {
+            return Err(Error::BadSampleRate(0));
+        }
         let frames = match self.frames_per_packet() {
             Ok(frames) => frames,
             Err(error) => return Err(error),
@@ -160,11 +166,21 @@ impl Format {
 
     /// Validate the fields a decoder cannot take on trust.
     ///
+    /// `Format` has public fields, so it can be constructed directly as well as
+    /// decoded. A zero sample rate is unreachable from the wire, because
+    /// [`Format::rate_from_marker`] rejects a zero multiplier, but it is
+    /// reachable through the API and would divide by zero in
+    /// [`Format::packet_duration_nanos`].
+    ///
     /// # Errors
-    /// Returns [`Error::BadChannelCount`] outside 1 to 8, or
+    /// Returns [`Error::BadSampleRate`] for a zero rate,
+    /// [`Error::BadChannelCount`] outside 1 to 8, or
     /// [`Error::UnrepresentableFormat`] when the payload cannot be split into
     /// whole frames.
     pub const fn validate(&self) -> Result<(), Error> {
+        if self.sample_rate == 0 {
+            return Err(Error::BadSampleRate(0));
+        }
         if self.channels == 0 || self.channels > 8 {
             return Err(Error::BadChannelCount(self.channels));
         }
@@ -296,6 +312,43 @@ mod tests {
         assert_eq!(BitDepth::from_bits(32).unwrap(), BitDepth::S32);
         for bits in [0_u8, 8, 12, 20, 64] {
             assert!(BitDepth::from_bits(bits).is_err(), "bits {bits}");
+        }
+    }
+
+    #[test]
+    fn a_zero_sample_rate_is_rejected_rather_than_dividing_by_zero() {
+        // Format has public fields, so this is reachable through the API even
+        // though rate_from_marker rejects it on the wire. It used to pass
+        // validate() and then panic in packet_duration_nanos.
+        let format = Format {
+            sample_rate: 0,
+            ..Format::stereo_48k()
+        };
+
+        assert!(matches!(format.validate(), Err(Error::BadSampleRate(0))));
+        assert!(matches!(
+            format.packet_duration_nanos(),
+            Err(Error::BadSampleRate(0))
+        ));
+    }
+
+    #[test]
+    fn no_valid_format_can_panic_in_duration() {
+        // Sweep the representable space; none of it may panic.
+        for rate in [0_u32, 44_100, 48_000, 96_000, 192_000] {
+            for channels in 0..=9_u8 {
+                for depth in [BitDepth::S16, BitDepth::S24, BitDepth::S32] {
+                    let format = Format {
+                        sample_rate: rate,
+                        bit_depth: depth,
+                        channels,
+                        channel_mask: 0,
+                    };
+                    let _ = format.validate();
+                    let _ = format.frames_per_packet();
+                    let _ = format.packet_duration_nanos();
+                }
+            }
         }
     }
 }

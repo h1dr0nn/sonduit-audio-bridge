@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { FiSearch, FiSidebar } from 'react-icons/fi';
 import { MenuDropdown } from './MenuDropdown';
+import { StatusMenu } from './StatusMenu';
 
 /**
  * Resolve the Tauri window handle, or null when the page is being served
@@ -16,10 +18,21 @@ function tauriWindow() {
 }
 
 /**
- * Custom window chrome. The config sets `decorations: false`, so minimise,
- * maximise and close are ours to draw and ours to wire.
+ * Custom window chrome. The config sets `decorations: false`, so the window
+ * controls are ours to draw and ours to wire.
+ *
+ * Left cluster, in order: application menu, sidebar toggle, command palette.
+ * Right cluster: the session status menu, then minimise, maximise and close.
  */
-export function TitleBar({ onNavigate, canRescan, t }) {
+export function TitleBar({
+  onNavigate,
+  onToggleSidebar,
+  onOpenPalette,
+  sidebarExpanded,
+  bridge,
+  canRescan,
+  t,
+}) {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -54,8 +67,41 @@ export function TitleBar({ onNavigate, canRescan, t }) {
     <div className="titlebar" data-tauri-drag-region>
       <div className="titlebar-cluster">
         <MenuDropdown onNavigate={onNavigate} canRescan={canRescan} t={t} />
+
+        <button
+          type="button"
+          className="titlebar-icon-btn"
+          onClick={onToggleSidebar}
+          aria-label={t('nav.toggleSidebar')}
+          aria-pressed={sidebarExpanded}
+          title={`${t('nav.toggleSidebar')} (Ctrl+B)`}
+        >
+          <FiSidebar className="h-4 w-4" strokeWidth={1.9} />
+        </button>
+
+        <button
+          type="button"
+          className="titlebar-icon-btn"
+          onClick={onOpenPalette}
+          aria-label={t('nav.commandPalette')}
+          title={`${t('nav.commandPalette')} (Ctrl+K)`}
+        >
+          <FiSearch className="h-4 w-4" strokeWidth={1.9} />
+        </button>
       </div>
+
       <div className="titlebar-drag" data-tauri-drag-region />
+
+      <div className="titlebar-cluster titlebar-cluster--right">
+        <StatusMenu
+          status={bridge.status}
+          session={bridge.session}
+          telemetry={bridge.telemetry}
+          available={bridge.available}
+          t={t}
+        />
+      </div>
+
       <div className="titlebar-controls">
         <button
           type="button"

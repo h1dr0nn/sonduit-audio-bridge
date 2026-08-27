@@ -22,7 +22,8 @@ What exists and is verified:
 What does not exist yet:
 
 - Audio capture on Windows. `sonduit-capture-win` is scaffolding.
-- The Android app. `android/` is empty.
+- The Android app. `android/` holds only `gradle.properties`; there is no
+  Gradle project yet.
 - Therefore: **no audio has ever been played through this.** See
   [docs/environment.md](docs/environment.md).
 
@@ -92,7 +93,7 @@ For the Android app, additionally:
 
 - JDK 17
 - Android SDK, platform 34 or newer
-- Android NDK r27 or newer, with `ANDROID_NDK_HOME` set
+- Android NDK r27 or newer, with `ANDROID_NDK_HOME` set (CI pins 27.2.12479018)
 - `cargo install cargo-ndk`
 - `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`
 

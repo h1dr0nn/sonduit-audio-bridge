@@ -42,6 +42,9 @@
   --warn: #d99b28;
   --danger: #d9503f;
 
+  /* Scrim behind a modal */
+  --overlay: rgba(20, 20, 19, 0.55);
+
   /* Titlebar floats over the shell, so it follows the theme */
   --titlebar-text: rgba(23, 23, 26, 0.78);
   --titlebar-text-dim: rgba(23, 23, 26, 0.45);
@@ -98,6 +101,7 @@
   --titlebar-text-dim: rgba(255, 255, 255, 0.5);
   --titlebar-hover: rgba(255, 255, 255, 0.12);
 
+  --overlay: rgba(0, 0, 0, 0.6);
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.28);
   --shadow-raised: 0 2px 6px rgba(0, 0, 0, 0.34), 0 16px 40px rgba(0, 0, 0, 0.4);
 }
@@ -131,12 +135,33 @@ body {
 
 /* ---- Custom window chrome (decorations: false) ---- */
 
+/* ---- Stacking order ----
+ * The window chrome outranks every overlay. A modal backdrop that covers the
+ * titlebar would hide the window controls and kill the drag region, so
+ * overlays sit BELOW it and the shell stays operable with a modal open.
+ *
+ *   titlebar and its dropdowns   5000
+ *   modal panel                  3000
+ *   modal backdrop               2999
+ *   in-page popovers              500
+ */
+:root {
+  --z-titlebar: 5000;
+  --z-modal: 3000;
+  --z-modal-backdrop: 2999;
+  --z-popover: 500;
+  --titlebar-height: 38px;
+}
+
 .titlebar {
-  height: 38px;
+  height: var(--titlebar-height);
   flex: none;
   display: flex;
   align-items: center;
   user-select: none;
+  /* position + z-index so the chrome and its dropdowns stay above overlays */
+  position: relative;
+  z-index: var(--z-titlebar);
 }
 
 .titlebar-drag {
@@ -172,6 +197,14 @@ body {
   background: var(--titlebar-hover);
 }
 
+/* The status menu carries a dot, a label and a chevron, so it sizes to content
+ * rather than to the square icon buttons beside it. */
+.titlebar-icon-btn--wide {
+  width: auto;
+  gap: 6px;
+  padding: 0 10px;
+}
+
 .titlebar-controls {
   display: flex;
   height: 100%;
@@ -204,6 +237,33 @@ body {
   color: #fff;
 }
 
+/* ---- Modals ----
+ * Backdrop covers the whole window, including behind the titlebar, so the
+ * dimming reads as one surface with no seam. The titlebar outranks it, so the
+ * chrome stays crisp and the drag region keeps working.
+ * The panel is positioned a fixed distance below the titlebar rather than
+ * flex-centred, so its offset does not shift with its own height. */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-backdrop);
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.modal-panel {
+  position: fixed;
+  left: 50%;
+  top: calc(var(--titlebar-height) + 12vh);
+  transform: translateX(-50%);
+  z-index: var(--z-modal);
+  background: var(--surface-card);
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--shadow-raised);
+}
+
 /* ---- Reusable surfaces ---- */
 
 .card {
@@ -219,9 +279,11 @@ body {
   border: 1px solid var(--line-soft);
 }
 
+/* The rail sets its own radius: a full pill reads well at 56px wide, but at
+ * 208px the same 999px radius bulges into a stadium and the active item spills
+ * past the curve. See Rail.jsx. */
 .rail {
   background: var(--surface-rail);
-  border-radius: var(--radius-pill);
 }
 
 /* ---- Scrollbars ---- */

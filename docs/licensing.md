@@ -17,7 +17,7 @@ Every decision below is measured against the goal of keeping it that way.
 | Component | Origin | Licence | How Sonduit uses it | Risk |
 | --- | --- | --- | --- | --- |
 | Wire protocol description | Scream driver source | MS-PL | Read to write [protocol.md](./protocol.md). Facts about bytes, not code. | None |
-| Scream driver binary | `duncanthrax/scream` `Install/driver/` | MS-PL | Redistributed **unmodified** in `driver/` | Low, conditions apply |
+| Scream driver binary | `duncanthrax/scream` `Install/driver/` | MS-PL | **Nothing shipped yet.** See ADR-002 | Low when it ships, conditions apply |
 | Scream driver source | `duncanthrax/scream` `Scream/` | MS-PL | Read only. Not vendored, not compiled. | None while unmodified |
 | `martinellimarco/scream-android` | GitHub | **GPL-3.0** | **Nothing. Not read for implementation, not copied, not adapted.** | **High if violated** |
 | `BreadFish64/AndroidUsbAudioDevice` | GitHub | **No licence at all** | **Nothing. Read the README only.** | **High if violated** |
@@ -49,9 +49,11 @@ The obligations that bind Sonduit, quoted from the licence text in
 What this means concretely:
 
 1. Shipping the prebuilt `Scream.sys` / `Scream.cat` / `Scream.inf` inside
-   `driver/` is permitted, provided the MS-PL text and the copyright notice
-   travel with them. `driver/` therefore carries its own `LICENSE` copy and a
-   `NOTICE` naming the upstream project and commit.
+   `driver/` would be permitted, provided the MS-PL text and the copyright
+   notice travel with them. **`driver/` is empty today and ships nothing**, so
+   no such obligation is live yet. When it does ship, it must carry its own
+   `LICENSE` copy and a `NOTICE` naming the upstream project and commit.
+   Separately, ADR-002 found the upstream binaries are unusable anyway.
 2. MS-PL 3(D) applies **to the driver files only**. It does not license
    Sonduit's own code, because MS-PL is a per-file copyleft, not a work-wide
    one. Sonduit's MIT licence is unaffected.
@@ -173,16 +175,16 @@ crates" rule in ADR-001.
 
 ### 4.1 Mechanical enforcement
 
-Discipline is not a control. The following are planned in
-[roadmap.md](./roadmap.md):
+Discipline is not a control. Both mechanisms are in place:
 
-- `cargo deny` with a licence allowlist (`MIT`, `Apache-2.0`, `BSD-3-Clause`,
-  `ISC`, `Unicode-3.0`, `Zlib`), denying everything else, run in CI.
-- `third_party/reference/` in `.gitignore` so quarantined source cannot be
-  committed by accident. **Already in place.**
-
-`cargo deny` is not yet wired up; until it is, the licence rule is enforced by
-review only, and that gap is tracked in the roadmap.
+- **`cargo deny`** with a permissive-only licence allowlist, denying everything
+  else, run by the `licences` job in `.github/workflows/ci.yml`. The list lives
+  in `deny.toml` and is `MIT`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`,
+  `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Zlib`, `Unicode-3.0`, `CC0-1.0`,
+  `Unlicense` and `BSL-1.0`. **MPL-2.0 is deliberately excluded**: it is
+  file-level copyleft and does not meet the permissive-only rule.
+- **`third_party/reference/` in `.gitignore`**, so quarantined source cannot be
+  committed by accident.
 
 ---
 

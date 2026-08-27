@@ -9,7 +9,7 @@
  *   last-release         print the last Sonduit release tag, or nothing
  *   range                print the commit range since that tag
  *   next [range]         print the version the commits in the range imply
- *   dev [range] <n>      print a develop build version
+ *   dev [range]          print a develop build version
  *   code [version]       print the Android versionCode
  *   sync [version]       write the version into tauri.conf.json and gradle.properties
  *   check                verify every derived file agrees with Cargo.toml
@@ -76,21 +76,61 @@ export const MAX_DEV = RELEASE_SLOT - 1;
  * it is published before it and its code must therefore be lower. Putting the
  * release at the top of each version's block is what makes that true.
  *
- * # Bounds
+ * # Field widths, and why patch is capped at 99
  *
- * Play Store caps versionCode at 2_100_000_000. The largest code a given
- * major can produce is major*10_000_000 + 99*100_000 + 999*1_000 + 999, i.e.
- * major*10_000_000 + 10_899_999, so the ceiling allows major up to 208, not
- * 209. A test caught the off-by-one.
+ * Each field must fit strictly inside the one above it, or a large value in a
+ * low field outranks a bump in a high one:
  *
- * Minor and patch are limited to 99 and 999 respectively by the layout.
+ *   dev    0..999      < 1_000      the patch multiplier
+ *   patch  0..99       < 100        so patch*1_000 < 100_000, the minor multiplier
+ *   minor  0..99       < 100        so minor*100_000 < 10_000_000, the major multiplier
+ *
+ * An earlier version allowed patch up to 999, which overflows:
+ *
+ *   1.0.999  ->  10_999_999
+ *   1.1.0    ->  10_100_999     <-- lower, though it ships later
+ *
+ * and it also collided outright, 0.9.99 and 0.0.999 both mapping to 999_999.
+ * That is the same Play-Store-unrecoverable failure this layout exists to
+ * prevent, reintroduced one field down. Caught in review, not by the tests,
+ * which only covered the worked examples from the ADR.
+ *
+ * # Ceiling
+ *
+ * Play Store caps versionCode at 2_100_000_000. With the fields above, the
+ * largest code a given major can produce is
+ * major*10_000_000 + 99*100_000 + 99*1_000 + 999 = major*10_000_000 + 9_999_999,
+ * so major may go up to 209 (209 -> 2_099_999_999).
  */
 export function versionCode({ major, minor, patch }, dev = RELEASE_SLOT) {
-  if (major > 208) throw new Error(`major ${major} would exceed the Play Store versionCode cap`);
+  if (major > 209) throw new Error(`major ${major} would exceed the Play Store versionCode cap`);
   if (minor > 99) throw new Error(`minor ${minor} exceeds the 99 the layout allows`);
-  if (patch > 999) throw new Error(`patch ${patch} exceeds the 999 the layout allows`);
-  if (dev > RELEASE_SLOT) throw new Error(`dev counter ${dev} exceeds ${MAX_DEV}`);
+  if (patch > 99) throw new Error(`patch ${patch} exceeds the 99 the layout allows`);
+  if (dev < 0 || dev > RELEASE_SLOT) throw new Error(`dev counter ${dev} is outside 0..${RELEASE_SLOT}`);
   return major * 10_000_000 + minor * 100_000 + patch * 1_000 + dev;
+}
+
+/**
+ * The dev counter for a develop build.
+ *
+ * Derived from the number of commits since the last release rather than from a
+ * CI run number. A run number grows without bound across the life of the
+ * repository, so it would eventually reach 999 and collide with the release
+ * slot, and then 1000 and fall outside the field entirely. Commits since the
+ * last release is monotonic within a release cycle and resets at every
+ * release, which is exactly the property the field needs.
+ *
+ * @throws when a release cycle somehow exceeds {@link MAX_DEV} commits, which
+ * is a real limit and must fail loudly rather than wrap into the release slot.
+ */
+export function devCounter(commitCount) {
+  if (commitCount > MAX_DEV) {
+    throw new Error(
+      `${commitCount} commits since the last release exceeds the ${MAX_DEV} the ` +
+        `versionCode dev field allows; cut a release before building again`,
+    );
+  }
+  return commitCount;
 }
 
 /** Highest bump implied by a set of Conventional Commit subjects and bodies. */
@@ -230,7 +270,17 @@ function syncGradle(version, code) {
 
 function devCounterOf(version) {
   const match = /-dev\.(\d+)/.exec(version);
-  return match ? Number(match[1]) : RELEASE_SLOT;
+  if (!match) return RELEASE_SLOT;
+
+  const counter = Number(match[1]);
+  if (counter > MAX_DEV) {
+    // RELEASE_SLOT is reserved. A dev build landing on it would produce
+    // exactly the release code, and Play Store never forgets a code.
+    throw new Error(
+      `dev counter ${counter} would collide with the release slot; max is ${MAX_DEV}`,
+    );
+  }
+  return counter;
 }
 
 function main() {
@@ -257,12 +307,12 @@ function main() {
     }
 
     case 'dev': {
-      const range = args.length > 1 ? args[0] : releaseRange();
-      const counter = args.length > 1 ? args[1] : args[0];
-      if (counter === undefined) throw new Error('usage: dev [range] <n>');
+      // The counter is derived, not supplied: see devCounter for why a CI run
+      // number cannot be used.
+      const range = args[0] ?? releaseRange();
       const { subjects, bodies } = commitsIn(range);
       const next = applyBump(readWorkspaceVersion(), bumpFromCommits(subjects, bodies));
-      console.log(`${next}-dev.${counter}+${shortSha()}`);
+      console.log(`${next}-dev.${devCounter(subjects.length)}+${shortSha()}`);
       break;
     }
 

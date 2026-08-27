@@ -63,8 +63,10 @@ Installed Rust targets: **`x86_64-pc-windows-msvc` only.**
   (ADR-001), so it compiles and unit-tests on this host like any ordinary
   library. **This is the main reason that constraint exists.**
 - `sonduit-transport` — UDP send and receive over loopback and over the LAN.
-- `sonduit-capture-win` — compiles and runs. WASAPI is user-mode and the MSVC
-  toolchain plus Windows SDK are present.
+- `sonduit-capture-win` — **compiles only.** Its entry points are `todo!()`,
+  so calling one panics. WASAPI is user-mode and the MSVC toolchain plus the
+  Windows SDK are present, so the implementation can be built here once it is
+  written.
 - `sonduit-desktop` (Tauri) — compiles, bundles, and **runs**. Verified: the
   application was built with `--features custom-protocol`, launched, and
   screenshotted; the acrylic backdrop, custom window chrome, navigation,
@@ -117,7 +119,7 @@ Not needed to work on `sonduit-core`. Needed for the Android half:
 
 1. **JDK 17** (the version Android Gradle Plugin currently expects).
 2. **Android SDK**, platform 34 or newer, plus platform-tools for `adb`.
-3. **Android NDK** r26 or newer; set `ANDROID_NDK_HOME`.
+3. **Android NDK** r27 or newer; set `ANDROID_NDK_HOME`. CI pins 27.2.12479018.
 4. `cargo install cargo-ndk`
 5. `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`
 6. A physical Android device. An emulator is enough to prove the app starts;
@@ -126,7 +128,8 @@ Not needed to work on `sonduit-core`. Needed for the Android half:
 
 For the driver side:
 
-7. Administrator rights to install the Scream driver from `driver/`.
+7. Administrator rights to install a driver from `driver/`, once one ships.
+   `driver/` is empty today; see ADR-002.
 8. The WDK is **not** required, because Sonduit does not build the driver.
 
 ---

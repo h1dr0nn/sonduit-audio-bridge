@@ -44,9 +44,11 @@ Two further constraints follow:
 
 **Split the goal in two, and be honest about which half is shipping.**
 
-### Tier 1 (now): user-mode capture, no endpoint
+### Tier 1 (planned first): user-mode capture, no endpoint
 
-`sonduit-capture-win` implements two modes:
+**Not implemented yet.** `sonduit-capture-win` currently declares the two modes
+below and returns `todo!()`; the work is tracked in `roadmap.md`. The decision
+recorded here is which two modes it will implement:
 
 - **`ProcessLoopback`** on Windows 11 (build 20348+). Preferred: it is
   endpoint-independent and **emits silence rather than stalling** when nothing
@@ -60,8 +62,8 @@ Two further constraints follow:
   cannot be requested from a loopback stream because
   `IAudioClient3::InitializeSharedAudioStream` rejects the loopback flag.
 
-This ships a working bridge. **It does not satisfy the endpoint requirement**;
-audio still plays locally as well.
+Once written, this gives a working bridge. **It will not satisfy the endpoint
+requirement**; audio still plays locally as well.
 
 ### Tier 2 (later, gated on money and time): a signed endpoint driver
 
@@ -81,7 +83,7 @@ attribution alongside, per `licensing.md`.
   The README must say so plainly rather than implying otherwise.
 - Windows 10 gets the worse path, and Windows 10 is out of support since
   October 2025, so this cost shrinks over time.
-- **DSP marking is unavailable** regardless of tier: the Scream driver parses a
+- **DSCP marking is unavailable** regardless of tier: the Scream driver parses a
   `DSCP` registry value but the call that would apply it is commented out in
   its source, so no WMM voice queueing can come from it.
 - An intermediate worth costing: depend on an already-signed third-party

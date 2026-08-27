@@ -22,8 +22,8 @@ release or a dev build.
 accumulated since the last release. This is valid SemVer, sorts correctly
 (`1.3.0-dev.42 < 1.3.0`), and a dev build can never be mistaken for a release.
 
-`N` is the GitHub Actions run number: monotonic per repository and never
-reused.
+`N` is the number of commits since the last release; see below for why not the
+CI run number.
 
 ### The version lives in exactly one place
 
@@ -52,7 +52,7 @@ already seen, and the mistake is unrecoverable because a code can never be
 reused. Under the original formula, the first real release after any dev build
 of that version would be rejected permanently.
 
-**The corrected layout puts the release at the top of each version's block:**
+**The corrected layout puts the release at the top of each version block:**
 
 ```text
 code = major * 10_000_000 + minor * 100_000 + patch * 1_000 + dev
@@ -60,6 +60,26 @@ code = major * 10_000_000 + minor * 100_000 + patch * 1_000 + dev
   dev = 0..998   develop builds
   dev = 999      the release
 ```
+
+Every field must fit strictly inside the one above it:
+
+| Field | Range | Must stay below | Because |
+| --- | --- | --- | --- |
+| `dev` | 0..999 | 1_000 | the patch multiplier |
+| `patch` | 0..**99** | 100 | so `patch*1_000` stays under 100_000 |
+| `minor` | 0..99 | 100 | so `minor*100_000` stays under 10_000_000 |
+
+**A second overflow was found in review, one field down.** The first correction
+allowed `patch` up to 999, which breaks the same way:
+
+```text
+1.0.999  ->  10_999_999
+1.1.0    ->  10_100_999     <-- lower, though it ships later
+```
+
+and it collided outright, `0.9.99` and `0.0.999` both mapping to `999_999`.
+The tests passed because they only walked the six examples printed in this
+document. They now walk the whole representable space and assert no collisions.
 
 Verified monotonic across dev builds, their release, the next patch and a major
 bump:
@@ -73,14 +93,25 @@ bump:
 2.0.0         -> 20000999
 ```
 
-Bounds: Play Store caps versionCode at 2,100,000,000. The largest code a given
-major can produce is `major*10_000_000 + 10_899_999`, so **major must stay at
-or below 208** - also an off-by-one a test caught, the first attempt having
-allowed 209.
+**Ceiling:** Play Store caps versionCode at 2,100,000,000. The largest code a
+given major can produce is `major*10_000_000 + 9_999_999`, so **major may go up
+to 209** (209 gives 2,099,999,999).
 
-The 1000-scale was chosen over the brief's 100-scale so that 998 develop builds
-per version are available rather than 99. A branch that builds on every push
-would exhaust 99 quickly.
+### The dev counter is commits since the last release, not the CI run number
+
+The obvious choice, `github.run_number`, is wrong twice over. It grows without
+bound across the life of the repository, so it eventually reaches **999 and
+collides with the reserved release slot** — producing a code Play Store has
+already accepted — and then **1000, which falls outside the field entirely** and
+makes every develop build fail.
+
+Commits since the last release is monotonic within a release cycle and resets
+at every release, which is exactly the property the field needs. Exceeding 998
+commits in one cycle throws with a clear message rather than wrapping.
+
+The cost: **a develop build cannot be reproduced locally with the same version
+string** unless the same commits are present. Accepted, because the embedded
+short SHA identifies the build precisely and is reproducible.
 
 ### Changelogs are for minor and major releases only
 
@@ -142,10 +173,7 @@ manual step.** Tagging `main` then triggers `release.yml`.
 
 - Version numbers are never edited by hand, and CI fails if they are edited in
   only one place.
-- The dev counter is tied to the CI run number, so **a dev build cannot be
-  reproduced locally with the same version string**. Accepted: dev builds are
-  identified by the embedded commit sha, which is reproducible.
-- 998 dev builds per version is a real ceiling. At one build per push it is
-  reached in months, not days, and a release resets it.
+- 998 develop builds per release cycle is a real ceiling. At one build per push
+  that is months of work, and cutting a release resets it.
 - Patch releases have thin release notes by design. If that proves unhelpful,
   the change is one branch in `release.yml`.

@@ -7,7 +7,6 @@
 //! Nothing here reads a clock. Arrival times are passed in, which is what
 //! makes the whole module testable against a synthetic timeline.
 
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::format::Format;
@@ -154,8 +153,11 @@ pub struct JitterBuffer {
     next: Option<u64>,
     /// RFC 3550 jitter estimate, in frames.
     jitter_frames: f64,
-    /// Previous packet's transit time, in frames.
-    previous_transit: Option<i64>,
+    /// Previous accepted packet, as (arrival in frames, sender timestamp).
+    ///
+    /// Both are kept so the sender delta can be differenced with wrapping
+    /// arithmetic. A single combined transit value cannot express that.
+    previous_observation: Option<(i64, u32)>,
     /// True once the buffer has filled to its target and started playing.
     playing: bool,
     stats: JitterStats,
@@ -172,7 +174,7 @@ impl JitterBuffer {
             extender: SequenceExtender::default(),
             next: None,
             jitter_frames: 0.0,
-            previous_transit: None,
+            previous_observation: None,
             playing: false,
             stats: JitterStats::default(),
         }
@@ -214,10 +216,17 @@ impl JitterBuffer {
             .packet_duration_nanos()
             .map_or(0.0, |nanos| nanos as f64 / 1_000_000.0);
 
+        // JitterConfig is a plain public struct with no validation, and
+        // f64::clamp panics outright when min > max. Order the bounds here
+        // rather than trusting the caller; this runs near the audio path and
+        // must not be able to panic.
+        let low = f64::from(self.config.min_ms.min(self.config.max_ms));
+        let high = f64::from(self.config.min_ms.max(self.config.max_ms));
+
         let adaptive = packet_ms + self.config.jitter_multiplier * self.jitter_ms();
         adaptive
             .max(f64::from(self.config.target_ms))
-            .clamp(f64::from(self.config.min_ms), f64::from(self.config.max_ms))
+            .clamp(low, high)
     }
 
     fn target_packets(&self) -> usize {
@@ -239,13 +248,22 @@ impl JitterBuffer {
     fn observe_arrival(&mut self, timestamp_frames: u32, arrival_nanos: u64) {
         let arrival_frames =
             (arrival_nanos as i128 * i128::from(self.format.sample_rate) / 1_000_000_000) as i64;
-        let transit = arrival_frames - i64::from(timestamp_frames);
 
-        if let Some(previous) = self.previous_transit {
-            let d = (transit - previous).abs() as f64;
+        if let Some((previous_arrival, previous_timestamp)) = self.previous_observation {
+            let arrival_delta = arrival_frames - previous_arrival;
+
+            // The sender timestamp is a u32 frame counter, so it wraps roughly
+            // every 24.8 hours at 48 kHz. Differencing it as a plain integer
+            // turns that wrap into a four-billion-frame jump and destroys the
+            // estimate for the next ~90 packets. wrapping_sub reinterpreted as
+            // i32 gives the true signed delta for any real spacing.
+            let sender_delta = i64::from(timestamp_frames.wrapping_sub(previous_timestamp) as i32);
+
+            let d = (arrival_delta - sender_delta).abs() as f64;
             self.jitter_frames += (d - self.jitter_frames) * JITTER_GAIN;
         }
-        self.previous_transit = Some(transit);
+
+        self.previous_observation = Some((arrival_frames, timestamp_frames));
     }
 
     /// Offer a packet to the buffer.
@@ -259,17 +277,16 @@ impl JitterBuffer {
         arrival_nanos: u64,
         pcm: Vec<u8>,
     ) -> PushOutcome {
-        self.observe_arrival(timestamp_frames, arrival_nanos);
-
         let extended = self.extender.extend(sequence);
 
+        // The TooLate test only means anything once playback has started.
+        // Latching `next` on the first *push* instead would reject every packet
+        // that arrives out of order while the buffer is still filling, which is
+        // exactly when reordering is most repairable.
         if let Some(next) = self.next {
-            match extended.cmp(&next) {
-                Ordering::Less => {
-                    self.stats.too_late += 1;
-                    return PushOutcome::TooLate;
-                }
-                Ordering::Equal | Ordering::Greater => {}
+            if extended < next {
+                self.stats.too_late += 1;
+                return PushOutcome::TooLate;
             }
         }
 
@@ -283,6 +300,11 @@ impl JitterBuffer {
             return PushOutcome::Overflow;
         }
 
+        // Only packets the buffer actually keeps may move the jitter estimate.
+        // Observing rejected ones lets a single stale or duplicate datagram
+        // pin the target at max_ms for hundreds of packets.
+        self.observe_arrival(timestamp_frames, arrival_nanos);
+
         // Arriving behind a packet already held means the network reordered it.
         if self
             .entries
@@ -292,10 +314,6 @@ impl JitterBuffer {
             self.stats.reordered += 1;
         }
 
-        if self.next.is_none() {
-            self.next = Some(extended);
-        }
-
         self.entries.insert(extended, pcm);
         self.stats.accepted += 1;
         PushOutcome::Accepted
@@ -303,11 +321,6 @@ impl JitterBuffer {
 
     /// Take the next packet due for playback.
     pub fn pop(&mut self) -> PopOutcome {
-        let Some(next) = self.next else {
-            self.stats.starved += 1;
-            return PopOutcome::Starved;
-        };
-
         // Hold playback until the target depth is reached, then keep going
         // until the buffer genuinely empties. Re-arming on every dip would
         // stutter continuously on a link that merely runs close to the target.
@@ -317,7 +330,21 @@ impl JitterBuffer {
                 return PopOutcome::Starved;
             }
             self.playing = true;
+
+            // Playback starts at the LOWEST sequence held, which is only known
+            // once filling has finished. Choosing it when the first packet was
+            // pushed instead would pick whatever happened to arrive first and
+            // then reject everything earlier as too late, destroying exactly
+            // the reordering the buffer exists to repair.
+            if self.next.is_none() {
+                self.next = self.entries.keys().next().copied();
+            }
         }
+
+        let Some(next) = self.next else {
+            self.stats.starved += 1;
+            return PopOutcome::Starved;
+        };
 
         if let Some(pcm) = self.entries.remove(&next) {
             self.next = Some(next + 1);
@@ -343,7 +370,7 @@ impl JitterBuffer {
         self.entries.clear();
         self.extender = SequenceExtender::default();
         self.next = None;
-        self.previous_transit = None;
+        self.previous_observation = None;
         self.jitter_frames = 0.0;
         self.playing = false;
     }
@@ -692,5 +719,166 @@ mod tests {
             assert_eq!(buffer.pop(), PopOutcome::Starved);
         }
         assert_eq!(buffer.stats().lost, 0, "silence is not packet loss");
+    }
+
+    // ---- Regressions -----------------------------------------------------
+    //
+    // Each of these fails against the implementation as it was before the fix
+    // it names. They exist because the original suite passed while the buffer
+    // was destroying audio.
+
+    #[test]
+    fn reordering_before_playback_starts_is_repaired_not_discarded() {
+        // The first packet to ARRIVE was latching the playback position, so a
+        // lower sequence arriving afterwards was rejected as TooLate even
+        // though nothing had been played. Arrival order 2,0,1,3,4,5 lost two
+        // packets and still reported zero loss.
+        let mut buffer = buffer();
+        for n in [2_u16, 0, 1, 3, 4, 5] {
+            assert_eq!(
+                push_on_time(&mut buffer, n),
+                PushOutcome::Accepted,
+                "packet {n} must be accepted while the buffer is still filling"
+            );
+        }
+
+        let popped = drain(&mut buffer);
+        assert_eq!(
+            popped,
+            vec![
+                PopOutcome::Packet(pcm(0)),
+                PopOutcome::Packet(pcm(1)),
+                PopOutcome::Packet(pcm(2)),
+                PopOutcome::Packet(pcm(3)),
+                PopOutcome::Packet(pcm(4)),
+                PopOutcome::Packet(pcm(5)),
+            ],
+            "every packet must come out, in sequence order"
+        );
+        assert_eq!(buffer.stats().too_late, 0);
+        assert_eq!(buffer.stats().lost, 0);
+    }
+
+    #[test]
+    fn a_stream_that_does_not_start_at_zero_still_plays_from_its_lowest() {
+        let mut buffer = buffer();
+        for n in [900_u16, 898, 899, 901] {
+            assert_eq!(push_on_time(&mut buffer, n), PushOutcome::Accepted);
+        }
+
+        let popped = drain(&mut buffer);
+        assert_eq!(popped.len(), 4);
+        assert_eq!(popped[0], PopOutcome::Packet(pcm(898_u16 as u8)));
+        assert_eq!(buffer.stats().lost, 0);
+    }
+
+    #[test]
+    fn a_rejected_packet_cannot_move_the_jitter_estimate() {
+        // observe_arrival ran before the accept decision, so one stale
+        // datagram pinned the target at max_ms for hundreds of packets.
+        let mut buffer = buffer();
+        for n in 0..30_u16 {
+            push_on_time(&mut buffer, n);
+            let _ = buffer.pop();
+        }
+
+        let jitter_before = buffer.jitter_ms();
+        let target_before = buffer.target_ms();
+
+        // A packet whose slot has already played, arriving wildly late.
+        assert_eq!(
+            buffer.push(1, PACKET_FRAMES, 900_000_000, pcm(1)),
+            PushOutcome::TooLate
+        );
+
+        assert_eq!(buffer.jitter_ms(), jitter_before, "rejected packet moved J");
+        assert_eq!(buffer.target_ms(), target_before);
+    }
+
+    #[test]
+    fn a_duplicate_cannot_move_the_jitter_estimate() {
+        let mut buffer = buffer();
+        for n in 0..10_u16 {
+            push_on_time(&mut buffer, n);
+        }
+        let jitter_before = buffer.jitter_ms();
+
+        // Same sequence, absurd arrival time.
+        assert_eq!(
+            buffer.push(5, 5 * PACKET_FRAMES, 5_000_000_000, pcm(5)),
+            PushOutcome::Duplicate
+        );
+        assert_eq!(buffer.jitter_ms(), jitter_before);
+    }
+
+    #[test]
+    fn the_sender_timestamp_may_wrap_without_wrecking_the_estimate() {
+        // timestamp_frames is a u32 frame counter, so it wraps about every
+        // 24.8 hours at 48 kHz. Differencing it as a plain integer turned that
+        // into a four-billion-frame jump and pinned the target at max_ms.
+        let mut buffer = buffer();
+        let start = u32::MAX - 3 * PACKET_FRAMES;
+
+        for n in 0..40_u64 {
+            let timestamp = start.wrapping_add((n as u32).wrapping_mul(PACKET_FRAMES));
+            let sequence = n as u16;
+            buffer.push(sequence, timestamp, n * PACKET_NANOS, pcm(0));
+            let _ = buffer.pop();
+        }
+
+        assert!(
+            buffer.jitter_ms() < 1.0,
+            "a timestamp wrap should not register as jitter, got {} ms",
+            buffer.jitter_ms()
+        );
+        assert!(
+            buffer.target_ms() < 50.0,
+            "target should not be pinned high"
+        );
+    }
+
+    #[test]
+    fn the_jitter_gain_is_the_one_rfc_3550_specifies() {
+        // The suite passed with the gain set to 0.5, 0.9 or 1.0, so nothing
+        // actually pinned it. One step of the filter from a known state does.
+        let mut buffer = buffer();
+
+        // Two packets establish a baseline transit; the second is displaced by
+        // a known amount, so |D| is exactly that displacement.
+        buffer.push(0, 0, 0, pcm(0));
+        let displacement_ms = 16.0;
+        buffer.push(
+            1,
+            PACKET_FRAMES,
+            PACKET_NANOS + (displacement_ms * 1_000_000.0) as u64,
+            pcm(1),
+        );
+
+        // J starts at 0, so after one step J == |D| * gain == |D| / 16.
+        let expected = displacement_ms * (1.0 / 16.0);
+        assert!(
+            (buffer.jitter_ms() - expected).abs() < 0.05,
+            "expected {expected} ms after one step at gain 1/16, got {}",
+            buffer.jitter_ms()
+        );
+    }
+
+    #[test]
+    fn a_reversed_depth_range_does_not_panic() {
+        // JitterConfig is a public struct with no validation, and f64::clamp
+        // panics when min > max.
+        let buffer = JitterBuffer::new(
+            Format::stereo_48k(),
+            JitterConfig {
+                target_ms: 30,
+                min_ms: 100,
+                max_ms: 50,
+                jitter_multiplier: 3.0,
+                max_packets: 64,
+            },
+        );
+        let target = buffer.target_ms();
+        assert!(target.is_finite(), "target must stay a real number");
+        assert!((50.0..=100.0).contains(&target), "got {target}");
     }
 }

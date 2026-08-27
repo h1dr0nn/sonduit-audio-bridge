@@ -32,25 +32,30 @@ allow = [
   "Unlicense",
   "BSL-1.0",
 ]
+# MPL-2.0 is deliberately absent. It is file-level copyleft, so it does not fit
+# the "permissive only" rule docs/licensing.md states. If a dependency ever
+# needs it, that is an ADR, not a quiet addition here.
 confidence-threshold = 0.9
 
 # Everything not on the list above is denied, which is the intent: GPL-2.0,
 # GPL-3.0, AGPL-3.0 and LGPL all fail here rather than in review. See the
 # "Decisions that would force Sonduit to GPL" table in docs/licensing.md.
 
-# Note: the Scream driver in driver/ is MS-PL and is redistributed unmodified.
-# It is not a Cargo dependency, so cargo-deny never sees it. Its obligations are
-# tracked in docs/licensing.md, not here.
+# Note: driver/ is empty today (see ADR-002). If a driver ever ships there it
+# will be MS-PL and unmodified. It is not a Cargo dependency, so cargo-deny
+# never sees it either way; its obligations live in docs/licensing.md.
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
 
-# A dependency in sonduit-core is a dependency in every Sonduit binary on every
-# platform. These have no business being there; ADR-001 explains why.
-deny = [
-  { name = "tokio", wrappers = ["sonduit-transport", "sonduit-desktop"] },
-]
+# sonduit-core must stay free of heavyweight platform crates; ADR-001 explains
+# why. That rule is enforced properly by the cargo-tree check in ci.yml, which
+# can see WHICH crate pulled a dependency in. A [bans] entry cannot express
+# "not under sonduit-core" -- tokio legitimately arrives through tauri on the
+# desktop side, and listing our own crates as wrappers only produced
+# unused-wrapper warnings.
+deny = []
 
 [advisories]
 version = 2

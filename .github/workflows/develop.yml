@@ -39,10 +39,10 @@ jobs:
           range=$(node tools/version.mjs range)
           echo "range: $range"
 
-          # The dev counter is the workflow run number, which is monotonic per
-          # repository and never reused. See ADR-008.
-          counter=${{ github.run_number }}
-          version=$(node tools/version.mjs dev "$range" "$counter")
+          # The counter is derived from commits since the last release, not
+          # from the run number: a run number grows without bound and would
+          # eventually hit the reserved release slot. See ADR-008.
+          version=$(node tools/version.mjs dev "$range")
           code=$(node tools/version.mjs code "$version")
 
           echo "version=$version" >> "$GITHUB_OUTPUT"

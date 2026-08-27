@@ -34,7 +34,16 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             range="origin/${{ github.base_ref }}..HEAD"
           else
-            range="${{ github.event.before }}..HEAD"
+            # github.event.before is the null SHA when a branch is created and
+            # an unreachable object after a force-push, so it cannot be trusted
+            # as a range endpoint. Fall back to the last Sonduit release.
+            before="${{ github.event.before }}"
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]                || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              range="$(node tools/version.mjs range)"
+              echo "::notice::event.before unusable; checking $range instead"
+            else
+              range="${before}..HEAD"
+            fi
           fi
           echo "checking $range"
           node tools/lint/check-commits.mjs "$range"

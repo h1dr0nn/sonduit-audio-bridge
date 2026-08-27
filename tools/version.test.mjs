@@ -13,9 +13,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  MAX_DEV,
   RELEASE_SLOT,
   applyBump,
   bumpFromCommits,
+  devCounter,
   parseVersion,
   splitCommitRecords,
   versionCode,
@@ -82,14 +84,15 @@ test('a release outranks every dev build of the same version', () => {
 });
 
 test('versionCode stays inside the Play Store ceiling', () => {
-  // The largest code the layout can produce must still fit.
-  assert.equal(versionCode(parseVersion('208.99.999'), RELEASE_SLOT), 2_090_899_999);
-  assert.ok(versionCode(parseVersion('208.99.999'), RELEASE_SLOT) <= 2_100_000_000);
-  assert.throws(() => versionCode(parseVersion('209.0.0')));
-  assert.throws(() => versionCode(parseVersion('1.100.0')));
-  assert.throws(() => versionCode(parseVersion('1.0.1000')));
-});
+  // The largest code the layout can produce must still fit under the cap.
+  assert.equal(versionCode(parseVersion('209.99.99'), RELEASE_SLOT), 2_099_999_999);
+  assert.ok(versionCode(parseVersion('209.99.99'), RELEASE_SLOT) <= 2_100_000_000);
 
+  assert.throws(() => versionCode(parseVersion('210.0.0')));
+  assert.throws(() => versionCode(parseVersion('1.100.0')));
+  // patch is capped at 99, not 999: patch*1_000 must stay inside the minor field.
+  assert.throws(() => versionCode(parseVersion('1.0.100')));
+});
 test('commit records survive the newline git puts between them', () => {
   // This is the exact shape `git log --format=%s<UNIT>%b<RECORD>` produces.
   const output = [
@@ -122,4 +125,80 @@ test('an empty body never shifts a later body onto the wrong subject', () => {
   assert.equal(bodies[0], '');
   assert.equal(subjects[1], 'fix(core): b');
   assert.match(bodies[1], /BREAKING CHANGE/);
+});
+
+test('the dev counter refuses to reach the reserved release slot', () => {
+  // A CI run number would have hit 999 eventually, producing exactly the
+  // release code for a build that is not the release.
+  assert.equal(devCounter(0), 0);
+  assert.equal(devCounter(MAX_DEV), MAX_DEV);
+  assert.throws(() => devCounter(RELEASE_SLOT), /exceeds/);
+  assert.throws(() => devCounter(5000), /exceeds/);
+});
+
+test('no dev build can ever produce the release code', () => {
+  const release = versionCode(parseVersion('1.3.0'));
+  for (let dev = 0; dev <= MAX_DEV; dev += 1) {
+    assert.notEqual(versionCode(parseVersion('1.3.0'), dev), release);
+  }
+});
+
+test('versionCode is monotonic across the WHOLE version space, not just the examples', () => {
+  // The original suite only walked the six versions printed in ADR-008, which
+  // is exactly how a patch overflow into the minor field survived review.
+  // Walk the representable space in semver order instead.
+  const versions = [];
+  for (const major of [0, 1, 2]) {
+    for (const minor of [0, 1, 50, 98, 99]) {
+      for (const patch of [0, 1, 50, 98, 99]) {
+        versions.push({ major, minor, patch });
+      }
+    }
+  }
+
+  let previous = -1;
+  let previousLabel = 'start';
+  for (const version of versions) {
+    // Dev builds of a version come before its release.
+    for (const dev of [0, 1, 500, MAX_DEV, RELEASE_SLOT]) {
+      const code = versionCode(version, dev);
+      const label = version.major + '.' + version.minor + '.' + version.patch + ' dev.' + dev;
+      assert.ok(
+        code > previous,
+        label + ' (' + code + ') must exceed ' + previousLabel + ' (' + previous + ')',
+      );
+      previous = code;
+      previousLabel = label;
+    }
+  }
+});
+
+test('no two distinct versions share a code', () => {
+  const seen = new Map();
+  for (const major of [0, 1]) {
+    for (const minor of [0, 9, 99]) {
+      for (const patch of [0, 9, 99]) {
+        for (const dev of [0, 99, MAX_DEV, RELEASE_SLOT]) {
+          const code = versionCode({ major, minor, patch }, dev);
+          const label = major + '.' + minor + '.' + patch + '+' + dev;
+          assert.ok(!seen.has(code), label + ' collides with ' + seen.get(code) + ' at ' + code);
+          seen.set(code, label);
+        }
+      }
+    }
+  }
+});
+
+test('each field is strictly narrower than the one above it', () => {
+  // The invariant that makes the whole layout work.
+  assert.ok(RELEASE_SLOT < 1_000, 'dev must fit under the patch multiplier');
+  assert.throws(() => versionCode({ major: 1, minor: 0, patch: 100 }), /patch/);
+  assert.throws(() => versionCode({ major: 1, minor: 100, patch: 0 }), /minor/);
+
+  // The specific overflow that shipped and was caught in review.
+  assert.ok(
+    versionCode({ major: 1, minor: 0, patch: 99 }) <
+      versionCode({ major: 1, minor: 1, patch: 0 }, 0),
+    '1.0.99 must sort below 1.1.0-dev.0',
+  );
 });

@@ -28,8 +28,8 @@ which is the standard answer, and a small purpose-built UDP exchange.
    raw socket bound to a chosen local address does that in one line. mDNS
    libraries generally want to manage interfaces themselves.
 
-2. **Dependency weight against a tiny protocol.** The whole exchange is under
-   80 lines including tests. An mDNS crate is a significant dependency for a
+2. **Dependency weight against a tiny protocol.** The whole exchange is about
+   130 lines of implementation plus its tests. An mDNS crate is a significant dependency for a
    two-message protocol, and every dependency has to be justified.
 
 3. **Reliability on the platforms that matter.** Windows has its own mDNS

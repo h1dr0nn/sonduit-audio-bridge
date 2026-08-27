@@ -20,8 +20,10 @@ repository = "https://github.com/h1dr0nn/sonduit-audio-bridge"
 authors = ["Sonduit contributors"]
 
 [workspace.dependencies]
-sonduit-core = { path = "crates/sonduit-core" }
-sonduit-transport = { path = "crates/sonduit-transport" }
+# A version alongside the path is required: a path-only dependency is a "*"
+# requirement, which cargo-deny rejects under [bans] wildcards = "deny".
+sonduit-core = { path = "crates/sonduit-core", version = "0.1.0" }
+sonduit-transport = { path = "crates/sonduit-transport", version = "0.1.0" }
 
 thiserror = "2"
 tracing = "0.1"
