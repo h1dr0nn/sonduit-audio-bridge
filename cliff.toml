@@ -1,0 +1,106 @@
+# git-cliff configuration.
+#
+# ============================================================================
+# THE HISTORY BOUNDARY - read this before changing anything below
+# ============================================================================
+#
+# This repository previously held Harmonix SE. That history does NOT follow
+# Conventional Commits, so letting git-cliff walk into it produces either a
+# changelog full of noise or a hard failure from release.yml's "every commit
+# must be valid" gate.
+#
+# The boundary is the `harmonix-final` tag, which points at the last Harmonix
+# commit (fbcc8b4). Everything after it is Sonduit.
+#
+# `tag_pattern` below only matches `v<major>.<minor>.<patch>`, so the Harmonix
+# tags v1.0.0 through v1.0.4 are invisible to git-cliff. That is necessary but
+# NOT sufficient: with no Sonduit release tag yet, git-cliff would still walk
+# back to the root commit.
+#
+# So the workflows ALWAYS pass an explicit range, falling back to
+# `harmonix-final..<tag>` when no previous Sonduit release exists. Never invoke
+# git-cliff here without a range, and never remove the `harmonix-final` tag.
+# ============================================================================
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to Sonduit are documented here.
+
+This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+and its commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+
+Changelogs are generated for minor and major releases only. Patch releases
+carry fixes and chores; their notes point at the commit history. See
+docs/adr/ADR-008-versioning.md.
+
+"""
+
+body = """
+{% if version -%}
+## {{ version | trim_start_matches(pat="v") }} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## Unreleased
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }} ([`{{ commit.id | truncate(length=8, end="") }}`](https://github.com/h1dr0nn/sonduit-audio-bridge/commit/{{ commit.id }})){% if commit.remote.pr_number %} in [#{{ commit.remote.pr_number }}](https://github.com/h1dr0nn/sonduit-audio-bridge/pull/{{ commit.remote.pr_number }}){% endif %}
+{%- endfor %}
+{% endfor %}
+"""
+
+footer = """
+"""
+
+trim = true
+
+[git]
+conventional_commits = true
+
+# Anything that is not a Conventional Commit is filtered out here, but that is
+# a formatting safeguard, not the correctness gate. release.yml separately runs
+# tools/lint/check-commits.mjs over the same range and FAILS on an invalid
+# commit, because a silently dropped commit is a silently wrong changelog.
+filter_unconventional = true
+
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+
+# Only Sonduit release tags. Harmonix's v1.0.x tags and the rolling `develop`
+# tag deliberately do not match.
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+
+topo_order = false
+sort_commits = "oldest"
+
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactoring" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Tests" },
+  { message = "^build", group = "Build System" },
+  { message = "^ci", group = "Continuous Integration" },
+  { message = "^revert", group = "Reverts" },
+  # Housekeeping is real work but not release-note material.
+  { message = "^chore\\(deps\\)", group = "Dependencies" },
+  { message = "^chore", skip = true },
+  { body = ".*security", group = "Security" },
+]
+
+commit_preprocessors = [
+  # Strip the trailing co-author trailer from the rendered message.
+  { pattern = "\\s*Co-Authored-By:.*", replace = "" },
+]
+
+[remote.github]
+owner = "h1dr0nn"
+repo = "sonduit-audio-bridge"
+
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = true

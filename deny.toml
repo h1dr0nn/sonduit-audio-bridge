@@ -1,0 +1,62 @@
+# cargo-deny configuration.
+#
+# The point of this file is stated in docs/licensing.md: sonduit-core compiles
+# into BOTH the Windows binary and the Android app, so a copyleft dependency
+# anywhere in its tree contaminates the whole product, not one half of it.
+# Discipline is not a control; this is the control.
+
+[graph]
+all-features = true
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-linux-android",
+  "armv7-linux-androideabi",
+  "x86_64-linux-android",
+  "x86_64-unknown-linux-gnu",
+]
+
+[licenses]
+# Sonduit is MIT. Only permissive licences that can be redistributed inside an
+# MIT-licensed binary are allowed here.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "CC0-1.0",
+  "Unlicense",
+  "BSL-1.0",
+]
+confidence-threshold = 0.9
+
+# Everything not on the list above is denied, which is the intent: GPL-2.0,
+# GPL-3.0, AGPL-3.0 and LGPL all fail here rather than in review. See the
+# "Decisions that would force Sonduit to GPL" table in docs/licensing.md.
+
+# Note: the Scream driver in driver/ is MS-PL and is redistributed unmodified.
+# It is not a Cargo dependency, so cargo-deny never sees it. Its obligations are
+# tracked in docs/licensing.md, not here.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# A dependency in sonduit-core is a dependency in every Sonduit binary on every
+# platform. These have no business being there; ADR-001 explains why.
+deny = [
+  { name = "tokio", wrappers = ["sonduit-transport", "sonduit-desktop"] },
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,181 @@
+name: develop
+
+on:
+  push:
+    branches: [develop]
+
+concurrency:
+  group: develop
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: compute dev version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      code: ${{ steps.compute.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - id: compute
+        name: Derive the version from the commits since the last release
+        run: |
+          set -e
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || echo "")
+          if [ -z "$last" ]; then
+            range="HEAD"
+            echo "no release tag yet; counting from the start of history"
+          else
+            range="${last}..HEAD"
+          fi
+
+          # The dev counter is the workflow run number, which is monotonic per
+          # repository and never reused. See ADR-008.
+          counter=${{ github.run_number }}
+          version=$(node tools/version.mjs dev "$range" "$counter")
+          code=$(node tools/version.mjs code "$version")
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "### Develop build \`$version\` (versionCode $code)" >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    name: windows debug artifact
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Stamp the version
+        run: node tools/version.mjs sync "${{ needs.version.outputs.version }}"
+
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+
+      - name: Build unsigned desktop binary
+        run: cargo build -p sonduit-desktop --features custom-protocol
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sonduit-windows-${{ needs.version.outputs.version }}
+          path: target/debug/sonduit.exe
+          retention-days: 14
+          if-no-files-found: error
+
+  android:
+    name: android debug artifact
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+
+      - name: Stamp the version
+        run: node tools/version.mjs sync "${{ needs.version.outputs.version }}"
+
+      - name: Install NDK and cargo-ndk
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          cargo install cargo-ndk --locked
+
+      - name: Cross-compile the shared core
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: cargo ndk -t arm64-v8a build -p sonduit-ffi --release
+
+      - name: Build APK if the Gradle project exists
+        id: apk
+        run: |
+          if [ -f android/settings.gradle ] || [ -f android/settings.gradle.kts ]; then
+            cd android && ./gradlew assembleDebug --no-daemon
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::android/ has no Gradle project yet; publishing the native library only"
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sonduit-android-${{ needs.version.outputs.version }}
+          path: |
+            target/aarch64-linux-android/release/libsonduit_ffi.so
+            android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+  prerelease:
+    name: publish rolling prerelease
+    needs: [version, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Move the rolling develop tag
+        run: |
+          git tag -f develop
+          git push -f origin develop
+
+      # No changelog here on purpose. Changelogs are generated for minor and
+      # major releases only; a per-push develop build has nothing worth
+      # summarising and would only create noise. See ADR-008.
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          version="${{ needs.version.outputs.version }}"
+          find artifacts -type f -print
+
+          notes=$(printf '%s\n' \
+            "Automated develop build \`$version\`." \
+            "" \
+            "Built from ${{ github.sha }}. Unsigned debug artifacts, for testing only." \
+            "This tag is rolling and is overwritten by every push to develop." \
+            "" \
+            "No changelog is generated for develop builds.")
+
+          gh release delete develop --yes --cleanup-tag=false 2>/dev/null || true
+          gh release create develop \
+            --prerelease \
+            --title "develop ($version)" \
+            --notes "$notes" \
+            --target "${{ github.sha }}" \
+            $(find artifacts -type f | tr '\n' ' ')

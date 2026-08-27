@@ -1,0 +1,254 @@
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changelog:
+    name: generate changelog
+    runs-on: ubuntu-latest
+    outputs:
+      changelog: ${{ steps.build.outputs.changelog }}
+      kind: ${{ steps.classify.outputs.kind }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - id: classify
+        name: Decide whether this release gets a changelog
+        run: |
+          set -e
+          version="${GITHUB_REF_NAME#v}"
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+
+          if [ -z "$previous" ]; then
+            kind=minor
+            echo "first release; treating as minor"
+          else
+            old="${previous#v}"
+            IFS=. read -r om onm _ <<EOF
+          $old
+          EOF
+            IFS=. read -r nm nnm _ <<EOF
+          $version
+          EOF
+            if [ "$nm" != "$om" ]; then kind=major
+            elif [ "$nnm" != "$onm" ]; then kind=minor
+            else kind=patch
+            fi
+          fi
+
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "Release $version is a $kind release (previous: ${previous:-none})" >> "$GITHUB_STEP_SUMMARY"
+
+      # Every commit in the range must be a valid Conventional Commit, or the
+      # changelog would be wrong and a wrong changelog is worse than a failed
+      # build.
+      - name: Validate the commit range
+        run: |
+          set -e
+          previous="${{ steps.classify.outputs.previous }}"
+          if [ -z "$previous" ]; then
+            range="${{ github.sha }}"
+            echo "first release; validating from the first Sonduit commit"
+            first=$(git log --format=%H --reverse --grep='^chore: remove harmonix python backend' | head -1)
+            if [ -n "$first" ]; then range="${first}~1..${GITHUB_REF_NAME}"; fi
+          else
+            range="${previous}..${GITHUB_REF_NAME}"
+          fi
+          echo "validating $range"
+          node tools/lint/check-commits.mjs "$range"
+
+      - name: Install git-cliff
+        if: steps.classify.outputs.kind != 'patch'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - id: build
+        name: Build the changelog
+        run: |
+          set -e
+          kind="${{ steps.classify.outputs.kind }}"
+
+          if [ "$kind" = "patch" ]; then
+            # Deliberate: changelogs are written for minor and major releases
+            # only. A patch release is fixes and chores, and its release notes
+            # are the commit list. See ADR-008.
+            echo "::notice::patch release; skipping changelog generation"
+            {
+              echo 'changelog<<CHANGELOG_EOF'
+              echo "Patch release. See the commit history for the full list of fixes."
+              echo 'CHANGELOG_EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          previous="${{ steps.classify.outputs.previous }}"
+          # Boundary: git-cliff must never walk into Harmonix history, which is
+          # not Conventional Commits. See the note at the top of cliff.toml.
+          if [ -z "$previous" ]; then
+            range="harmonix-final..${GITHUB_REF_NAME}"
+          else
+            range="${previous}..${GITHUB_REF_NAME}"
+          fi
+          echo "generating changelog for $range"
+          git cliff "$range" --strip header --output generated.md
+
+          if [ ! -s generated.md ]; then
+            echo "::error::git-cliff produced an empty changelog for a $kind release"
+            exit 1
+          fi
+
+          cat generated.md
+          {
+            echo 'changelog<<CHANGELOG_EOF'
+            cat generated.md
+            echo 'CHANGELOG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate the full CHANGELOG.md
+        if: steps.classify.outputs.kind != 'patch'
+        run: git cliff "harmonix-final..$GITHUB_REF_NAME" --output CHANGELOG.md
+
+      - uses: actions/upload-artifact@v4
+        if: steps.classify.outputs.kind != 'patch'
+        with:
+          name: changelog
+          path: CHANGELOG.md
+
+  windows:
+    name: windows release artifact
+    needs: changelog
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Verify the tag matches the workspace version
+        shell: bash
+        run: |
+          set -e
+          declared=$(node tools/version.mjs read)
+          tagged="${GITHUB_REF_NAME#v}"
+          if [ "$declared" != "$tagged" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $declared"
+            exit 1
+          fi
+          node tools/version.mjs check
+
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+
+      - name: Build release bundles
+        run: npx tauri build --ci
+        working-directory: desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundles
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  android:
+    name: android release artifact
+    needs: changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+
+      - name: Install NDK and cargo-ndk
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          cargo install cargo-ndk --locked
+
+      - name: Build the shared core for every ABI
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            build -p sonduit-ffi --release
+
+      # Release signing needs a keystore this repository does not have. The
+      # build stops at an unsigned artifact rather than pretending otherwise;
+      # see docs/roadmap.md.
+      - name: Build APK if the Gradle project exists
+        run: |
+          if [ -f android/settings.gradle ] || [ -f android/settings.gradle.kts ]; then
+            cd android && ./gradlew assembleRelease --no-daemon
+          else
+            echo "::notice::android/ has no Gradle project yet; publishing native libraries only"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-artifacts
+          path: |
+            target/*-linux-android*/release/libsonduit_ffi.so
+            android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+  publish:
+    name: publish github release
+    needs: [changelog, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          find artifacts -type f -print
+          files=$(find artifacts -type f -name '*.msi' -o -name '*.exe' -o -name '*.apk' -o -name '*.so' | tr '\n' ' ')
+          if [ -z "$files" ]; then
+            echo "::error::no artifacts to attach"
+            exit 1
+          fi
+
+          cat > notes.md <<'NOTES_EOF'
+          ${{ needs.changelog.outputs.changelog }}
+          NOTES_EOF
+
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            $files

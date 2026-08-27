@@ -1,0 +1,150 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  language:
+    name: language rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Commit linting needs the range, not just the tip.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Source is ASCII outside // comment bodies
+        run: node tools/lint/check-source-ascii.mjs
+
+      - name: Commit subjects are ASCII and Conventional Commits
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="origin/${{ github.base_ref }}..HEAD"
+          else
+            range="${{ github.event.before }}..HEAD"
+          fi
+          echo "checking $range"
+          node tools/lint/check-commits.mjs "$range"
+
+      - name: Version lives in exactly one place
+        run: node tools/version.mjs check
+
+  core:
+    name: core (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+      # The structural rule from ADR-001, enforced rather than trusted:
+      # sonduit-core must build with no platform crates in its tree.
+      - name: sonduit-core has no platform dependencies
+        run: |
+          set -e
+          tree=$(cargo tree -p sonduit-core --edges normal --prefix none | sort -u)
+          echo "$tree"
+          for forbidden in windows windows-sys ndk oboe jni tokio winapi core-foundation; do
+            if echo "$tree" | grep -qE "^${forbidden} v"; then
+              echo "::error::sonduit-core depends on ${forbidden}; see ADR-001"
+              exit 1
+            fi
+          done
+          echo "OK: sonduit-core is platform independent"
+
+  licences:
+    name: dependency licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans
+
+  desktop:
+    name: desktop (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: desktop
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: desktop
+
+      # This is the only feedback loop for the WASAPI half of the project, so
+      # it runs on every pull request rather than only on release.
+      - name: Build desktop binary
+        run: cargo build -p sonduit-desktop --features custom-protocol
+
+      - name: Test the windows capture crate
+        run: cargo test -p sonduit-capture-win
+
+  android:
+    name: android (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.2.12479018"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # Cross-compiling the shared Rust is possible today. The Gradle project
+      # does not exist yet, so the APK step is gated rather than faked; see
+      # docs/roadmap.md.
+      - name: Cross-compile the shared core
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            build -p sonduit-ffi -p sonduit-playback-android --release
+
+      - name: Build APK
+        run: |
+          if [ -f android/settings.gradle ] || [ -f android/settings.gradle.kts ]; then
+            cd android && ./gradlew assembleDebug --no-daemon
+          else
+            echo "::notice::android/ has no Gradle project yet; skipping APK build"
+          fi
