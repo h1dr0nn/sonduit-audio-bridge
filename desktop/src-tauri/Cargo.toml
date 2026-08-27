@@ -37,6 +37,15 @@ tauri-plugin-process = "2.3.1"
 [target.'cfg(windows)'.dependencies]
 sonduit-capture-win.workspace = true
 
+# Enumerating network adapters, to find a tethered phone without asking the
+# user for its address.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
 [features]
 # Used for production builds, or when devPath points at the filesystem.
 custom-protocol = ["tauri/custom-protocol"]

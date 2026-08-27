@@ -82,14 +82,57 @@ pub struct JitterConfig {
     pub max_packets: usize,
 }
 
+/// Which link the audio is arriving over.
+///
+/// The buffer depth that is right for one is wrong for the other, and by
+/// enough to matter: ADR-004 puts a single shared constant at either eighteen
+/// wasted milliseconds on USB or regular underruns on Wi-Fi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// A wireless network. Shared medium, retransmission, and a scheduler that
+    /// can stall a station for tens of milliseconds without warning.
+    WiFi,
+    /// USB tethering. A dedicated wire with no contention and no retry.
+    Usb,
+}
+
 impl Default for JitterConfig {
     fn default() -> Self {
-        Self {
-            target_ms: 30,
-            min_ms: 10,
-            max_ms: 200,
-            jitter_multiplier: 3.0,
-            max_packets: 256,
+        Self::for_transport(Transport::WiFi)
+    }
+}
+
+impl JitterConfig {
+    /// Depths suited to `transport`.
+    ///
+    /// Wi-Fi gets the conservative numbers because its worst case is not its
+    /// average: a station that loses the medium for 40 ms is normal on a busy
+    /// access point, and a buffer sized for the average underruns every time
+    /// that happens.
+    ///
+    /// USB has no contention and no retransmission, so the arrival spacing is
+    /// nearly deterministic. Holding 30 ms there is 20 ms of latency bought
+    /// against a hazard that does not exist on the link.
+    #[must_use]
+    pub const fn for_transport(transport: Transport) -> Self {
+        match transport {
+            Transport::WiFi => Self {
+                target_ms: 30,
+                min_ms: 10,
+                max_ms: 200,
+                jitter_multiplier: 3.0,
+                max_packets: 256,
+            },
+            Transport::Usb => Self {
+                target_ms: 10,
+                min_ms: 6,
+                // Still adaptive, and still allowed to grow: a phone that is
+                // busy can stall its own USB stack, and the floor matters more
+                // than the ceiling.
+                max_ms: 80,
+                jitter_multiplier: 3.0,
+                max_packets: 256,
+            },
         }
     }
 }
@@ -379,6 +422,83 @@ impl JitterBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usb_holds_less_audio_than_wifi() {
+        // The whole reason the two are distinguished. One constant for both
+        // either wastes latency on the wire or underruns on the air.
+        let wifi = JitterConfig::for_transport(Transport::WiFi);
+        let usb = JitterConfig::for_transport(Transport::Usb);
+
+        assert!(
+            usb.target_ms < wifi.target_ms,
+            "usb {} ms is not below wifi {} ms",
+            usb.target_ms,
+            wifi.target_ms
+        );
+        assert!(usb.min_ms < wifi.min_ms);
+    }
+
+    #[test]
+    fn every_transport_leaves_room_to_adapt_upwards() {
+        // A ceiling at or below the target would pin the buffer and defeat the
+        // adaptation entirely.
+        for transport in [Transport::WiFi, Transport::Usb] {
+            let config = JitterConfig::for_transport(transport);
+            assert!(
+                config.max_ms > config.target_ms,
+                "{transport:?} cannot grow past its target"
+            );
+            assert!(
+                config.min_ms < config.target_ms,
+                "{transport:?} cannot shrink below its target"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_is_the_conservative_transport() {
+        // Anything that has not been told which link it is on is guessing, and
+        // guessing wrong towards wifi costs latency while guessing wrong
+        // towards usb costs dropouts.
+        let default = JitterConfig::default();
+        let wifi = JitterConfig::for_transport(Transport::WiFi);
+        assert_eq!(default.target_ms, wifi.target_ms);
+    }
+
+    #[test]
+    fn a_usb_buffer_starts_playing_sooner_than_a_wifi_one() {
+        // The configuration only matters if it reaches the buffer, so this
+        // asserts on behaviour rather than on the numbers.
+        let format = Format::stereo_48k();
+        let mut usb = JitterBuffer::new(format, JitterConfig::for_transport(Transport::Usb));
+        let mut wifi = JitterBuffer::new(format, JitterConfig::for_transport(Transport::WiFi));
+
+        let payload = crate::format::PCM_PAYLOAD_BYTES;
+        let frames = (payload / 4) as u32;
+        let mut usb_started = None;
+        let mut wifi_started = None;
+
+        for sequence in 0..40_u16 {
+            let pcm = vec![1_u8; payload];
+            usb.push(sequence, u32::from(sequence) * frames, 0, pcm.clone());
+            wifi.push(sequence, u32::from(sequence) * frames, 0, pcm);
+
+            if usb_started.is_none() && !matches!(usb.pop(), PopOutcome::Starved) {
+                usb_started = Some(sequence);
+            }
+            if wifi_started.is_none() && !matches!(wifi.pop(), PopOutcome::Starved) {
+                wifi_started = Some(sequence);
+            }
+        }
+
+        let usb_started = usb_started.expect("usb never started playing");
+        let wifi_started = wifi_started.expect("wifi never started playing");
+        assert!(
+            usb_started < wifi_started,
+            "usb started at packet {usb_started}, wifi at {wifi_started}"
+        );
+    }
 
     /// 288 frames at 48 kHz is 6 ms, so packet n is due at n * 6 ms.
     const PACKET_NANOS: u64 = 6_000_000;

@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use sonduit_core::drift::{DriftConfig, DriftEstimator};
 use sonduit_core::format::Format;
-use sonduit_core::jitter::{JitterBuffer, JitterConfig};
+use sonduit_core::jitter::{JitterBuffer, JitterConfig, Transport};
 use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
 use sonduit_core::resample::DriftResampler;
@@ -127,6 +127,9 @@ pub struct BridgeTelemetry {
     pub drift_ppm: Option<f64>,
     /// Correction currently being applied, in parts per million.
     pub correction_ppm: f64,
+    /// Which link the audio is arriving over, as guessed from the sender's
+    /// address. Empty before the first packet.
+    pub transport: String,
 }
 
 /// State shared between the receive thread and the FFI callers.
@@ -146,6 +149,8 @@ struct Shared {
     ///
     /// Written by the receive thread, read by whoever asks for telemetry.
     drift: Mutex<(Option<f64>, f64)>,
+    /// The link the buffer was sized for.
+    transport: Mutex<Option<Transport>>,
 }
 
 /// A handle the Android app holds for the lifetime of a session.
@@ -250,6 +255,17 @@ impl Bridge {
             .lock()
             .map(|value| *value)
             .unwrap_or((None, 0.0));
+        let transport = shared
+            .transport
+            .lock()
+            .ok()
+            .and_then(|value| *value)
+            .map(|link| match link {
+                Transport::Usb => "usb",
+                Transport::WiFi => "wifi",
+            })
+            .unwrap_or_default()
+            .to_string();
 
         // try_lock: telemetry is a nice-to-have, and blocking here would put
         // the UI thread behind the audio callback.
@@ -262,6 +278,7 @@ impl Bridge {
                 playback_error,
                 drift_ppm,
                 correction_ppm,
+                transport,
                 ..BridgeTelemetry::default()
             };
         };
@@ -282,6 +299,7 @@ impl Bridge {
             playback_error,
             drift_ppm,
             correction_ppm,
+            transport,
         }
     }
 
@@ -339,6 +357,7 @@ impl Bridge {
             playback: Mutex::new(None),
             playback_error: Mutex::new(None),
             drift: Mutex::new((None, 0.0)),
+            transport: Mutex::new(None),
         });
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -479,13 +498,17 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     let mut sender_frames = 0_u64;
     let mut previous_timestamp: Option<u32> = None;
     let mut since_correction = 0_u32;
+    // Decided from the first packet's source address. Wi-Fi until then,
+    // because holding too much audio is recoverable and holding too little is
+    // heard immediately.
+    let mut transport = Transport::WiFi;
     // Scream carries no sequence number, so one is synthesised on arrival.
     // Reordering cannot be repaired for that wire format, which is a property
     // of the protocol and not of this code.
     let mut scream_sequence = 0_u16;
 
     while !stop.load(Ordering::Relaxed) {
-        let Ok((length, _from)) = socket.recv_from(&mut datagram) else {
+        let Ok((length, from)) = socket.recv_from(&mut datagram) else {
             continue;
         };
         let arrival = start.elapsed().as_nanos() as u64;
@@ -540,6 +563,10 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
         if changed {
             // Everything learned about the previous stream is about a
             // different clock pair and a different rate.
+            transport = transport_of(from);
+            if let Ok(mut slot) = shared.transport.lock() {
+                *slot = Some(transport);
+            }
             estimator = Some(DriftEstimator::new(DriftConfig::for_rate(
                 format.sample_rate,
             )));
@@ -578,8 +605,10 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
 
         if let Ok(mut source) = shared.source.lock() {
             if changed {
-                *source =
-                    JitterSource::new(JitterBuffer::new(format, JitterConfig::default()), format);
+                *source = JitterSource::new(
+                    JitterBuffer::new(format, JitterConfig::for_transport(transport)),
+                    format,
+                );
             }
             source.buffer_mut().push(sequence, timestamp, arrival, pcm);
         }
@@ -694,6 +723,28 @@ fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16, code: &PairingC
         // concerns one machine, and broadcasting it would wake every device on
         // the network and hand them all a tag to study.
         let _ = socket.send_to(&reply, from);
+    }
+}
+
+/// Guess the link from the address the audio is arriving from.
+///
+/// Android's tethering range is fixed at 192.168.42/24 in AOSP and most OEMs
+/// keep it, so the guess is usually right. When it is wrong the cost is a
+/// buffer sized for the other link, which is 20 ms of latency or a few
+/// dropouts, not a broken session. The sender labels the link the same way;
+/// this is deliberately not taken from the packet, because a field an
+/// attacker controls should not decide how much audio is held.
+fn transport_of(from: SocketAddr) -> Transport {
+    match from.ip() {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            if octets[0] == 192 && octets[1] == 168 && octets[2] == 42 {
+                Transport::Usb
+            } else {
+                Transport::WiFi
+            }
+        }
+        std::net::IpAddr::V6(_) => Transport::WiFi,
     }
 }
 

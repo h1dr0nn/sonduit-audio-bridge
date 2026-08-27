@@ -27,6 +27,7 @@ use sonduit_transport::pairing::{PairingCode, NONCE_BYTES};
 use sonduit_transport::{discovery, TransportError, Wire, DEFAULT_PORT};
 use tauri::{AppHandle, Emitter};
 
+pub mod adapters;
 mod telemetry;
 
 pub use telemetry::{Accumulator, BridgeSnapshot, SessionInfo, TelemetryView};
@@ -225,10 +226,30 @@ pub fn discover(code: &str) -> Result<Vec<DiscoveredDevice>, BridgeError> {
     let broadcast = SocketAddr::from((Ipv4Addr::BROADCAST, discovery::DISCOVERY_PORT));
     // A single probe is enough on a wired link and often not enough on WiFi,
     // where the first broadcast after an idle period is regularly dropped.
+    let mut reached_anything = false;
     for _ in 0..3 {
-        socket
-            .send_to(&probe, broadcast)
-            .map_err(|error| BridgeError::Network(error.to_string()))?;
+        if socket.send_to(&probe, broadcast).is_ok() {
+            reached_anything = true;
+        }
+    }
+
+    // A tethered phone is often not reachable by broadcast: the RNDIS
+    // interface sits on the Public firewall profile and some drivers drop
+    // 255.255.255.255 outright. It is reachable by unicast, and its address is
+    // the gateway on that adapter, so ask it directly rather than hoping.
+    for adapter in adapters::enumerate().unwrap_or_default() {
+        if socket
+            .send_to(&probe, adapter.target(discovery::DISCOVERY_PORT))
+            .is_ok()
+        {
+            reached_anything = true;
+        }
+    }
+
+    if !reached_anything {
+        return Err(BridgeError::Network(
+            "no interface accepted the discovery probe".to_string(),
+        ));
     }
 
     let mut found: Vec<DiscoveredDevice> = Vec::new();
