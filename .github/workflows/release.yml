@@ -160,6 +160,10 @@ jobs:
       - run: npm run build
         working-directory: desktop
 
+      - name: Fetch FFmpeg
+        run: node tools/fetch-ffmpeg.mjs
+        shell: bash
+
       - name: Build release bundles
         run: npx tauri build --ci
         working-directory: desktop

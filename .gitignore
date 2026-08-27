@@ -37,3 +37,6 @@ third_party/reference/
 .idea/
 .vscode/
 *.swp
+
+# FFmpeg is fetched by tools/fetch-ffmpeg.mjs, never committed.
+desktop/src-tauri/binaries/

@@ -132,6 +132,9 @@ Honest list of things that exist but are not finished:
 | `Bridge::start`, `Bridge::stop` are `todo!()` | `sonduit-ffi` |
 | Playback `open` is `todo!()` | `sonduit-playback-android` |
 | No aggregated third-party licence file is shipped | `licensing.md` section 5 |
+| FFmpeg LGPL notice is not shown in About, and no LGPL text ships in the bundle | `licensing.md` section 2.2 |
+| Mastering uses a single loudnorm pass; two-pass would be more accurate | `convert/args.rs` |
+| The bundled FFmpeg is 110 MB, which dominates the installer size | `tools/fetch-ffmpeg.mjs` |
 | Discovery has **no authentication or pairing** | ADR-006. Not acceptable for a shipped product |
 | The Scream driver commit is not pinned | `licensing.md`; a floating reference is not good enough |
 | `driver/` is empty | ADR-002 |

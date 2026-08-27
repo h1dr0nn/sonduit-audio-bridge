@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod convert;
 mod core;
 
 use crate::core::logging::log_message;
@@ -26,7 +27,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::ping,
-            commands::set_backdrop_theme
+            commands::set_backdrop_theme,
+            commands::convert_audio,
+            commands::analyze_audio
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

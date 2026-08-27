@@ -71,6 +71,10 @@ jobs:
       - run: npm run build
         working-directory: desktop
 
+      - name: Fetch FFmpeg
+        run: node tools/fetch-ffmpeg.mjs
+        shell: bash
+
       - name: Build unsigned desktop binary
         run: cargo build -p sonduit-desktop --features custom-protocol
 

@@ -59,7 +59,10 @@
       "frameworks": [],
       "providerShortName": null,
       "signingIdentity": null
-    }
+    },
+    "resources": [
+      "binaries/*"
+    ]
   },
   "plugins": {}
 }

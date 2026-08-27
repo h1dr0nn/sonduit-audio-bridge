@@ -3314,6 +3314,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-process",
  "tauri-plugin-store",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

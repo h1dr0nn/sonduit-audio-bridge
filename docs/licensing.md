@@ -21,6 +21,7 @@ Every decision below is measured against the goal of keeping it that way.
 | Scream driver source | `duncanthrax/scream` `Scream/` | MS-PL | Read only. Not vendored, not compiled. | None while unmodified |
 | `martinellimarco/scream-android` | GitHub | **GPL-3.0** | **Nothing. Not read for implementation, not copied, not adapted.** | **High if violated** |
 | `BreadFish64/AndroidUsbAudioDevice` | GitHub | **No licence at all** | **Nothing. Read the README only.** | **High if violated** |
+| **FFmpeg** | BtbN builds, **LGPL variant** | LGPL-2.1+ | Bundled binary, run as a **separate process**. Never linked. | Low, notice required |
 | Rust crates | crates.io | MIT / Apache-2.0 | Linked normally | None |
 | Oboe | `google/oboe` | Apache-2.0 | Linked on Android | None, notice required |
 
@@ -76,6 +77,39 @@ expensive project.
 **MS-PL permits modification. Windows makes it impractical.** Keeping the
 driver bit-identical is therefore a hard project rule, and any proposal to
 patch it must go through a new ADR.
+
+---
+
+## 2.2 FFmpeg, and why a subprocess is the licence boundary
+
+The editor screens convert, master, trim and modify audio. That work is done by
+**FFmpeg**, fetched by `tools/fetch-ffmpeg.mjs` into
+`desktop/src-tauri/binaries/` and bundled as a Tauri resource.
+
+Two decisions keep this clean:
+
+1. **The LGPL build, not the GPL one.** BtbN publishes both. The LGPL variant
+   omits the GPL-only codecs and carries the weaker obligation, so there is no
+   argument to have.
+2. **It runs as a separate process.** Sonduit spawns `ffmpeg.exe` and reads its
+   exit status; it does not link against any FFmpeg library. Copyleft reaches
+   across a linking boundary, not across a process boundary, and that is what
+   lets an MIT application ship it.
+
+Obligations that follow, none of which touch this project's own licence:
+
+- Ship the LGPL text alongside the binary and state that FFmpeg is included.
+- Do not modify the binary. It is used exactly as published.
+- Make the corresponding source available. Upstream already does; a link to the
+  exact build satisfies this.
+
+**The binary is never committed.** It is 110 MB, changes with every upstream
+release, and git history is permanent. `.gitignore` excludes
+`desktop/src-tauri/binaries/`, and CI fetches it before building.
+
+Not yet done: the About screen does not display the FFmpeg notice, and the
+bundle carries no LGPL text file. Both are tracked in
+[roadmap.md](./roadmap.md).
 
 ---
 

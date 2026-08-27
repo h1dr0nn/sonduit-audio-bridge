@@ -114,6 +114,11 @@ jobs:
         run: npm run build
         working-directory: desktop
 
+      # The editor shells out to FFmpeg. It is gitignored and fetched here so a
+      # 110 MB binary never enters git history.
+      - name: Fetch FFmpeg
+        run: node tools/fetch-ffmpeg.mjs
+
       # This is the only feedback loop for the WASAPI half of the project, so
       # it runs on every pull request rather than only on release.
       - name: Build desktop binary
