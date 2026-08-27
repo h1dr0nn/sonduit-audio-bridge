@@ -268,6 +268,41 @@ function syncGradle(version, code) {
   return { path: GRADLE_PROPERTIES, after: `${version} (${code})` };
 }
 
+/**
+ * Rewrite the `version = "x.y.z"` on every path dependency in
+ * `[workspace.dependencies]`.
+ *
+ * These exist because cargo-deny rejects a path-only dependency as a wildcard,
+ * and cargo has no `version.workspace = true` for a dependency requirement. So
+ * the number is written out, which means it is one more derived value that can
+ * drift. It drifted the first time the workspace version changed: every crate
+ * asked for ^0.1.0 while every crate was 1.0.4, and the whole workspace stopped
+ * resolving.
+ */
+function syncWorkspaceDeps(version) {
+  const text = readFileSync(CARGO_TOML, 'utf8');
+  const updated = text.replace(
+    /^(sonduit-[a-z-]+ = \{ path = "[^"]+", version = ")[^"]+(" \})$/gm,
+    `$1${version}$2`,
+  );
+  if (updated === text) return null;
+  writeFileSync(CARGO_TOML, updated);
+  return { path: `${CARGO_TOML} [workspace.dependencies]`, after: version };
+}
+
+/** Every version requirement declared on a workspace path dependency. */
+function workspaceDepVersions() {
+  const text = readFileSync(CARGO_TOML, 'utf8');
+  const found = [];
+  const pattern = /^(sonduit-[a-z-]+) = \{ path = "[^"]+", version = "([^"]+)" \}$/gm;
+  let match = pattern.exec(text);
+  while (match) {
+    found.push({ name: match[1], version: match[2] });
+    match = pattern.exec(text);
+  }
+  return found;
+}
+
 function devCounterOf(version) {
   const match = /-dev\.(\d+)/.exec(version);
   if (!match) return RELEASE_SLOT;
@@ -327,7 +362,11 @@ function main() {
       const version = args[0] ?? readWorkspaceVersion();
       const base = version.split('-')[0];
       const code = versionCode(parseVersion(base), devCounterOf(version));
-      for (const result of [syncTauri(version), syncGradle(version, code)]) {
+      for (const result of [
+        syncTauri(version),
+        syncGradle(version, code),
+        syncWorkspaceDeps(base),
+      ]) {
         if (result) console.log(`updated ${result.path} -> ${result.after}`);
       }
       break;
@@ -348,6 +387,14 @@ function main() {
         const name = /^sonduitVersionName=(.*)$/m.exec(text);
         if (name && name[1].trim() !== version) {
           problems.push(`${GRADLE_PROPERTIES} says ${name[1].trim()}, Cargo.toml says ${version}`);
+        }
+      }
+      for (const dependency of workspaceDepVersions()) {
+        if (dependency.version !== version) {
+          problems.push(
+            `[workspace.dependencies] ${dependency.name} requires ${dependency.version}, ` +
+              `Cargo.toml says ${version}`,
+          );
         }
       }
 

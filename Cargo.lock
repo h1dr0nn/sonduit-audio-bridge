@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-capture-win"
-version = "0.1.0"
+version = "1.0.4"
 dependencies = [
  "sonduit-core",
  "thiserror 2.0.20",
@@ -3491,7 +3491,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-core"
-version = "0.1.0"
+version = "1.0.4"
 dependencies = [
  "rubato",
  "thiserror 2.0.20",
@@ -3499,7 +3499,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-desktop"
-version = "0.1.0"
+version = "1.0.4"
 dependencies = [
  "chrono",
  "serde",
@@ -3521,7 +3521,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-ffi"
-version = "0.1.0"
+version = "1.0.4"
 dependencies = [
  "sonduit-core",
  "sonduit-playback-android",
@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-playback-android"
-version = "0.1.0"
+version = "1.0.4"
 dependencies = [
  "ndk",
  "sonduit-core",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-transport"
-version = "0.1.0"
+version = "1.0.4"
 dependencies = [
  "hmac",
  "sha2",
