@@ -149,10 +149,19 @@ jobs:
         with:
           path: artifacts
 
+      # The tag is `develop-build`, not `develop`. A tag sharing a name with a
+      # branch makes every unqualified reference to it ambiguous, and git
+      # refuses the push outright: "src refspec develop matches more than one".
+      # The refspecs below are fully qualified anyway, so neither mistake can
+      # come back.
       - name: Move the rolling develop tag
         run: |
-          git tag -f develop
-          git push -f origin develop
+          git tag -f develop-build
+          git push -f origin refs/tags/develop-build
+
+          # A `develop` tag from before the develop branch existed would keep
+          # the ambiguity alive for anyone who fetched it.
+          git push --delete origin refs/tags/develop 2>/dev/null || true
 
       # No changelog here on purpose. Changelogs are generated for minor and
       # major releases only; a per-push develop build has nothing worth
@@ -169,12 +178,12 @@ jobs:
             "Automated develop build \`$version\`." \
             "" \
             "Built from ${{ github.sha }}. Unsigned debug artifacts, for testing only." \
-            "This tag is rolling and is overwritten by every push to develop." \
+            "The \`develop-build\` tag is rolling and is overwritten by every push to develop." \
             "" \
             "No changelog is generated for develop builds.")
 
-          gh release delete develop --yes --cleanup-tag=false 2>/dev/null || true
-          gh release create develop \
+          gh release delete develop-build --yes --cleanup-tag=false 2>/dev/null || true
+          gh release create develop-build \
             --prerelease \
             --title "develop ($version)" \
             --notes "$notes" \
