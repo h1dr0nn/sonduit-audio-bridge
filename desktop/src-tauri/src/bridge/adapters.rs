@@ -108,12 +108,13 @@ pub fn rank(mut candidates: Vec<TetherAdapter>) -> Vec<TetherAdapter> {
     candidates
 }
 
-/// Enumerate interfaces that could be a tethered phone, best first.
+/// Ask Windows for the IPv4 adapter list, returning the raw buffer.
 ///
-/// # Errors
-/// Returns a description of the failure when Windows refuses to enumerate.
+/// Shared by the two walks below rather than written twice: the retry dance
+/// around a buffer that can grow between calls is the part that is easy to get
+/// subtly wrong, and one copy of it is one copy to get right.
 #[cfg(windows)]
-pub fn enumerate() -> Result<Vec<TetherAdapter>, String> {
+fn adapter_list() -> Result<Vec<u8>, String> {
     use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS, WIN32_ERROR};
     use windows::Win32::NetworkManagement::IpHelper::{
         GetAdaptersAddresses, GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST,
@@ -134,7 +135,6 @@ pub fn enumerate() -> Result<Vec<TetherAdapter>, String> {
     // recommends starting at 15 KB, which usually succeeds outright.
     let mut size = 15_000_u32;
     let mut buffer = vec![0_u8; size as usize];
-    let mut ready = false;
 
     for _ in 0..3 {
         // SAFETY: buffer holds at least `size` bytes, which is the contract
@@ -150,8 +150,7 @@ pub fn enumerate() -> Result<Vec<TetherAdapter>, String> {
         });
 
         if result == ERROR_SUCCESS {
-            ready = true;
-            break;
+            return Ok(buffer);
         }
         if result != ERROR_BUFFER_OVERFLOW {
             return Err(format!("GetAdaptersAddresses failed: {}", result.0));
@@ -159,10 +158,73 @@ pub fn enumerate() -> Result<Vec<TetherAdapter>, String> {
         buffer.resize(size as usize, 0);
     }
 
-    if !ready {
-        return Err("the adapter list kept growing between calls".to_string());
+    Err("the adapter list kept growing between calls".to_string())
+}
+
+/// Every IPv4 address this machine holds that a phone could send to.
+///
+/// This is what goes in the pairing QR code. It deliberately does not require
+/// a gateway, unlike [`enumerate`]: an address is worth offering whether or
+/// not the interface it sits on can route anywhere, because the phone only has
+/// to reach this machine and not the internet.
+///
+/// Tether-looking adapters come first. The invite carries a bounded number of
+/// addresses, and over USB the phone is certainly on that link, so it must not
+/// be the one that gets dropped off the end of the list.
+///
+/// # Errors
+/// Returns a description of the failure when Windows refuses to enumerate.
+#[cfg(windows)]
+pub fn local_ipv4() -> Result<Vec<Ipv4Addr>, String> {
+    use windows::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH;
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+
+    let buffer = adapter_list()?;
+    let mut preferred = Vec::new();
+    let mut rest = Vec::new();
+    let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+
+    while !adapter.is_null() {
+        // SAFETY: the pointer came from the list Windows just filled, and the
+        // loop stops at the null terminator it wrote.
+        let current = unsafe { &*adapter };
+        adapter = current.Next;
+
+        // A disconnected adapter keeps its last address. Putting that in the
+        // QR would send the phone at an address nothing answers on, and the
+        // user would be told the pairing timed out with no way to know why.
+        if current.OperStatus != IfOperStatusUp {
+            continue;
+        }
+
+        // SAFETY: Description is a null-terminated wide string in the buffer.
+        let description = unsafe { current.Description.to_string() }.unwrap_or_default();
+        let bucket = if looks_like_tether(&description) {
+            &mut preferred
+        } else {
+            &mut rest
+        };
+
+        for address in all_unicast(current.FirstUnicastAddress) {
+            if let IpAddr::V4(ip) = address {
+                bucket.push(ip);
+            }
+        }
     }
 
+    preferred.append(&mut rest);
+    Ok(preferred)
+}
+
+/// Enumerate interfaces that could be a tethered phone, best first.
+///
+/// # Errors
+/// Returns a description of the failure when Windows refuses to enumerate.
+#[cfg(windows)]
+pub fn enumerate() -> Result<Vec<TetherAdapter>, String> {
+    use windows::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH;
+
+    let buffer = adapter_list()?;
     let mut found = Vec::new();
     let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
 
@@ -227,6 +289,26 @@ fn first_unicast(
     None
 }
 
+/// Every IPv4 address on an adapter, not just the first.
+///
+/// An interface can hold several, and the one the phone shares a subnet with
+/// is not necessarily the one Windows lists first.
+#[cfg(windows)]
+fn all_unicast(
+    mut node: *const windows::Win32::NetworkManagement::IpHelper::IP_ADAPTER_UNICAST_ADDRESS_LH,
+) -> Vec<IpAddr> {
+    let mut found = Vec::new();
+    while !node.is_null() {
+        // SAFETY: as above.
+        let current = unsafe { &*node };
+        if let Some(address) = read_socket_address(current.Address) {
+            found.push(address);
+        }
+        node = current.Next;
+    }
+    found
+}
+
 /// Read an IPv4 address out of a `SOCKET_ADDRESS`, if that is what it holds.
 #[cfg(windows)]
 fn read_socket_address(
@@ -264,6 +346,15 @@ fn read_socket_address(
 /// Always returns a message saying so.
 #[cfg(not(windows))]
 pub fn enumerate() -> Result<Vec<TetherAdapter>, String> {
+    Err("adapter enumeration is implemented for Windows only".to_string())
+}
+
+/// Off Windows there is no adapter list to read.
+///
+/// # Errors
+/// Always returns a message saying so.
+#[cfg(not(windows))]
+pub fn local_ipv4() -> Result<Vec<Ipv4Addr>, String> {
     Err("adapter enumeration is implemented for Windows only".to_string())
 }
 

@@ -93,7 +93,7 @@ The editor screens convert, master, trim and modify audio. That work is done by
 **FFmpeg**, fetched by `tools/fetch-ffmpeg.mjs` into
 `desktop/src-tauri/binaries/` and bundled as a Tauri resource.
 
-Two decisions keep this clean:
+Three decisions keep this clean:
 
 1. **The LGPL build, not the GPL one.** BtbN publishes both. The LGPL variant
    omits the GPL-only codecs and carries the weaker obligation, so there is no
@@ -102,6 +102,13 @@ Two decisions keep this clean:
    exit status; it does not link against any FFmpeg library. Copyleft reaches
    across a linking boundary, not across a process boundary, and that is what
    lets an MIT application ship it.
+3. **The static build, not the shared one.** This is a size decision, measured
+   in `tools/fetch-ffmpeg.mjs`: 110 MiB against 128.6 MiB once the seven DLLs
+   the shared `ffmpeg.exe` imports are counted. It raises no new licence
+   question. LGPL-2.1 section 6 puts relinking obligations on whoever links the
+   library statically, and here that is upstream, not Sonduit. What Sonduit
+   redistributes is upstream's own program, unmodified, with its licence text
+   beside it and its source available upstream. Sonduit links nothing.
 
 Obligations that follow, none of which touch this project's own licence:
 
@@ -246,12 +253,53 @@ Shipped with the distributed application:
 - **Oboe** (Android): Apache-2.0 requires the licence text and any `NOTICE`
   file to be reproduced.
 - **Rust dependencies**: MIT and Apache-2.0 both require the copyright notice
-  and licence text. A generated third-party licence file
-  (`cargo about` or equivalent) should be bundled and surfaced in the About
-  screen. Not yet implemented; tracked in the roadmap.
+  and the licence text to travel with the binary. **This obligation is met**,
+  by the mechanism below.
 
-Sonduit currently ships no such aggregated notice file. That is a real gap
-and is listed in [roadmap.md](./roadmap.md).
+### 5.1 The aggregated notice, and how it is produced
+
+`node tools/gen-licences.mjs` runs `cargo about` over the whole workspace and
+writes `desktop/src-tauri/binaries/THIRD-PARTY-LICENSES.txt`. Tauri bundles it
+through the same `resources` glob that ships `ffmpeg.exe`, so it installs
+beside `FFMPEG-LICENSE.txt` on the user's machine.
+
+Four decisions, and why each one is that way:
+
+1. **`about.toml` mirrors `deny.toml`.** A licence cargo-deny rejects can never
+   reach a build, and one it accepts has to be attributable, so the accepted
+   list and the allowed list are the same list. They can only diverge by
+   mistake, and a divergence means one of the two files is describing a build
+   that does not exist. (Note that section 4.1 and `deny.toml` currently
+   disagree with each other: the prose says MPL-2.0 is excluded, the file
+   allows it, and thirteen crates in the tree -- `cssparser`, `selectors`,
+   `option-ext`, `dtoa-short` and the `uniffi` family -- are MPL-2.0 and
+   resolve against it. `about.toml` follows `deny.toml`, because `deny.toml`
+   is what actually gates the build.)
+2. **Plain text, not cargo-about's default HTML.** The file is read out of an
+   installation directory, next to the binary it describes, not in a browser.
+   `tools/licences.hbs` is the template.
+3. **Licence texts are deduplicated by text, not by identifier.** Every crate
+   is listed once with its name, version, licence expression and authors; the
+   texts follow, grouped under one heading per licence. Deduplicating by
+   identifier alone would collapse the hundreds of MIT crates onto whichever
+   copy of the MIT text was read first, which means shipping one crate's
+   copyright line as though it covered all of them. That line is precisely
+   what MIT and the BSD licences require to be retained, so texts that differ
+   stay separate and only byte-identical ones are merged.
+4. **The file is never committed.** It is a function of `Cargo.lock`; a
+   committed copy would go stale the first time a dependency moved and nothing
+   would say so, which is worse than having no file. `.gitignore` already
+   excludes `desktop/src-tauri/binaries/`, and `ci.yml`, `develop.yml` and
+   `release.yml` generate it at the same point they fetch FFmpeg.
+
+Generation fails the build rather than emitting something incomplete:
+`cargo about --fail` stops on any crate whose licence cannot be resolved, the
+same rule `tools/fetch-ffmpeg.mjs` applies to a missing FFmpeg licence.
+
+Still outstanding, and smaller than the gap it replaces: the About screen names
+FFmpeg and points at `FFMPEG-LICENSE.txt` only. `THIRD-PARTY-LICENSES.txt` is
+installed either way, so the obligation is discharged; what is missing is the
+signpost to it.
 
 ---
 

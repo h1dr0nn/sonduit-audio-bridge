@@ -1,0 +1,50 @@
+# cargo-about configuration.
+#
+# deny.toml decides which licences may enter the dependency tree. This file
+# decides what the shipped notice says about the ones that did, so the two
+# lists have to be the same list: a licence accepted here but denied there
+# would be attributed in a file describing a build that cannot exist, and one
+# denied here but accepted there fails the generation instead of shipping an
+# unattributed crate. Change deny.toml and you change this, in the same commit.
+#
+# Rendered by tools/gen-licences.mjs into the bundle, never committed. See
+# docs/licensing.md section 5.
+
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "CC0-1.0",
+  "Unlicense",
+  "BSL-1.0",
+]
+
+# The same five targets deny.toml checks. A crate that only ever compiles for a
+# platform Sonduit does not ship is not distributed to anyone, so it is owed no
+# notice; listing it would attribute code the user never receives.
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-linux-android",
+  "armv7-linux-androideabi",
+  "x86_64-linux-android",
+  "x86_64-unknown-linux-gnu",
+]
+
+# Attribution follows distribution. A build script runs on the build machine
+# and a dev dependency exists only for `cargo test`; neither reaches a user, so
+# neither belongs in a notice shipped to one.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Drops sonduit-desktop, which is the only workspace crate marked
+# `publish = false` and so the only one cargo-about will call private. The
+# other sonduit-* crates carry no `publish` key, so this does not reach them
+# and tools/licences.hbs skips them instead, by the null `source` that marks a
+# crate as coming from a path in this repository rather than from a registry.
+private = { ignore = true }

@@ -164,6 +164,19 @@ jobs:
         run: node tools/fetch-ffmpeg.mjs
         shell: bash
 
+      # MIT and Apache-2.0 oblige the notice to travel with the binary, and the
+      # notice is a function of Cargo.lock, so it is produced here for the same
+      # reason FFmpeg is fetched here rather than committed.
+      # `--features cli` is not optional: without it cargo-about installs no
+      # binary and says so only in a warning.
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli --version "^0.9"
+        shell: bash
+
+      - name: Generate the third-party licence notice
+        run: node tools/gen-licences.mjs
+        shell: bash
+
       - name: Build release bundles
         run: npx tauri build --ci
         working-directory: desktop

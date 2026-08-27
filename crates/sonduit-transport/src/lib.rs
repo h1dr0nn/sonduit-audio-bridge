@@ -8,8 +8,11 @@
 #![forbid(unsafe_code)]
 
 pub mod discovery;
+pub mod feedback;
+pub mod invite;
 pub mod packetize;
 pub mod pairing;
+pub mod roundtrip;
 pub mod sink;
 pub mod source;
 

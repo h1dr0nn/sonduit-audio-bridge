@@ -2,10 +2,10 @@
 <resources>
     <!-- app_name and value_unknown are deliberately not translated:
          one is a product name and the other is a dash. -->
-    <string name="action_start">Comecar a ouvir</string>
+    <string name="action_start">Começar a ouvir</string>
     <string name="action_stop">Parar</string>
     <string name="status_idle">Sem escutar</string>
-    <string name="status_waiting">Escutando, ainda sem audio</string>
+    <string name="status_waiting">Escutando, ainda sem áudio</string>
     <string name="status_streaming_short">Reproduzindo</string>
     <string name="status_streaming">Reproduzindo %1$d kHz, %2$d ms em buffer</string>
     <string name="format_summary">%1$d kHz, %2$d canais</string>
@@ -14,12 +14,24 @@
     <string name="stat_loss">Perda</string>
     <string name="stat_packets">Pacotes</string>
     <string name="stat_malformed">Malformados</string>
-    <string name="stat_drift">Desvio de relogio</string>
-    <string name="stat_correction">Correcao</string>
-    <string name="pairing_title">Codigo de emparelhamento</string>
-    <string name="pairing_new">Novo codigo</string>
-    <string name="pairing_hint">Digite este codigo no computador antes de procurar. Sem ele, este telefone nao aparecera.</string>
+    <string name="stat_drift">Desvio de relógio</string>
+    <string name="stat_correction">Correção</string>
+    <string name="pairing_title">Código de emparelhamento</string>
+    <string name="pairing_new">Novo código</string>
+    <string name="pairing_hint">Digite este código no computador antes de procurar. Sem ele, este telefone não aparecerá.</string>
     <string name="hint_same_network">O telefone e o computador precisam estar na mesma rede, ou ligados por USB.</string>
     <string name="channel_name">Ponte</string>
-    <string name="channel_description">Exibida enquanto o Sonduit reproduz audio de um computador.</string>
+    <string name="channel_description">Exibida enquanto o Sonduit reproduz áudio de um computador.</string>
+    <string name="action_scan">Ler o código do computador</string>
+    <string name="scan_title">Leia o código no computador</string>
+    <string name="scan_hint">Aponte a câmara para o código quadrado que o Sonduit mostra no ecrã do computador.</string>
+    <string name="scan_cancel">Cancelar</string>
+    <string name="scan_permission_rationale">O Sonduit precisa da câmara para ler o código de emparelhamento. Não é usada para mais nada.</string>
+    <string name="scan_permission_grant">Permitir a câmara</string>
+    <string name="scan_permission_denied">O acesso à câmara está desligado. Ligue-o nas Definições para ler o código, ou escreva-o no computador.</string>
+    <string name="scan_open_settings">Abrir definições</string>
+    <string name="scan_not_a_code">Isto não é um código de emparelhamento do Sonduit.</string>
+    <string name="scan_paired">Enviado para o computador. O áudio começa dentro de momentos.</string>
+    <string name="scan_failed">Não foi possível contactar o computador. Verifique se ambos estão na mesma rede ou ligados por USB.</string>
+    <string name="scan_camera_error">Não foi possível abrir a câmara.</string>
 </resources>

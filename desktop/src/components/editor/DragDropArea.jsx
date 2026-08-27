@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { FiUpload, FiFolder } from 'react-icons/fi';
 import { open } from '@tauri-apps/plugin-dialog';
-import { readFile } from '@tauri-apps/plugin-fs';
-import { designTokens } from '../../utils/theme';
+import { Dialog } from '../ui/Dialog';
+import { cn } from '../../utils/cn';
 import { isAudioFile } from '../../utils/audioUtils';
 
 import { useTranslation } from '../../i18n';
@@ -11,7 +11,9 @@ export function DragDropArea({ onFilesAdded }) {
   const { t } = useTranslation();
   const [isDragging, setIsDragging] = useState(false);
 
-  // ... (handlers remain same)
+  // `null` when no dialog is up. Holds the two keys plus an optional technical
+  // detail, so one Dialog instance serves both failure paths.
+  const [notice, setNotice] = useState(null);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -43,32 +45,25 @@ export function DragDropArea({ onFilesAdded }) {
     e.stopPropagation();
     setIsDragging(false);
 
-    console.log('[DragDropArea] Drop event triggered');
-    console.log('[DragDropArea] dataTransfer:', e.dataTransfer);
-    console.log('[DragDropArea] files:', e.dataTransfer.files);
-
     const droppedFiles = Array.from(e.dataTransfer.files);
-    console.log('[DragDropArea] Dropped files count:', droppedFiles.length);
-    console.log('[DragDropArea] Dropped files:', droppedFiles);
-
     const audioFiles = droppedFiles.filter(isAudioFile);
-    console.log('[DragDropArea] Audio files count:', audioFiles.length);
 
     if (audioFiles.length > 0) {
-      console.log('[DragDropArea] Calling onFilesAdded with:', audioFiles);
       onFilesAdded(audioFiles);
-    } else if (droppedFiles.length > 0) {
-      console.log('[DragDropArea] No audio files found in drop');
-      alert('Please drop audio files only (MP3, WAV, OGG, FLAC, AAC, M4A, WMA, AIFF, OPUS)');
-    } else {
-      console.log('[DragDropArea] No files in drop event');
+      return;
+    }
+
+    // A drop of nothing at all is not worth interrupting for; a drop of the
+    // wrong kind of file is, because otherwise it looks like the app ignored it.
+    if (droppedFiles.length > 0) {
+      setNotice({ titleKey: 'dropNotAudioTitle', bodyKey: 'dropNotAudioBody' });
     }
   };
 
   const handleFilePickerClick = async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     try {
       const selected = await open({
         multiple: true,
@@ -81,20 +76,18 @@ export function DragDropArea({ onFilesAdded }) {
       if (!selected) return;
 
       const paths = Array.isArray(selected) ? selected : [selected];
-      
-      // Create minimal file objects with paths - don't read full files yet
+
+      // Only the path is captured here. Reading the bytes is deferred to the
+      // queue, so picking a hundred files does not stall the picker closing.
       const files = paths.map(path => {
         const fileName = path.split('/').pop().split('\\').pop();
-        
-        // Create a minimal File-like object
-        // We'll load the actual data asynchronously when needed
+
         return {
           name: fileName,
           path: path,
-          size: 0,  // Will be filled when we read the file
+          size: 0,
           type: 'audio/*',
           lastModified: Date.now(),
-          // Mark this as a path-based file so we know to read it later
           _needsReading: true
         };
       });
@@ -104,7 +97,11 @@ export function DragDropArea({ onFilesAdded }) {
       }
     } catch (error) {
       console.error('File picker error:', error);
-      alert(`Error opening file picker: ${error.message || error}`);
+      setNotice({
+        titleKey: 'filePickerFailedTitle',
+        bodyKey: 'filePickerFailedBody',
+        detail: error?.message || String(error),
+      });
     }
   };
 
@@ -115,62 +112,66 @@ export function DragDropArea({ onFilesAdded }) {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={cn(
-        'glass-surface relative flex h-full flex-col items-center justify-center overflow-hidden rounded-card border-2 bg-white p-10 shadow-soft transition-all duration-smooth dark:bg-white/10',
+        'flex min-h-[13rem] flex-1 flex-col items-center justify-center gap-4',
+        'rounded-inner border-2 border-dashed p-6 text-center',
+        'transition-colors duration-normal ease-out',
         isDragging
-          ? 'border-accent bg-accent/10 shadow-xl dark:bg-accent/20 scale-[1.02]'
-          : 'border-slate-200 hover:border-slate-300 hover:shadow-xl dark:border-white/10 dark:hover:border-white/20'
+          ? 'border-accent bg-accent-soft'
+          : 'border-line-strong bg-sunken',
       )}
-      style={{
-        backdropFilter: `blur(${designTokens.blur})`,
-        WebkitBackdropFilter: `blur(${designTokens.blur})`,
-      }}
     >
-      <div className={cn(
-        'absolute inset-0 bg-gradient-to-br transition-all duration-smooth',
-        isDragging
-          ? 'from-accent/20 via-accent/10 to-accent/5'
-          : 'from-white/40 via-white/20 to-white/5 opacity-70 dark:from-white/5 dark:via-white/0 dark:to-white/5'
-      )} />
-      
-      <div className="relative flex flex-col items-center gap-4 text-center">
-        <div className={cn(
-          'flex h-16 w-16 items-center justify-center rounded-2xl shadow-inner backdrop-blur-[20px] transition-all duration-smooth',
-          isDragging
-            ? 'bg-accent/20 dark:bg-accent/30'
-            : 'bg-white/80 dark:bg-white/10'
-        )}>
-          {isDragging ? (
-            <FiFolder className="h-8 w-8 text-accent" />
-          ) : (
-            <FiUpload className="h-8 w-8 text-slate-600 dark:text-slate-300" />
-          )}
-        </div>
-        
-        <div className="space-y-2">
-          <p className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-            {isDragging ? t('dropFilesHere') : t('dropAudioFiles')}
-          </p>
-          <p className="max-w-xs text-sm text-slate-600 dark:text-slate-300">
-            {isDragging 
-              ? t('releaseToAdd')
-              : t('dragOrClick')}
-          </p>
-        </div>
-        
-        <button
-          onClick={handleFilePickerClick}
-          type="button"
-          className="flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-sm font-semibold text-white shadow-md transition duration-smooth hover:-translate-y-[1px] hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
-        >
-          <FiFolder className="h-4 w-4" />
-          {t('browseFiles')}
-        </button>
+      <div
+        className={cn(
+          'flex h-14 w-14 shrink-0 items-center justify-center rounded-inner',
+          'transition-colors duration-normal ease-out',
+          isDragging ? 'bg-accent-soft text-accent' : 'bg-card text-ink-soft',
+        )}
+      >
+        {isDragging ? (
+          <FiFolder className="h-6 w-6" strokeWidth={1.8} />
+        ) : (
+          <FiUpload className="h-6 w-6" strokeWidth={1.8} />
+        )}
       </div>
+
+      <div className="space-y-1">
+        <p className="text-base font-semibold text-ink">
+          {isDragging ? t('dropFilesHere') : t('dropAudioFiles')}
+        </p>
+        <p className="text-sm text-ink-soft">
+          {isDragging ? t('releaseToAdd') : t('dragOrClick')}
+        </p>
+      </div>
+
+      <button
+        onClick={handleFilePickerClick}
+        type="button"
+        className={cn(
+          'flex items-center gap-2 rounded-pill px-5 py-2 text-sm font-semibold text-white',
+          'transition-opacity duration-fast ease-out hover:opacity-90',
+          'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+        )}
+        style={{ background: 'var(--accent-color)' }}
+      >
+        <FiFolder className="h-4 w-4" strokeWidth={1.9} />
+        {t('browseFiles')}
+      </button>
+
+      <Dialog
+        open={notice !== null}
+        tone="warning"
+        title={notice ? t(notice.titleKey) : ''}
+        onClose={() => setNotice(null)}
+      >
+        {notice && (
+          <>
+            <p>{t(notice.bodyKey)}</p>
+            {notice.detail && (
+              <p className="mt-2 break-words font-mono text-xs text-ink-faint">{notice.detail}</p>
+            )}
+          </>
+        )}
+      </Dialog>
     </div>
   );
-}
-
-// Import cn utility
-function cn(...classes) {
-  return classes.filter(Boolean).join(' ');
 }

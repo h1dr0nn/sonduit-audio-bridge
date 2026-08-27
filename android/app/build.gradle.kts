@@ -93,6 +93,26 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+
+    // Reading the desktop's pairing QR code.
+    //
+    // CameraX rather than Camera2 directly: the preview and the analysis
+    // stream are bound to a lifecycle and the rotation and format handling
+    // that Camera2 leaves to the caller is exactly the part that is wrong on
+    // one vendor's device and right on another's.
+    val cameraX = "1.4.1"
+    implementation("androidx.camera:camera-core:$cameraX")
+    implementation("androidx.camera:camera-camera2:$cameraX")
+    implementation("androidx.camera:camera-lifecycle:$cameraX")
+    implementation("androidx.camera:camera-view:$cameraX")
+
+    // ML Kit rather than ZXing, and the bundled model rather than the Play
+    // services one. Pairing regularly happens over USB tethering or on a
+    // network with no route to the internet, and the Play services variant
+    // downloads its model on first use, so it would fail in exactly the
+    // situation this feature exists for. The cost is about three megabytes.
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
     // UniFFI's generated Kotlin depends on both of these by name.
     implementation("net.java.dev.jna:jna:5.15.0@aar")

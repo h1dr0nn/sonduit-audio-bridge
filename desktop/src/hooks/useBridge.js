@@ -123,6 +123,35 @@ export function useBridge() {
     return devices;
   }, []);
 
+  /**
+   * Ask the backend for a fresh pairing invite to render as a QR code.
+   *
+   * Every call replaces the previous one, so the code that was on screen a
+   * moment ago stops being accepted. That is deliberate: two live codes would
+   * be two ways in.
+   */
+  const invite = useCallback(async () => {
+    if (!hasBackend()) return null;
+    return invoke('bridge_invite');
+  }, []);
+
+  /**
+   * Wait for the phone that scanned the invite to announce itself.
+   *
+   * Resolves to null when nobody scanned inside the backend's window, which is
+   * not an error. A device that did announce goes into the same list a
+   * broadcast scan fills, so nothing downstream needs a special case for it.
+   */
+  const awaitPairing = useCallback(async () => {
+    if (!hasBackend()) return null;
+    const device = await invoke('bridge_await_pairing');
+    if (device && !store.devices.some((entry) => entry.id === device.id)) {
+      store.devices = [...store.devices, device];
+      publish();
+    }
+    return device;
+  }, []);
+
   const start = useCallback(async (options = {}) => {
     const session = await invoke('bridge_start', {
       options: {
@@ -152,6 +181,8 @@ export function useBridge() {
     session: snapshot.session ?? EMPTY_SESSION,
     telemetry: snapshot.telemetry ?? EMPTY_TELEMETRY,
     scan,
+    invite,
+    awaitPairing,
     start,
     stop,
   };

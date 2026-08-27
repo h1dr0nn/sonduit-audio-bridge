@@ -10,11 +10,22 @@ const DOT = {
   error: 'bg-danger',
 };
 
+/**
+ * One reading. The label never wraps: a two-line label would push the value
+ * out of the column it shares with every other row, and the rows only read as
+ * a table while that column holds still.
+ *
+ * An empty string counts as absent, so a field the backend has cleared shows a
+ * dash rather than a blank gap that looks like a rendering fault.
+ */
 function Line({ label, value }) {
+  const shown = value === null || value === undefined || value === '' ? '-' : value;
   return (
-    <div className="flex items-center justify-between gap-6 px-3 py-1.5">
-      <span className="text-xs text-ink-soft">{label}</span>
-      <span className="font-mono text-xs text-ink">{value ?? '-'}</span>
+    <div className="flex items-baseline justify-between gap-4 px-3 py-1.5">
+      <span className="flex-none whitespace-nowrap text-xs text-ink-soft">{label}</span>
+      <span className="min-w-0 truncate font-mono text-xs text-ink" title={String(shown)}>
+        {shown}
+      </span>
     </div>
   );
 }
@@ -71,14 +82,14 @@ export function StatusMenu({ status, session, telemetry, available, t }) {
         <div
           role="menu"
           className={cn(
-            'absolute right-0 top-full z-50 mt-1 w-64',
+            'absolute right-0 top-full z-50 mt-1 w-96',
             'rounded-inner border border-line-soft bg-card p-1 shadow-raised',
           )}
         >
           <p className="px-3 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-ink-faint">
             {t('connection.session')}
           </p>
-          <Line label={t('connection.endpoint')} value={session.endpoint} />
+          <Line label={t('connection.captureSource')} value={session.endpoint} />
           <Line label={t('connection.transport')} value={session.transport} />
           <Line label={t('connection.sampleRate')} value={session.sampleRate} />
           <Line label={t('connection.channels')} value={session.channels} />

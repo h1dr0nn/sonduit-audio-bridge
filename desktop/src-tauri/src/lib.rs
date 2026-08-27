@@ -10,7 +10,7 @@ pub mod commands;
 pub mod convert;
 pub mod core;
 
-use crate::core::logging::log_message;
+use crate::core::logging::{install_panic_hook, log_message};
 use crate::core::window::apply_backdrop;
 use tauri::Manager;
 
@@ -20,6 +20,10 @@ use tauri::Manager;
 /// Panics if the Tauri context cannot be built, which means the bundled
 /// configuration or assets are missing and there is nothing to run.
 pub fn run() {
+    // Before anything else: there is no console in this build, so a panic
+    // during setup would otherwise vanish without trace.
+    install_panic_hook();
+
     tauri::Builder::default()
         .manage(bridge::BridgeState::default())
         .plugin(tauri_plugin_notification::init())
@@ -44,6 +48,8 @@ pub fn run() {
             commands::analyze_audio,
             commands::bridge_snapshot,
             commands::bridge_scan,
+            commands::bridge_invite,
+            commands::bridge_await_pairing,
             commands::bridge_start,
             commands::bridge_stop
         ])

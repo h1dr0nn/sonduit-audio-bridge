@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Store } from '@tauri-apps/plugin-store';
+import { FALLBACK_LANGUAGE, detectSystemLanguage } from '../i18n/languages';
 
 const STORE_FILENAME = 'settings.json';
 const store = new Store(STORE_FILENAME);
@@ -12,7 +13,9 @@ export const DEFAULT_SETTINGS = {
   // Appearance
   accentColor: '#7c93e8',
   fontSize: 'medium',
-  language: 'en',
+  // Placeholder only. The first run replaces it with the operating system
+  // language; every run after that reads whatever the user last chose.
+  language: FALLBACK_LANGUAGE,
 };
 
 export function useSettings() {
@@ -26,7 +29,9 @@ export function useSettings() {
         if (savedSettings) {
           setSettings({ ...DEFAULT_SETTINGS, ...savedSettings });
         } else {
-          await store.set('settings', DEFAULT_SETTINGS);
+          const firstRun = { ...DEFAULT_SETTINGS, language: detectSystemLanguage() };
+          setSettings(firstRun);
+          await store.set('settings', firstRun);
           await store.save();
         }
       } catch (error) {

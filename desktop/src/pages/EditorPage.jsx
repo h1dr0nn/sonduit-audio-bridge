@@ -26,6 +26,25 @@ import { cn } from '../utils/cn';
 
 const formatOptions = ['AAC', 'MP3', 'WAV', 'FLAC', 'OGG', 'M4A'];
 
+/* Two columns, never stacked rows. The window's own minWidth is 960, so a
+ * responsive fallback below the `lg` breakpoint is unreachable in the shipped
+ * application and only ever showed up as wasted vertical space. The track
+ * sizes are shared by all three tabs so the columns do not jump when the tab
+ * changes; the left one is a little wider than the Process tab used to be
+ * because the drop zone and the output path need more room than a list of
+ * mode buttons. */
+const TAB_COLUMNS = 'grid min-h-0 flex-1 grid-cols-[minmax(280px,340px)_1fr] gap-4';
+
+/* A column that fills the tab and takes its own scrollbar.
+ *
+ * `min-h-0` is load-bearing, not decoration: a flex or grid child defaults to
+ * `min-height: auto`, refuses to shrink below its content, and pushes the
+ * overflow out to the page instead of scrolling inside itself. */
+const SCROLL_COLUMN = 'scroll-area flex min-h-0 min-w-0 flex-col gap-4 pr-1';
+
+/* A card that is itself the scroll container for its one piece of content. */
+const SCROLL_CARD = 'card flex min-h-0 min-w-0 flex-col p-5';
+
 /** The three stages of a job: bring audio in, say what to do, watch it run. */
 const EDITOR_TABS = [
   { id: 'files', Icon: FiFolder, labelKey: 'editor.tabFiles' },
@@ -298,13 +317,13 @@ export function EditorPage({ onOpenSettings }) {
     }
   }, [outputFolder, settings, setOutputFolder]);
 
-  // Listen for global events (Dock drop, Menu commands)
+  // Files handed to the window from outside it: opened through the shell
+  // association, or asked for from the window menu.
   useEffect(() => {
     let unlistenFileOpened;
     let unlistenRequestOpen;
 
     const setupListeners = async () => {
-      // Handle Dock drag & drop
       unlistenFileOpened = await listen('file-opened', (event) => {
         const paths = event.payload;
         if (Array.isArray(paths) && paths.length > 0) {
@@ -316,7 +335,6 @@ export function EditorPage({ onOpenSettings }) {
         }
       });
 
-      // Handle Menu "Open File..."
       unlistenRequestOpen = await listen('request-open-file', async () => {
         try {
           const selected = await open({
@@ -347,9 +365,10 @@ export function EditorPage({ onOpenSettings }) {
       if (unlistenFileOpened) unlistenFileOpened();
       if (unlistenRequestOpen) unlistenRequestOpen();
     };
-  }, [handleFilesAdded]); // Dependencies might need review, but handleFilesAdded uses state setters so it's stable? No, handleFilesAdded depends on 'files' state for dedup.
-  // Actually handleFilesAdded is a const function inside component, so it changes every render if it uses state.
-  // But 'files' is in dependency of useEffect, so it re-subscribes. That's fine.
+    // Re-subscribing whenever the callback identity changes is deliberate: it
+    // closes over the queue for duplicate detection, and a stale copy would
+    // let the same file in twice.
+  }, [handleFilesAdded]);
 
   // Handle clear all
   const handleClearAll = () => {
@@ -656,11 +675,11 @@ export function EditorPage({ onOpenSettings }) {
   })();
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       {/* The run control lives on the header row rather than in a bar of its
         * own: the right half of this row was empty, and a separate strip cost
         * vertical space on every tab. */}
-      <header className="flex flex-wrap items-end justify-between gap-4 px-1">
+      <header className="flex shrink-0 flex-wrap items-end justify-between gap-4 px-1">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-ink">{t('audioSuite')}</h1>
           <p className="mt-1 text-sm text-ink-soft">{t('appDesc')}</p>
@@ -703,7 +722,7 @@ export function EditorPage({ onOpenSettings }) {
       <nav
         role="tablist"
         aria-label={t('audioSuite')}
-        className="card-sunken flex gap-1 self-start p-1"
+        className="card-sunken flex shrink-0 gap-1 self-start p-1"
       >
         {EDITOR_TABS.map((tab) => (
           <button
@@ -733,12 +752,21 @@ export function EditorPage({ onOpenSettings }) {
 
       {/* ---- Files: get audio in, decide where it goes ---- */}
       {editorTab === 'files' && (
-        <div className="flex flex-col gap-4">
-          <section className="card p-5">
-            <DragDropArea onFilesAdded={handleFilesAdded} />
-          </section>
+        <div className={TAB_COLUMNS}>
+          {/* Intake on the left. The drop zone takes the slack because it is
+            * the target the user aims at; the output path is a one-line
+            * setting and keeps its own height. */}
+          <div className={SCROLL_COLUMN}>
+            <section className="card flex flex-1 flex-col p-5">
+              <DragDropArea onFilesAdded={handleFilesAdded} />
+            </section>
 
-          <section className="card p-5">
+            <section className="card shrink-0 p-5">
+              <OutputFolderChooser path={outputFolder} onChoose={setOutputFolder} />
+            </section>
+          </div>
+
+          <section className={SCROLL_CARD}>
             <FileListPanel
               files={files}
               onClearAll={handleClearAll}
@@ -746,110 +774,129 @@ export function EditorPage({ onOpenSettings }) {
               onReload={handleReload}
             />
           </section>
-
-          <section className="card p-5">
-            <OutputFolderChooser path={outputFolder} onChoose={setOutputFolder} />
-          </section>
         </div>
       )}
 
       {/* ---- Process: choose what to do to it ---- */}
       {editorTab === 'process' && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(260px,320px)_1fr]">
-          <section className="card p-5">
-            <ModeSelector selected={mode} onChange={setMode} />
+        <div className={TAB_COLUMNS}>
+          <section className={SCROLL_CARD}>
+            <div className="scroll-area min-h-0 flex-1 pr-1">
+              <ModeSelector selected={mode} onChange={setMode} />
+            </div>
           </section>
 
-          <section className="card flex flex-col gap-5 p-5">
-            <div>
-              <h2 className="text-lg font-semibold text-ink">{t('sessionOverview')}</h2>
-              <p className="mt-1 text-sm text-ink-soft">
-                {mode === 'format' && t('modeFormatDesc')}
-                {mode === 'enhance' && t('modeEnhanceDesc')}
-                {mode === 'clean' && t('modeCleanDesc')}
-                {mode === 'modify' && t('modeModifyDesc')}
-              </p>
-            </div>
+          <section className={SCROLL_CARD}>
+            {/* Enhance and Modify are taller than the window, so this pane
+              * scrolls rather than dragging the whole page down with it. */}
+            <div className="scroll-area flex min-h-0 flex-1 flex-col gap-5 pr-1">
+              <div>
+                <h2 className="text-lg font-semibold text-ink">{t('sessionOverview')}</h2>
+                <p className="mt-1 text-sm text-ink-soft">
+                  {mode === 'format' && t('modeFormatDesc')}
+                  {mode === 'enhance' && t('modeEnhanceDesc')}
+                  {mode === 'clean' && t('modeCleanDesc')}
+                  {mode === 'modify' && t('modeModifyDesc')}
+                </p>
+              </div>
 
-            {mode === 'format' && (
-              <FormatSelector
-                formats={formatOptions}
-                selected={selectedFormat}
-                onSelect={setSelectedFormat}
-              />
-            )}
-            {mode === 'enhance' && (
-              <MasterControls
-                preset={masterPreset}
-                onPresetChange={setMasterPreset}
-                parameters={masterParams}
-                onParametersChange={setMasterParams}
-                onSmartAnalysis={handleSmartAnalysis}
-              />
-            )}
-            {mode === 'clean' && (
-              <TrimControls
-                threshold={trimThreshold}
-                onThresholdChange={setTrimThreshold}
-                minSilence={trimMinSilence}
-                onMinSilenceChange={setTrimMinSilence}
-                padding={trimPadding}
-                onPaddingChange={setTrimPadding}
-              />
-            )}
-            {mode === 'modify' && (
-              <ModifyControls
-                parameters={modifyParams}
-                onParametersChange={setModifyParams}
-                duration={modifyDurationSeconds}
-              />
-            )}
+              {mode === 'format' && (
+                <FormatSelector
+                  formats={formatOptions}
+                  selected={selectedFormat}
+                  onSelect={setSelectedFormat}
+                />
+              )}
+              {mode === 'enhance' && (
+                <MasterControls
+                  preset={masterPreset}
+                  onPresetChange={setMasterPreset}
+                  parameters={masterParams}
+                  onParametersChange={setMasterParams}
+                  onSmartAnalysis={handleSmartAnalysis}
+                />
+              )}
+              {mode === 'clean' && (
+                <TrimControls
+                  threshold={trimThreshold}
+                  onThresholdChange={setTrimThreshold}
+                  minSilence={trimMinSilence}
+                  onMinSilenceChange={setTrimMinSilence}
+                  padding={trimPadding}
+                  onPaddingChange={setTrimPadding}
+                />
+              )}
+              {mode === 'modify' && (
+                <ModifyControls
+                  parameters={modifyParams}
+                  onParametersChange={setModifyParams}
+                  duration={modifyDurationSeconds}
+                />
+              )}
+            </div>
           </section>
         </div>
       )}
 
       {/* ---- Run: watch it happen ---- */}
       {editorTab === 'run' && (
-        <div className="flex flex-col gap-4">
-          <section className="card p-5">
-            <ProgressIndicator
-              progress={progress}
-              status={processingStatus}
-              currentFile={currentFile}
+        <div className={TAB_COLUMNS}>
+          <div className={SCROLL_COLUMN}>
+            <section className="card shrink-0 p-5">
+              <ProgressIndicator
+                progress={progress}
+                status={processingStatus}
+                currentFile={currentFile}
+              />
+            </section>
+
+            <section className="card shrink-0 p-5">
+              <h2 className="mb-4 text-lg font-semibold text-ink">{t('sessionOverview')}</h2>
+              {/* Stacked, not three across: this column is 340px at its widest
+                * and three tiles side by side truncated their own values. */}
+              <dl className="grid gap-3">
+                <div className="card-sunken px-4 py-3">
+                  <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('files')}</dt>
+                  <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.filesCount}</dd>
+                </div>
+                <div className="card-sunken px-4 py-3">
+                  <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('mode')}</dt>
+                  <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.format}</dd>
+                </div>
+                <div className="card-sunken px-4 py-3">
+                  <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('status')}</dt>
+                  <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.status}</dd>
+                </div>
+              </dl>
+            </section>
+
+            {toast && (
+              <div className="shrink-0">
+                <ToastMessage
+                  title={
+                    toast.type === 'success'
+                      ? t('success')
+                      : toast.type === 'error'
+                        ? t('error')
+                        : t('info')
+                  }
+                  message={toast.message}
+                  tone={toast.type}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* The queue is on the right here as well as on Files, so per-file
+            * status stays in the same place whichever tab is open. */}
+          <section className={SCROLL_CARD}>
+            <FileListPanel
+              files={files}
+              onClearAll={handleClearAll}
+              onRemoveFile={handleRemoveFile}
+              onReload={handleReload}
             />
           </section>
-
-          <section className="card p-5">
-            <h2 className="mb-4 text-lg font-semibold text-ink">{t('sessionOverview')}</h2>
-            <dl className="grid grid-cols-3 gap-3">
-              <div className="card-sunken px-4 py-3">
-                <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('files')}</dt>
-                <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.filesCount}</dd>
-              </div>
-              <div className="card-sunken px-4 py-3">
-                <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('mode')}</dt>
-                <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.format}</dd>
-              </div>
-              <div className="card-sunken px-4 py-3">
-                <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('status')}</dt>
-                <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.status}</dd>
-              </div>
-            </dl>
-          </section>
-
-          {toast && (
-            <ToastMessage
-              title={
-                toast.type === 'success'
-                  ? t('success')
-                  : toast.type === 'error'
-                    ? t('error')
-                    : t('info')
-              }
-              message={toast.message}
-              tone={toast.type}
-            />
-          )}
         </div>
       )}
 

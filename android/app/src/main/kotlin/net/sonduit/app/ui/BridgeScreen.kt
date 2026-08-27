@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -48,6 +50,8 @@ fun BridgeScreen(
     running: Boolean,
     error: String?,
     pairingCode: String,
+    pairingStatus: String?,
+    onScan: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRegenerateCode: () -> Unit,
@@ -58,6 +62,12 @@ fun BridgeScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            // The window is edge to edge, so the content has to be told where
+            // the status bar and the gesture handle are. Without this the app
+            // title is drawn underneath the clock, which is exactly what
+            // happened on the first device it ran on.
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -69,6 +79,8 @@ fun BridgeScreen(
         )
 
         StatusCard(telemetry = telemetry, running = running)
+
+        ScanCard(status = pairingStatus, onScan = onScan)
 
         PairingCard(code = pairingCode, onRegenerate = onRegenerateCode)
 
@@ -118,6 +130,46 @@ fun BridgeScreen(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+/**
+ * The way in that does not involve typing anything.
+ *
+ * First, because it is the one that works on the network this app is actually
+ * used on: the computer and the phone are often in different subnets, where
+ * the computer's broadcast probe never arrives and its scan finds nothing at
+ * all. Reading the computer's own addresses off its screen and answering by
+ * unicast crosses that boundary; broadcast does not.
+ */
+@Composable
+private fun ScanCard(status: String?, onScan: () -> Unit) {
+    Card {
+        Button(
+            onClick = onScan,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(Radius.inner),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+        ) {
+            Text(
+                text = stringResource(R.string.action_scan),
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+
+        if (status != null) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }
 

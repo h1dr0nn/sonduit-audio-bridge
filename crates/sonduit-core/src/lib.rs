@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod conceal;
 pub mod drift;
 pub mod format;
 pub mod jitter;

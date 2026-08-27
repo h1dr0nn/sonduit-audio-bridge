@@ -32,4 +32,16 @@
 
     <string name="channel_name">Bridge</string>
     <string name="channel_description">Shown while Sonduit is playing audio from a computer.</string>
+    <string name="action_scan">Scan the computer</string>
+    <string name="scan_title">Scan the code on the computer</string>
+    <string name="scan_hint">Point the camera at the square code Sonduit shows on the computer screen.</string>
+    <string name="scan_cancel">Cancel</string>
+    <string name="scan_permission_rationale">Sonduit needs the camera to read the pairing code. It is used for nothing else.</string>
+    <string name="scan_permission_grant">Allow the camera</string>
+    <string name="scan_permission_denied">Camera access is off. Turn it on in Settings to scan, or type the code on the computer instead.</string>
+    <string name="scan_open_settings">Open settings</string>
+    <string name="scan_not_a_code">That is not a Sonduit pairing code.</string>
+    <string name="scan_paired">Sent to the computer. Audio should start playing shortly.</string>
+    <string name="scan_failed">The computer could not be reached. Check that both are on the same network or joined by USB.</string>
+    <string name="scan_camera_error">The camera could not be opened.</string>
 </resources>

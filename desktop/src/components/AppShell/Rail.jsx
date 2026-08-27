@@ -1,6 +1,7 @@
 import React from 'react';
 import { FiActivity, FiHelpCircle, FiRadio, FiSettings, FiSliders } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
+import { Tooltip } from '../ui/Tooltip';
 
 const PRIMARY = [
   { id: 'connection', Icon: FiRadio, labelKey: 'nav.connection' },
@@ -15,21 +16,24 @@ const SECONDARY = [
 
 function RailButton({ id, Icon, label, active, expanded, onSelect }) {
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(id)}
-      title={expanded ? undefined : label}
-      aria-label={label}
-      aria-current={active ? 'page' : undefined}
-      className={cn(
-        'flex h-11 items-center transition-colors duration-fast ease-out',
-        expanded ? 'w-full gap-3 rounded-[14px] px-3' : 'w-11 justify-center rounded-pill',
-        active ? 'bg-white text-[#17171a]' : 'text-white/55 hover:bg-white/10 hover:text-white/85',
-      )}
-    >
-      <Icon className="h-[18px] w-[18px] flex-none" strokeWidth={1.9} />
-      {expanded && <span className="truncate text-sm font-medium">{label}</span>}
-    </button>
+    // Expanded, the label is already on the button, so a tip would only repeat
+    // it. The rail hugs the left edge, so the tip goes to its right.
+    <Tooltip label={label} side="right" disabled={expanded}>
+      <button
+        type="button"
+        onClick={() => onSelect(id)}
+        aria-label={label}
+        aria-current={active ? 'page' : undefined}
+        className={cn(
+          'flex h-11 items-center transition-colors duration-fast ease-out',
+          expanded ? 'w-full gap-3 rounded-[14px] px-3' : 'w-11 justify-center rounded-pill',
+          active ? 'bg-white text-[#17171a]' : 'text-white/55 hover:bg-white/10 hover:text-white/85',
+        )}
+      >
+        <Icon className="h-[18px] w-[18px] flex-none" strokeWidth={1.9} />
+        {expanded && <span className="truncate text-sm font-medium">{label}</span>}
+      </button>
+    </Tooltip>
   );
 }
 

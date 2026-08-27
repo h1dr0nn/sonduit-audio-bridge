@@ -18,8 +18,20 @@
     <string name="stat_correction">Correzione</string>
     <string name="pairing_title">Codice di accoppiamento</string>
     <string name="pairing_new">Nuovo codice</string>
-    <string name="pairing_hint">Inserisci questo codice sul computer prima di cercare. Senza, questo telefono non comparira.</string>
+    <string name="pairing_hint">Inserisci questo codice sul computer prima di cercare. Senza, questo telefono non comparirà.</string>
     <string name="hint_same_network">Telefono e computer devono essere sulla stessa rete, o collegati via USB.</string>
     <string name="channel_name">Ponte</string>
     <string name="channel_description">Mostrata mentre Sonduit riproduce audio da un computer.</string>
+    <string name="action_scan">Scansiona il computer</string>
+    <string name="scan_title">Scansiona il codice sul computer</string>
+    <string name="scan_hint">Punta la fotocamera sul codice quadrato che Sonduit mostra sullo schermo del computer.</string>
+    <string name="scan_cancel">Annulla</string>
+    <string name="scan_permission_rationale">Sonduit ha bisogno della fotocamera per leggere il codice di associazione. Non viene usata per altro.</string>
+    <string name="scan_permission_grant">Consenti la fotocamera</string>
+    <string name="scan_permission_denied">L’accesso alla fotocamera è disattivato. Attivalo nelle Impostazioni per scansionare, oppure digita il codice sul computer.</string>
+    <string name="scan_open_settings">Apri le impostazioni</string>
+    <string name="scan_not_a_code">Questo non è un codice di associazione Sonduit.</string>
+    <string name="scan_paired">Inviato al computer. L’audio partirà a breve.</string>
+    <string name="scan_failed">Non si è riusciti a contattare il computer. Verifica che siano sulla stessa rete o collegati via USB.</string>
+    <string name="scan_camera_error">Non è stato possibile aprire la fotocamera.</string>
 </resources>

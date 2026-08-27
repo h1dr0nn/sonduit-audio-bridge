@@ -2,24 +2,36 @@
 <resources>
     <!-- app_name and value_unknown are deliberately not translated:
          one is a product name and the other is a dash. -->
-    <string name="action_start">Bat dau nghe</string>
-    <string name="action_stop">Dung</string>
-    <string name="status_idle">Chua nghe</string>
-    <string name="status_waiting">Dang nghe, chua co am thanh</string>
-    <string name="status_streaming_short">Dang phat</string>
-    <string name="status_streaming">Dang phat %1$d kHz, dem %2$d ms</string>
-    <string name="format_summary">%1$d kHz, %2$d kenh</string>
-    <string name="stat_buffer">Bo dem</string>
+    <string name="action_start">Bắt đầu nghe</string>
+    <string name="action_stop">Dừng</string>
+    <string name="status_idle">Chưa nghe</string>
+    <string name="status_waiting">Đang nghe, chưa có âm thanh</string>
+    <string name="status_streaming_short">Đang phát</string>
+    <string name="status_streaming">Đang phát %1$d kHz, đệm %2$d ms</string>
+    <string name="format_summary">%1$d kHz, %2$d kênh</string>
+    <string name="stat_buffer">Bộ đệm</string>
     <string name="stat_jitter">Jitter</string>
-    <string name="stat_loss">Mat goi</string>
-    <string name="stat_packets">Goi tin</string>
-    <string name="stat_malformed">Goi hong</string>
-    <string name="stat_drift">Lech dong ho</string>
-    <string name="stat_correction">Hieu chinh</string>
-    <string name="pairing_title">Ma ghep noi</string>
-    <string name="pairing_new">Ma moi</string>
-    <string name="pairing_hint">Nhap ma nay tren may tinh truoc khi quet. Khong co no thi may tinh se khong thay dien thoai.</string>
-    <string name="hint_same_network">Dien thoai va may tinh phai cung mang, hoac ket noi bang USB tethering.</string>
-    <string name="channel_name">Cau noi</string>
-    <string name="channel_description">Hien khi Sonduit dang phat am thanh tu may tinh.</string>
+    <string name="stat_loss">Mất gói</string>
+    <string name="stat_packets">Gói tin</string>
+    <string name="stat_malformed">Gói hỏng</string>
+    <string name="stat_drift">Lệch đồng hồ</string>
+    <string name="stat_correction">Hiệu chỉnh</string>
+    <string name="pairing_title">Mã ghép nối</string>
+    <string name="pairing_new">Mã mới</string>
+    <string name="pairing_hint">Nhập mã này trên máy tính trước khi quét. Không có nó thì máy tính sẽ không thấy điện thoại.</string>
+    <string name="hint_same_network">Điện thoại và máy tính phải cùng mạng, hoặc kết nối bằng USB tethering.</string>
+    <string name="channel_name">Cầu nối</string>
+    <string name="channel_description">Hiện khi Sonduit đang phát âm thanh từ máy tính.</string>
+    <string name="action_scan">Quét mã trên máy tính</string>
+    <string name="scan_title">Quét mã hiện trên màn hình máy tính</string>
+    <string name="scan_hint">Hướng camera vào ô mã vuông mà Sonduit hiện trên màn hình máy tính.</string>
+    <string name="scan_cancel">Hủy</string>
+    <string name="scan_permission_rationale">Sonduit cần camera để đọc mã ghép nối. Không dùng vào việc gì khác.</string>
+    <string name="scan_permission_grant">Cho phép camera</string>
+    <string name="scan_permission_denied">Quyền camera đang tắt. Bật trong Cài đặt để quét, hoặc nhập mã trên máy tính.</string>
+    <string name="scan_open_settings">Mở cài đặt</string>
+    <string name="scan_not_a_code">Đây không phải mã ghép nối Sonduit.</string>
+    <string name="scan_paired">Đã gửi tới máy tính. Âm thanh sẽ phát ngay sau đó.</string>
+    <string name="scan_failed">Không liên lạc được với máy tính. Kiểm tra hai máy cùng mạng hoặc đã nối USB.</string>
+    <string name="scan_camera_error">Không mở được camera.</string>
 </resources>

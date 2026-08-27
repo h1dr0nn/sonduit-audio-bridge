@@ -5,6 +5,7 @@ import android.os.Build
 import android.util.Log
 import uniffi.sonduit_ffi.Bridge
 import uniffi.sonduit_ffi.BridgeState
+import uniffi.sonduit_ffi.FfiException
 
 /**
  * The one place Kotlin talks to Rust.
@@ -130,6 +131,59 @@ object BridgeController {
     } catch (error: Exception) {
         Log.e(TAG, "pairing code unavailable", error)
         ""
+    }
+
+    /**
+     * What came of trying to pair from a scanned code.
+     *
+     * An enum rather than an exception: every one of these is a normal outcome
+     * the user has to be told about in their own words, and only the caller
+     * knows which string resource says it.
+     */
+    enum class PairResult {
+        /** The announcement left this device. */
+        SENT,
+
+        /** The camera read something that was not a Sonduit pairing code. */
+        NOT_A_CODE,
+
+        /** No address in the code could be reached from here. */
+        UNREACHABLE,
+
+        /** There is no session listening, so there is no port to announce. */
+        NOT_RUNNING,
+    }
+
+    /**
+     * Pair from a code scanned off the computer's screen.
+     *
+     * The session must already be running: the announcement advertises the
+     * port audio will arrive on, and there is no such port until the socket is
+     * bound.
+     *
+     * [PairResult.SENT] means the datagram left this device, not that the
+     * computer accepted it. Nothing here can know that; what tells the user is
+     * audio starting to play.
+     */
+    @Synchronized
+    fun acceptInvite(payload: String): PairResult {
+        if (!running) return PairResult.NOT_RUNNING
+
+        return try {
+            bridge.acceptInvite(payload)
+            lastError = null
+            PairResult.SENT
+        } catch (error: FfiException.BadInvite) {
+            PairResult.NOT_A_CODE
+        } catch (error: FfiException.NotRunning) {
+            PairResult.NOT_RUNNING
+        } catch (error: Exception) {
+            // Usually every address in the code is on a network this phone is
+            // not on, which is what happens when the user scans a code shown
+            // by a computer they cannot actually route to.
+            Log.e(TAG, "pairing from a scanned code failed", error)
+            PairResult.UNREACHABLE
+        }
     }
 
     /** Replace the pairing code. Any desktop paired with the old one stops working. */

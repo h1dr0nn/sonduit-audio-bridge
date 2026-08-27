@@ -1,7 +1,8 @@
 //! IPC commands exposed to the frontend layer.
 
 use crate::bridge::{
-    self, BridgeSnapshot, BridgeState, DiscoveredDevice, SessionInfo, StartOptions,
+    self, BridgeError, BridgeSnapshot, BridgeState, DiscoveredDevice, PairingInvite, SessionInfo,
+    StartOptions,
 };
 use crate::convert::{self, BackendResult, ConvertPayload};
 use crate::core::window::apply_backdrop;
@@ -64,6 +65,34 @@ pub fn bridge_snapshot(state: State<'_, BridgeState>) -> BridgeSnapshot {
 #[tauri::command]
 pub async fn bridge_scan(code: String) -> Result<Vec<DiscoveredDevice>, String> {
     tauri::async_runtime::spawn_blocking(move || bridge::discover(&code))
+        .await
+        .map_err(|error| format!("background task failed: {error}"))?
+        .map_err(Into::into)
+}
+
+/// Generate the pairing invite the connection page renders as a QR code.
+///
+/// Calling it again replaces the previous invite, so the code that was on
+/// screen a moment ago stops being accepted.
+#[tauri::command]
+pub fn bridge_invite(state: State<'_, BridgeState>) -> Result<PairingInvite, String> {
+    bridge::create_invite(&state).map_err(Into::into)
+}
+
+/// Wait for the phone that scanned the invite to announce itself.
+///
+/// Blocks for as long as the pairing window, so it runs off the async runtime.
+/// The invite is read out of the state before the wait starts: a Tauri `State`
+/// borrows, and the blocking task outlives the borrow.
+///
+/// `Ok(None)` means nobody scanned in time, which is not an error.
+#[tauri::command]
+pub async fn bridge_await_pairing(
+    state: State<'_, BridgeState>,
+) -> Result<Option<DiscoveredDevice>, String> {
+    let invite = state.invite().ok_or(BridgeError::NoInvite)?;
+
+    tauri::async_runtime::spawn_blocking(move || bridge::await_pairing(&invite))
         .await
         .map_err(|error| format!("background task failed: {error}"))?
         .map_err(Into::into)

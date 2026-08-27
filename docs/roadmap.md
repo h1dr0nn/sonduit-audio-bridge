@@ -66,10 +66,8 @@ Honest list of things that exist but are not finished.
 | Gap | Where |
 | --- | --- |
 | Process loopback returns `ModeUnavailable`; only endpoint loopback works | `sonduit-capture-win` |
-| A lost packet is concealed with silence, not with anything better | `sonduit-core::jitter` |
 | Discovery is authenticated but the audio stream is not encrypted | ADR-006, see section 1.2 |
-| No aggregated third-party licence file is shipped | `licensing.md` section 5 |
-| The bundled FFmpeg is 110 MB, which dominates the installer size | `tools/fetch-ffmpeg.mjs` |
+| The bundled FFmpeg is 110 MB installed, about 35 MB inside the LZMA installer; no smaller LGPL build is published | `tools/fetch-ffmpeg.mjs` |
 | `driver/` is empty | ADR-002 |
 
 ---

@@ -10,6 +10,38 @@
  * process boundary either way, but shipping the LGPL build keeps the weaker
  * obligation and avoids arguing about the stronger one. See docs/licensing.md.
  *
+ * It is also the **static** build, not the shared one, which is the opposite of
+ * what the published archive sizes suggest. The shared archive is 64.6 MB
+ * against the static 141.6 MB, but the archive is not what ships: the static
+ * archive carries three whole programs and only ffmpeg.exe is copied out of it,
+ * whereas the shared build's ffmpeg.exe is a 0.5 MB stub with load-time imports
+ * on seven DLLs, every one of which has to travel with it. Measured on the
+ * 2026-08-26 build:
+ *
+ *   static  ffmpeg.exe               115,361,792 B   110.0 MiB
+ *   shared  ffmpeg.exe + 7 DLLs      134,812,672 B   128.6 MiB
+ *
+ * The shared build is 18.6 MiB larger installed, and 1.1 MiB larger again after
+ * the LZMA the NSIS installer applies. Static wins on both counts.
+ *
+ * # Why this stays 110 MB
+ *
+ * The application asks FFmpeg for five encoders (aac, libmp3lame, pcm_s16le,
+ * flac, libvorbis) and about a dozen audio filters. Nearly all of the 110 MB is
+ * video code that is never reached. Reaching it needs a `configure` with those
+ * codecs disabled, which means building FFmpeg from source, which means owning
+ * a cross-compilation toolchain and writing a fresh LGPL compliance story for a
+ * binary nobody else publishes. That trade is rejected. Every option that does
+ * not need a toolchain was measured, and none of them pays:
+ *
+ *   shared build           128.6 MiB installed   larger, see above
+ *   n8.1 release branch    108.7 MiB installed   1.2%, for pinning to an old branch
+ *   installer compression  already LZMA          Tauri's NSIS default
+ *   dropping ffprobe       already dropped       only ffmpeg.exe is copied here
+ *
+ * Note the last two: the 110 MB is what lands on disk after installation, not
+ * what the user downloads. NSIS compresses it to about 35 MB in the installer.
+ *
  * The binary is NOT committed. It is gitignored and fetched by CI, because a
  * 110 MB blob in git history is permanent and this one changes with every
  * upstream release.
@@ -29,7 +61,7 @@ import { tmpdir } from 'node:os';
 
 const TARGET_DIR = resolve('desktop/src-tauri/binaries');
 
-/** Upstream builds, by platform. BtbN publishes both GPL and LGPL variants. */
+/** Upstream builds, by platform. BtbN publishes GPL and LGPL, static and shared. */
 const SOURCES = {
   win32: {
     url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip',

@@ -24,10 +24,10 @@ export function OutputFolderChooser({ path, onChoose }) {
 
   return (
     <div className="space-y-2">
-      <p className="text-xs uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">{t('outputFolderLabel')}</p>
+      <p className="text-xs uppercase tracking-[0.18em] text-ink-faint">{t('outputFolderLabel')}</p>
       <div className="space-y-2">
-        <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-700 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-slate-200">
-          <FiFolder className="h-4 w-4 flex-shrink-0 text-slate-500 dark:text-slate-400" />
+        <div className="card-sunken flex items-center gap-2 px-4 py-2.5 text-sm text-ink">
+          <FiFolder className="h-4 w-4 flex-shrink-0 text-ink-faint" strokeWidth={1.9} />
           <span className="flex-1 truncate font-mono text-xs">
             {path || t('noFolderSelected')}
           </span>
@@ -35,12 +35,12 @@ export function OutputFolderChooser({ path, onChoose }) {
         <button
           type="button"
           onClick={handleChooseFolder}
-          className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 shadow-md transition duration-smooth hover:-translate-y-[1px] hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent dark:border-white/10 dark:bg-white/10 dark:text-slate-100"
+          className="w-full rounded-pill border border-line-strong px-4 py-2.5 text-sm font-semibold text-ink transition-colors duration-fast ease-out hover:bg-sunken focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {t('chooseFolder')}
         </button>
         {!path && (
-          <p className="text-xs text-slate-500 dark:text-slate-400">
+          <p className="text-xs text-ink-faint">
             {t('autoFilled')}
           </p>
         )}

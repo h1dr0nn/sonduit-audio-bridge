@@ -80,11 +80,11 @@ export function ProgressIndicator({ progress, status, currentFile }) {
   };
 
   return (
-    <div className="space-y-3 rounded-card border border-slate-200 bg-white p-5 shadow-soft transition duration-smooth dark:border-white/10 dark:bg-white/10">
+    <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">{t('progressLabel')}</p>
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+          <p className="text-xs uppercase tracking-[0.18em] text-ink-faint">{t('progressLabel')}</p>
+          <h3 className="text-lg font-semibold text-ink">
             {status || t('statusIdle')}
           </h3>
         </div>
@@ -104,7 +104,7 @@ export function ProgressIndicator({ progress, status, currentFile }) {
 
       {currentFile && (
         <div className="min-w-0">
-          <p className="truncate text-xs text-slate-600 dark:text-slate-300" title={currentFile}>
+          <p className="truncate text-xs text-ink-soft" title={currentFile}>
             {t('processingFile')} {currentFile.split(/[/\\]/).pop()}
           </p>
         </div>

@@ -122,14 +122,21 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* The rounded shell. Its own translucency lets the acrylic read through. */
+/* The shell fills the window rectangle exactly. Its own translucency lets the
+ * acrylic read through.
+ *
+ * It carries no radius and no border on purpose. The window is undecorated, so
+ * the compositor already rounds it; a second, larger radius here cut a curve
+ * INSIDE the one the OS draws, and the sliver between the two curves showed as
+ * a dark crescent in the corner. A straight 1px border has the same problem in
+ * reverse — the OS mask clips it away at each corner and leaves the hairline
+ * broken. adb-compass shapes its window the same way: nothing spanning the
+ * window paints a radius, and the window's own outline is the only curve. */
 .app-shell {
   height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--surface-app);
-  border-radius: var(--radius-shell);
-  border: 1px solid var(--line-soft);
   overflow: hidden;
 }
 
@@ -237,6 +244,49 @@ body {
   color: #fff;
 }
 
+/* ---- Tooltips ----
+ * Ours rather than the browser's `title`: a native tooltip cannot be themed,
+ * ignores keyboard focus, and paints in OS chrome that has nothing to do with
+ * this window. Positioning is done in JS, so only appearance lives here.
+ * See components/ui/Tooltip.jsx. */
+
+.tooltip {
+  position: fixed;
+  z-index: var(--z-popover);
+  max-width: 260px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--surface-invert);
+  color: var(--text-on-invert);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.4;
+  box-shadow: var(--shadow-raised);
+  /* The pointer must be able to reach whatever the tip covers. */
+  pointer-events: none;
+}
+
+/* The first render is a hidden measuring pass, so the fade is held back until
+ * the tip has somewhere to appear. */
+.tooltip[data-placed] {
+  animation: tooltip-in var(--duration-fast) var(--ease-out);
+}
+
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip {
+    animation: none;
+  }
+}
+
 /* ---- Modals ----
  * Backdrop covers the whole window, including behind the titlebar, so the
  * dimming reads as one surface with no seam. The titlebar outranks it, so the
@@ -253,6 +303,18 @@ body {
   -webkit-backdrop-filter: blur(4px);
 }
 
+/* The card itself. Appearance only, so the two placements below can share it.
+ * See adb-compass, which likewise separates a top-anchored palette from a
+ * centred dialog rather than giving every overlay the same position. */
+.modal-surface {
+  z-index: var(--z-modal);
+  background: var(--surface-card);
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--shadow-raised);
+}
+
+/* A command palette belongs near the top, where the eye already is after a
+ * keyboard shortcut, not in the middle of the window. */
 .modal-panel {
   position: fixed;
   left: 50%;
@@ -262,6 +324,29 @@ body {
   background: var(--surface-card);
   border: 1px solid var(--line-soft);
   box-shadow: var(--shadow-raised);
+}
+
+/* A dialog is centred in the area BELOW the titlebar, not in the whole window.
+ * Centring against the window puts the panel visibly high, because the
+ * titlebar overlays the top of that area and is not part of it. */
+.modal-center {
+  position: fixed;
+  top: var(--titlebar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  /* The container spans the window, so it would otherwise swallow the clicks
+   * meant for the backdrop behind it. */
+  pointer-events: none;
+}
+
+.modal-center > * {
+  pointer-events: auto;
 }
 
 /* ---- Reusable surfaces ---- */

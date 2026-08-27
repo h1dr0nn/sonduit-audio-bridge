@@ -22,4 +22,16 @@
     <string name="hint_same_network">手机和电脑必须在同一网络，或通过 USB 网络共享连接。</string>
     <string name="channel_name">桥接</string>
     <string name="channel_description">在 Sonduit 播放电脑音频时显示。</string>
+    <string name="action_scan">扫描电脑上的码</string>
+    <string name="scan_title">扫描电脑上显示的码</string>
+    <string name="scan_hint">将摄像头对准 Sonduit 在电脑屏幕上显示的方形码。</string>
+    <string name="scan_cancel">取消</string>
+    <string name="scan_permission_rationale">Sonduit 需要摄像头来读取配对码，不会用于其他用途。</string>
+    <string name="scan_permission_grant">允许使用摄像头</string>
+    <string name="scan_permission_denied">摄像头权限已关闭。请在设置中开启，或在电脑上手动输入码。</string>
+    <string name="scan_open_settings">打开设置</string>
+    <string name="scan_not_a_code">这不是 Sonduit 配对码。</string>
+    <string name="scan_paired">已发送到电脑，声音很快就会开始播放。</string>
+    <string name="scan_failed">无法连上电脑。请确认两者处于同一网络或已通过 USB 连接。</string>
+    <string name="scan_camera_error">无法打开摄像头。</string>
 </resources>

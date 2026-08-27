@@ -27,6 +27,18 @@
     <!-- Keeping the CPU awake while streaming; released the moment it stops. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!--
+        Reading the pairing QR code off the computer's screen. Asked for only
+        when the user taps Scan, and used for nothing else: the typed-code path
+        still works on a device that refuses it.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- A phone without a camera can still pair by typing the code. -->
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+
     <!-- AAudio low-latency output is not present on every device. -->
     <uses-feature
         android:name="android.hardware.audio.low_latency"

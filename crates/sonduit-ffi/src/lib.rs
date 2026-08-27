@@ -27,6 +27,8 @@ use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
 use sonduit_core::resample::DriftResampler;
 use sonduit_playback_android::{CallbackSource, JitterSource};
+use sonduit_transport::feedback::{Feedback, FEEDBACK_BYTES, FEEDBACK_INTERVAL_MS};
+use sonduit_transport::invite::Invite;
 use sonduit_transport::pairing::PairingCode;
 use sonduit_transport::{classify, discovery, Wire, DEFAULT_PORT};
 
@@ -84,6 +86,10 @@ pub enum FfiError {
         /// What AAudio reported.
         reason: String,
     },
+
+    /// The scanned text was not a Sonduit pairing invite.
+    #[error("that is not a Sonduit pairing code")]
+    BadInvite,
 }
 
 /// What the Android UI displays.
@@ -163,13 +169,20 @@ pub struct Bridge {
     ///
     /// Generated once per process rather than per session, so a user who stops
     /// and starts the bridge does not have to retype it on the desktop.
-    pairing: Mutex<PairingCode>,
+    ///
+    /// Shared with the announce thread rather than copied into it. A copy
+    /// would go stale the moment the code changed, and the phone would then
+    /// show one code on screen while proving it knew another.
+    pairing: Arc<Mutex<PairingCode>>,
 }
 
 struct Running {
     stop: Arc<AtomicBool>,
     receive: Option<std::thread::JoinHandle<()>>,
     announce: Option<std::thread::JoinHandle<()>>,
+    /// The port audio is arriving on, which is what an announcement has to
+    /// advertise. Kept here because only a running session has one.
+    port: u16,
 }
 
 impl Default for Bridge {
@@ -188,7 +201,7 @@ impl Bridge {
             inner: Mutex::new(None),
             shared: Mutex::new(None),
             device_name: Mutex::new("Sonduit".to_string()),
-            pairing: Mutex::new(PairingCode::from_seed(random_seed())),
+            pairing: Arc::new(Mutex::new(PairingCode::from_seed(random_seed()))),
         }
     }
 
@@ -212,6 +225,91 @@ impl Bridge {
     pub fn regenerate_pairing_code(&self) {
         if let Ok(mut code) = self.pairing.lock() {
             *code = PairingCode::from_seed(random_seed());
+        }
+    }
+
+    /// Pair from a QR code the desktop displayed.
+    ///
+    /// The desktop cannot be found by broadcast when it sits in another
+    /// subnet, so it puts its own addresses, the discovery port, a fresh nonce
+    /// and a pairing code on screen and this device reads them with the
+    /// camera. The announcement then goes out by unicast to each of those
+    /// addresses, which is what crosses a router.
+    ///
+    /// The datagram is exactly the reply
+    /// [`sonduit_transport::discovery::encode_announce`] builds for a
+    /// broadcast probe, tagged with the same HMAC keyed by the same pairing
+    /// code. Nothing new is trusted on either end, so the only part of the
+    /// threat model that changes is that the code now sits on the desktop's
+    /// screen: somebody who photographs it from across the room learns it and
+    /// could announce a device of their own in this one's place. That was
+    /// already true of the code this app displays for the user to read aloud.
+    /// The code itself still never reaches the wire.
+    ///
+    /// The desktop learns this device's address from the datagram's source,
+    /// so no address of ours is in the payload and none can be spoofed there.
+    ///
+    /// A session must already be running: the announcement advertises the port
+    /// audio will arrive on, and until the socket is bound there is no such
+    /// port to advertise.
+    ///
+    /// Returning `Ok` means the announcement left this device, not that the
+    /// desktop accepted it. The confirmation the user sees is audio arriving.
+    ///
+    /// # Errors
+    /// Returns [`FfiError::BadInvite`] when the scanned text is not a Sonduit
+    /// invite, [`FfiError::NotRunning`] when no session is listening, and
+    /// [`FfiError::Transport`] when no address in the invite could be reached
+    /// at all.
+    pub fn accept_invite(&self, payload: String) -> Result<(), FfiError> {
+        let invite = Invite::parse(&payload).ok_or(FfiError::BadInvite)?;
+
+        let audio_port = {
+            let running = self.inner.lock().map_err(|_| FfiError::NotRunning)?;
+            running.as_ref().ok_or(FfiError::NotRunning)?.port
+        };
+
+        // The desktop chose this code, so this device adopts it rather than
+        // keeping its own. Otherwise a later broadcast scan from the same
+        // desktop would be answered with a code it has never seen.
+        {
+            let mut code = self.pairing.lock().map_err(|_| FfiError::NotRunning)?;
+            *code = invite.code.clone();
+        }
+
+        let name = self
+            .device_name
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| "Sonduit".to_string());
+
+        let socket =
+            UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).map_err(|error| {
+                FfiError::Transport {
+                    reason: error.to_string(),
+                }
+            })?;
+        let datagram = discovery::encode_announce(&name, audio_port, &invite.nonce, &invite.code);
+
+        // Every address is tried, not just the first. The desktop cannot tell
+        // which of its interfaces this phone shares, so it offers all of them;
+        // the ones on other links fail here and cost a system call each.
+        let mut delivered = false;
+        for address in &invite.addresses {
+            if socket
+                .send_to(&datagram, SocketAddr::from((*address, invite.port)))
+                .is_ok()
+            {
+                delivered = true;
+            }
+        }
+
+        if delivered {
+            Ok(())
+        } else {
+            Err(FfiError::Transport {
+                reason: "no address in the pairing code could be reached".to_string(),
+            })
         }
     }
 
@@ -380,11 +478,7 @@ impl Bridge {
                 .lock()
                 .map(|guard| guard.clone())
                 .unwrap_or_else(|_| "Sonduit".to_string());
-            let code = self
-                .pairing
-                .lock()
-                .map(|code| code.clone())
-                .map_err(|_| FfiError::NotRunning)?;
+            let code = Arc::clone(&self.pairing);
             std::thread::Builder::new()
                 .name("sonduit-announce".into())
                 .spawn(move || announce_loop(&stop, &name, port, &code))
@@ -397,6 +491,7 @@ impl Bridge {
             stop,
             receive: Some(receive),
             announce: Some(announce),
+            port,
         });
 
         if let Ok(mut current) = self.shared.lock() {
@@ -484,6 +579,13 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     // phone syncs its clock.
     let start = std::time::Instant::now();
     let mut datagram = [0_u8; sonduit_transport::MAX_DATAGRAM_BYTES];
+
+    // The sender has no other way to learn anything. Without these reports it
+    // can only describe its own socket, and it showed a working session with
+    // no device on the network at all.
+    let mut report_buffer = [0_u8; FEEDBACK_BYTES];
+    let mut last_report = std::time::Instant::now();
+    let mut last_accepted: Option<(u32, std::time::Instant)> = None;
     let mut seen_audio = false;
 
     // Drift correction. The estimator measures, the controller decides, the
@@ -632,6 +734,22 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             source.buffer_mut().push(sequence, timestamp, arrival, pcm);
         }
 
+        // Reports go back to whoever sent the audio, on the address the
+        // datagram came from. A sender behind NAT, or one that bound an
+        // ephemeral port, is reachable this way and by no other.
+        //
+        // Sent before the timestamp below is updated, so the echo names a
+        // packet the receiver has finished with rather than the one still
+        // being handled, and the hold time it reports is real.
+        if last_report.elapsed() >= Duration::from_millis(FEEDBACK_INTERVAL_MS) {
+            last_report = std::time::Instant::now();
+            send_report(socket, from, shared, last_accepted, &mut report_buffer);
+        }
+
+        // Echoed back so the sender can measure a round trip against its own
+        // clock. Neither end has to interpret the other's.
+        last_accepted = Some((timestamp, std::time::Instant::now()));
+
         since_correction += 1;
         if since_correction >= PACKETS_PER_CORRECTION {
             since_correction = 0;
@@ -711,7 +829,7 @@ fn open_playback(_shared: &Arc<Shared>, _format: Format) {}
 ///
 /// Each reply is tagged against the probe's own nonce, so it proves this
 /// device knows the pairing code without putting the code on the wire.
-fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16, code: &PairingCode) {
+fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16, code: &Mutex<PairingCode>) {
     let Ok(socket) = UdpSocket::bind(SocketAddr::from((
         Ipv4Addr::UNSPECIFIED,
         discovery::DISCOVERY_PORT,
@@ -734,14 +852,65 @@ fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16, code: &PairingC
             continue;
         };
 
+        // The code is read per probe rather than captured once, because
+        // scanning a desktop's QR replaces it mid-session and a reply keyed by
+        // the code this thread started with would then fail to verify.
+        let Ok(code) = code.lock() else {
+            return;
+        };
+
         // The reply is built per probe rather than once, because the tag
         // covers that probe's nonce. That is what stops it being replayed.
-        let reply = discovery::encode_announce(name, audio_port, &nonce, code);
+        let reply = discovery::encode_announce(name, audio_port, &nonce, &code);
+        drop(code);
 
         // Straight back to the prober rather than broadcast: the answer
         // concerns one machine, and broadcasting it would wake every device on
         // the network and hand them all a tag to study.
         let _ = socket.send_to(&reply, from);
+    }
+}
+
+/// Send one report to the sender.
+///
+/// Failures are ignored on purpose. A report that does not arrive costs the
+/// sender one missed sample of a figure it redraws four times a second, and
+/// the alternative, tearing down a session that is playing audio correctly
+/// because a status datagram was refused, is plainly worse.
+fn send_report(
+    socket: &UdpSocket,
+    to: SocketAddr,
+    shared: &Arc<Shared>,
+    last_accepted: Option<(u32, std::time::Instant)>,
+    buffer: &mut [u8; FEEDBACK_BYTES],
+) {
+    let Some((echo, accepted_at)) = last_accepted else {
+        return;
+    };
+
+    // try_lock, not lock: this runs on the receive thread and must not wait
+    // behind the audio callback for a status message.
+    let Ok(source) = shared.source.try_lock() else {
+        return;
+    };
+    let stats = source.buffer().stats();
+    let depth_ms = source.buffer().depth_ms();
+    drop(source);
+
+    let report = Feedback {
+        echo,
+        // Clamped rather than wrapped. A hold longer than a minute means
+        // something has gone badly wrong, and reporting it as a small number
+        // would hide that.
+        hold_ms: accepted_at.elapsed().as_millis().min(u128::from(u16::MAX)) as u16,
+        accepted: stats.accepted,
+        lost: stats.lost,
+        depth_tenths_ms: (depth_ms * 10.0).clamp(0.0, f64::from(u16::MAX)) as u16,
+        playing: read_state(shared) == BridgeState::Streaming,
+    };
+
+    if report.encode(buffer).is_ok() {
+        let _ = socket.send_to(buffer, to);
     }
 }
 

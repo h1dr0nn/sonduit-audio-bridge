@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sonduit_core::format::{Format, PCM_PAYLOAD_BYTES};
+use sonduit_transport::feedback::{end_to_end_ms, one_way_ms, Feedback};
 
 /// How often the accumulator produces a new view.
 ///
@@ -81,12 +82,27 @@ fn classify_transport(target: SocketAddr) -> String {
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryView {
-    /// One-way latency the sender can account for, in milliseconds.
+    /// Capture to ear, as far as both ends can account for it.
+    ///
+    /// `None` until a receiver has answered. Before that nothing about the
+    /// network or the far end has been measured, and the sender's own share is
+    /// a property of its configuration rather than a latency anyone hears.
     pub latency_ms: Option<f64>,
-    /// Audio held in the send path, in milliseconds.
+    /// Audio the receiver is holding, in milliseconds, as it reported.
     pub buffer_depth_ms: Option<f64>,
-    /// Fraction of datagrams the socket refused, in percent.
+    /// Packets that never reached the receiver, in percent, as it counted.
+    ///
+    /// Not the sender's own count of refused datagrams: a socket that accepted
+    /// everything says nothing about what arrived.
     pub packet_loss_pct: Option<f64>,
+    /// Measured round trip to the receiver, in milliseconds.
+    pub round_trip_ms: Option<f64>,
+    /// Datagrams the receiver accepted.
+    pub packets_received: Option<u64>,
+    /// Seconds since the receiver was last heard from.
+    ///
+    /// `None` when one has never answered.
+    pub last_heard_seconds: Option<f64>,
     /// Clock drift, which only the receiver can measure.
     pub drift_ppm: Option<f64>,
     /// Inter-arrival jitter, likewise receiver-side.
@@ -148,12 +164,19 @@ impl BridgeSnapshot {
 
     /// Fold a fresh reading in.
     ///
-    /// A session that has sent packets is reported as connected: over UDP
-    /// there is nothing else to go on, because the receiver never
-    /// acknowledges. This is honest about what the sender can know.
+    /// Connected means a receiver has answered, and nothing else. Sending
+    /// datagrams into a multicast group nobody has joined is not a connection,
+    /// and reporting it as one was the bug this whole feedback path exists to
+    /// fix: the bridge said "connected, 16 ms, 0% loss" with no device on the
+    /// network at all.
     pub fn apply(&mut self, view: TelemetryView) {
-        if view.packets_sent.unwrap_or(0) > 0 {
-            self.status = "connected".to_string();
+        if self.status != "error" {
+            self.status = if view.last_heard_seconds.is_some() && view.latency_ms.is_some() {
+                "connected"
+            } else {
+                "connecting"
+            }
+            .to_string();
         }
         self.telemetry = view;
     }
@@ -214,6 +237,13 @@ pub struct Accumulator {
     capture_failures: u64,
     reopens: u64,
     last_error: Option<String>,
+    /// The receiver's most recent report, and when it arrived.
+    ///
+    /// Everything about the far end and the network comes from here. Nothing
+    /// is displayed about either until one has been received.
+    latest: Option<(Feedback, Instant)>,
+    /// Smoothed round trip, from the estimator the send loop drives.
+    round_trip_ms: Option<f64>,
 }
 
 impl Accumulator {
@@ -231,6 +261,8 @@ impl Accumulator {
             capture_failures: 0,
             reopens: 0,
             last_error: None,
+            latest: None,
+            round_trip_ms: None,
         }
     }
 
@@ -250,6 +282,26 @@ impl Accumulator {
     pub fn record_capture_error(&mut self, message: &str) {
         self.capture_failures += 1;
         self.last_error = Some(message.to_string());
+    }
+
+    /// Fold in a report from the receiver.
+    pub fn record_feedback(&mut self, feedback: Feedback, round_trip_ms: Option<f64>) {
+        self.latest = Some((feedback, Instant::now()));
+        if round_trip_ms.is_some() {
+            self.round_trip_ms = round_trip_ms;
+        }
+    }
+
+    /// Whether a receiver has answered recently enough to still be there.
+    ///
+    /// Three missed reports, not one: a single dropped datagram is what this
+    /// transport is built to expect, and treating it as a disconnection would
+    /// make the status flicker on every busy moment.
+    #[must_use]
+    pub fn receiver_present(&self) -> bool {
+        self.latest.is_some_and(|(_, at)| {
+            at.elapsed() < Duration::from_millis(sonduit_transport::feedback::FEEDBACK_TIMEOUT_MS)
+        })
     }
 
     /// Record that the capture device was replaced after failing.
@@ -290,23 +342,32 @@ impl Accumulator {
     }
 
     fn view(&self, now: Instant) -> TelemetryView {
-        let attempted = self.packets + self.send_failures;
-        let loss = if attempted == 0 {
-            0.0
+        // Everything about the far end comes from the far end. A report that
+        // has stopped arriving is not a report of zero.
+        let present = self.receiver_present();
+        let report = if present {
+            self.latest.map(|(f, _)| f)
         } else {
-            self.send_failures as f64 * 100.0 / attempted as f64
+            None
         };
 
         TelemetryView {
-            // The sender can only account for its own share of the budget:
-            // one capture period plus one packet of buffering. Everything
-            // downstream is the receiver's to report, and claiming a
-            // round-trip figure the sender cannot see would be a fiction.
-            latency_ms: Some(self.send_side_latency_ms()),
-            buffer_depth_ms: Some(self.packet_duration_ms()),
-            packet_loss_pct: Some(loss),
-            // Receiver-side measurements. None, not zero: the sender has no
-            // way to know these and must not pretend otherwise.
+            latency_ms: report.and_then(|report| {
+                self.round_trip_ms.map(|round_trip| {
+                    end_to_end_ms(
+                        self.send_side_latency_ms(),
+                        one_way_ms(round_trip, report.hold_ms),
+                        report.depth_ms(),
+                    )
+                })
+            }),
+            buffer_depth_ms: report.map(|report| report.depth_ms()),
+            packet_loss_pct: report.map(|report| report.loss_percent()),
+            round_trip_ms: if present { self.round_trip_ms } else { None },
+            packets_received: report.map(|report| report.accepted),
+            last_heard_seconds: self.latest.map(|(_, at)| at.elapsed().as_secs_f64()),
+            // Still receiver-side and still not reported over the wire. None,
+            // not zero: a zero here would read as "the clocks match".
             drift_ppm: None,
             jitter_ms: None,
             late_packets: None,
@@ -338,21 +399,59 @@ mod tests {
     }
 
     #[test]
-    fn an_untouched_session_reports_no_loss_rather_than_a_nan() {
-        // Zero over zero would render as NaN in the UI.
+    fn a_session_nobody_has_answered_reports_nothing_about_the_far_end() {
+        // Not zero. Zero loss and zero latency are claims, and neither has
+        // been measured until a receiver has said something.
         let view = accumulator().view_now();
-        assert_eq!(view.packet_loss_pct, Some(0.0));
+
+        assert_eq!(view.packet_loss_pct, None);
+        assert_eq!(view.latency_ms, None);
+        assert_eq!(view.buffer_depth_ms, None);
+        assert_eq!(view.round_trip_ms, None);
+        assert_eq!(view.last_heard_seconds, None);
+        // What the sender genuinely knows about itself is still reported.
         assert_eq!(view.packets_sent, Some(0));
     }
 
     #[test]
-    fn loss_is_the_share_of_datagrams_the_socket_refused() {
+    fn a_report_is_what_makes_the_far_end_figures_appear() {
+        let mut counters = accumulator();
+        counters.record_sent(288, 1);
+        counters.record_feedback(
+            Feedback {
+                echo: 288,
+                hold_ms: 2,
+                accepted: 100,
+                lost: 4,
+                depth_tenths_ms: 284,
+                playing: true,
+            },
+            Some(9.0),
+        );
+
+        let view = counters.view_now();
+        assert_eq!(view.buffer_depth_ms, Some(28.4));
+        assert_eq!(view.packets_received, Some(100));
+        assert!(view
+            .packet_loss_pct
+            .is_some_and(|loss| (loss - 3.846).abs() < 0.01));
+        assert_eq!(view.round_trip_ms, Some(9.0));
+        // Send side 16 ms, one way (9 - 2) / 2 = 3.5, receiver holding 28.4.
+        assert!(view.latency_ms.is_some_and(|ms| (ms - 47.9).abs() < 0.01));
+    }
+
+    #[test]
+    fn a_refused_datagram_is_not_reported_as_packet_loss() {
+        // It is a fault on this machine, not a measurement of the link, and
+        // reporting it as loss put a number in front of the user that had
+        // nothing to do with what the receiver got.
         let mut counters = accumulator();
         counters.record_sent(480, 3);
         counters.record_send_error("network unreachable");
 
         let view = counters.view_now();
-        assert_eq!(view.packet_loss_pct, Some(25.0));
+        assert_eq!(view.packet_loss_pct, None);
+        assert_eq!(counters.last_error(), Some("network unreachable"));
     }
 
     #[test]
@@ -379,11 +478,13 @@ mod tests {
     }
 
     #[test]
-    fn the_reported_latency_is_the_period_plus_one_packet() {
-        // 1152 bytes at 48 kHz stereo 16-bit is 288 frames, which is 6 ms.
-        let view = accumulator().view_now();
-        assert_eq!(view.buffer_depth_ms, Some(6.0));
-        assert_eq!(view.latency_ms, Some(16.0));
+    fn the_send_side_share_is_the_period_plus_one_packet() {
+        // 1152 bytes at 48 kHz stereo 16-bit is 288 frames, which is 6 ms, on
+        // top of the 10 ms capture period. This is the sender's own
+        // contribution and it is never displayed on its own: it only appears
+        // once a receiver has reported the rest of the path.
+        assert_eq!(accumulator().send_side_latency_ms(), 16.0);
+        assert_eq!(accumulator().view_now().latency_ms, None);
     }
 
     #[test]
@@ -393,9 +494,23 @@ mod tests {
         counters.record_sent(480, 1);
         assert!(counters.due().is_none(), "not yet a quarter of a second");
     }
+    /// A view of the kind the accumulator produces once a receiver has
+    /// answered: it has heard from the far end and can account for a latency.
+    fn answered() -> TelemetryView {
+        TelemetryView {
+            packets_sent: Some(500),
+            last_heard_seconds: Some(0.05),
+            latency_ms: Some(41.0),
+            round_trip_ms: Some(8.0),
+            packets_received: Some(498),
+            buffer_depth_ms: Some(28.4),
+            packet_loss_pct: Some(0.4),
+            ..TelemetryView::default()
+        }
+    }
 
     #[test]
-    fn a_snapshot_becomes_connected_once_a_packet_has_gone_out() {
+    fn a_snapshot_becomes_connected_once_a_receiver_answers() {
         let mut snapshot = BridgeSnapshot::starting(SessionInfo::new(
             "Speakers",
             Format::stereo_48k(),
@@ -404,25 +519,50 @@ mod tests {
         ));
         assert_eq!(snapshot.status, "connecting");
 
-        snapshot.apply(TelemetryView {
-            packets_sent: Some(1),
-            ..TelemetryView::default()
-        });
+        snapshot.apply(answered());
         assert_eq!(snapshot.status, "connected");
     }
 
     #[test]
-    fn a_session_with_no_packets_stays_connecting() {
-        // Over UDP nothing acknowledges, so "packets left the machine" is the
-        // only evidence there is. Zero packets is not evidence.
+    fn sending_into_an_empty_network_is_not_a_connection() {
+        // The bug this whole feedback path exists to fix. Multicast to a group
+        // nobody has joined succeeds at every layer the sender can see, and it
+        // was reported as a working session at 16 ms with no loss.
+        let mut snapshot = BridgeSnapshot::starting(SessionInfo::new(
+            "Speakers",
+            Format::stereo_48k(),
+            "239.255.77.77:4010".parse().unwrap(),
+            false,
+        ));
+
+        snapshot.apply(TelemetryView {
+            packets_sent: Some(50_000),
+            ..TelemetryView::default()
+        });
+
+        assert_eq!(snapshot.status, "connecting");
+        assert_eq!(
+            snapshot.telemetry.latency_ms, None,
+            "a latency was invented"
+        );
+        assert_eq!(snapshot.telemetry.packet_loss_pct, None);
+    }
+
+    #[test]
+    fn a_receiver_that_stops_answering_stops_being_connected() {
+        // The phone was switched off, or walked out of range. The sender keeps
+        // sending happily, and must not keep claiming a connection.
         let mut snapshot = BridgeSnapshot::starting(SessionInfo::new(
             "Speakers",
             Format::stereo_48k(),
             "192.168.1.5:4010".parse().unwrap(),
             false,
         ));
+        snapshot.apply(answered());
+        assert_eq!(snapshot.status, "connected");
+
         snapshot.apply(TelemetryView {
-            packets_sent: Some(0),
+            packets_sent: Some(60_000),
             ..TelemetryView::default()
         });
         assert_eq!(snapshot.status, "connecting");
@@ -506,10 +646,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             false,
         ));
-        snapshot.apply(TelemetryView {
-            packets_sent: Some(50),
-            ..TelemetryView::default()
-        });
+        snapshot.apply(answered());
         snapshot.note_error(Some("network unreachable"));
 
         assert_eq!(snapshot.status, "connected");

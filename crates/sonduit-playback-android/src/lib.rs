@@ -8,6 +8,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sonduit_core::conceal::PacketConcealer;
 use sonduit_core::format::Format;
 use sonduit_core::jitter::{JitterBuffer, PopOutcome};
 
@@ -143,11 +144,22 @@ impl PlaybackCounters {
 pub struct JitterSource {
     buffer: JitterBuffer,
     format: Format,
-    /// Bytes of the current packet not yet handed to the device.
+    /// The last packet that actually arrived.
     residue: Vec<u8>,
-    /// How far into `residue` the callback has read.
+    /// Synthesises a replacement for a packet that did not.
+    ///
+    /// Held rather than built per loss because everything it needs is
+    /// preallocated, and because it has to see the audio that did arrive in
+    /// order to continue it.
+    concealer: PacketConcealer,
+    /// Whether the callback is currently draining concealment or real audio.
+    ///
+    /// The two live in separate buffers so that neither path has to copy a
+    /// packet or resize anything while the device is waiting.
+    from_concealer: bool,
+    /// How far into the current packet the callback has read.
     offset: usize,
-    /// Frames of silence emitted to cover packets that never arrived.
+    /// Frames of concealment emitted to cover packets that never arrived.
     concealed: u64,
 }
 
@@ -159,6 +171,8 @@ impl JitterSource {
             buffer,
             format,
             residue: Vec::new(),
+            concealer: PacketConcealer::new(format),
+            from_concealer: false,
             offset: 0,
             concealed: 0,
         }
@@ -175,13 +189,22 @@ impl JitterSource {
         &self.buffer
     }
 
-    /// Frames of silence emitted because a packet never arrived.
+    /// Frames of concealment emitted because a packet never arrived.
     ///
     /// Distinct from an underrun: this is loss the network caused, not the
     /// application failing to keep up.
     #[must_use]
     pub const fn concealed_frames(&self) -> u64 {
         self.concealed
+    }
+
+    /// The bytes the callback is currently reading from.
+    fn current(&self) -> &[u8] {
+        if self.from_concealer {
+            self.concealer.packet()
+        } else {
+            &self.residue
+        }
     }
 
     /// Pull the next packet, or a packet's worth of concealment.
@@ -191,29 +214,28 @@ impl JitterSource {
     fn refill(&mut self) -> bool {
         match self.buffer.pop() {
             PopOutcome::Packet(pcm) => {
+                // The concealer has to see what played in order to continue it
+                // when the next packet does not arrive.
+                self.concealer.observe(&pcm);
                 self.residue = pcm;
+                self.from_concealer = false;
                 self.offset = 0;
                 true
             }
             PopOutcome::Lost => {
-                // Silence of exactly one packet keeps the timeline aligned.
-                // Skipping the gap instead would shorten playback by a packet
-                // and shift everything after it earlier, which is worse than
-                // the click: the drift estimator would then chase a step that
-                // never happened on the sender.
-                let bytes = self.packet_bytes();
-                self.residue = vec![0; bytes];
+                // Exactly one packet of concealment, never more and never
+                // less, keeps the timeline aligned. Skipping the gap instead
+                // would shorten playback by a packet and shift everything
+                // after it earlier, which the drift estimator would then chase
+                // as a step that never happened on the sender.
+                self.concealer.conceal();
+                self.from_concealer = true;
                 self.offset = 0;
-                self.concealed += (bytes / self.format.bytes_per_frame()) as u64;
+                self.concealed += self.concealer.frames() as u64;
                 true
             }
             PopOutcome::Starved => false,
         }
-    }
-
-    fn packet_bytes(&self) -> usize {
-        sonduit_core::format::PCM_PAYLOAD_BYTES / self.format.bytes_per_frame()
-            * self.format.bytes_per_frame()
     }
 }
 
@@ -224,19 +246,21 @@ impl PcmSource for JitterSource {
         let mut written = 0;
 
         while written < wanted {
-            if self.offset >= self.residue.len() && !self.refill() {
+            if self.offset >= self.current().len() && !self.refill() {
                 break;
             }
 
-            let available = (self.residue.len() - self.offset) / 2;
+            let available = (self.current().len() - self.offset) / 2;
             let take = available.min(wanted - written);
             if take == 0 {
                 break;
             }
 
+            let offset = self.offset;
+            let source = self.current();
             for index in 0..take {
-                let at = self.offset + index * 2;
-                out[written + index] = i16::from_le_bytes([self.residue[at], self.residue[at + 1]]);
+                let at = offset + index * 2;
+                out[written + index] = i16::from_le_bytes([source[at], source[at + 1]]);
             }
 
             self.offset += take * 2;
@@ -330,9 +354,12 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_packet_becomes_a_packet_of_silence_not_a_skip() {
+    fn a_lost_packet_becomes_a_packet_of_concealment_not_a_skip() {
         // Skipping would shorten the timeline by a packet and shift everything
-        // after it earlier, which the drift estimator would then chase.
+        // after it earlier, which the drift estimator would then chase. The
+        // gap is filled by continuing the audio before it rather than by
+        // muting, so on this constant-valued stream it stays at the level it
+        // was at instead of stepping to zero and back.
         let mut source = source();
         push(&mut source, 0, 1000);
         push(&mut source, 2, 3000);
@@ -343,9 +370,37 @@ mod tests {
 
         assert_eq!(written, frames_per_packet * 3);
         assert_eq!(out[0], 1000);
-        assert_eq!(out[frames_per_packet * 2], 0, "the gap is silence");
+
+        let gap = &out[frames_per_packet * 2..frames_per_packet * 4];
+        assert!(
+            gap.iter().all(|&sample| sample == 1000),
+            "the gap should continue the audio, not mute it"
+        );
         assert_eq!(out[frames_per_packet * 4], 3000, "and then packet two");
         assert_eq!(source.concealed_frames(), frames_per_packet as u64);
+    }
+
+    #[test]
+    fn concealment_does_not_leak_into_the_packet_that_follows_it() {
+        // Concealment and received audio live in different buffers, and a
+        // stale offset or flag would replay part of the synthesised packet
+        // over the real one that arrived after it.
+        let mut source = source();
+        push(&mut source, 0, 1000);
+        push(&mut source, 2, 3000);
+        push(&mut source, 3, 4000);
+
+        let frames_per_packet = PCM_PAYLOAD_BYTES / 4;
+        let mut out = vec![0_i16; frames_per_packet * 4 * 2];
+        assert_eq!(
+            source.fill(&mut out, frames_per_packet * 4),
+            frames_per_packet * 4
+        );
+
+        let third = &out[frames_per_packet * 4..frames_per_packet * 6];
+        assert!(third.iter().all(|&sample| sample == 3000));
+        let fourth = &out[frames_per_packet * 6..];
+        assert!(fourth.iter().all(|&sample| sample == 4000));
     }
 
     #[test]

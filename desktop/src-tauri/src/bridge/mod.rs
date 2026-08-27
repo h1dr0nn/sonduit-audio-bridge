@@ -22,8 +22,11 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sonduit_core::format::Format;
+use sonduit_transport::feedback::{Feedback, FEEDBACK_BYTES};
+use sonduit_transport::invite::Invite;
 use sonduit_transport::packetize::Packetizer;
 use sonduit_transport::pairing::{PairingCode, NONCE_BYTES};
+use sonduit_transport::roundtrip::RoundTrip;
 use sonduit_transport::{discovery, TransportError, Wire, DEFAULT_PORT};
 use tauri::{AppHandle, Emitter};
 
@@ -49,6 +52,14 @@ const CAPTURE_PERIOD_MS: u32 = 10;
 
 /// How long a discovery scan listens for replies.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+/// How long the desktop waits for the phone after a QR invite goes on screen.
+///
+/// Generous, because the user has to pick up the phone, open the app and line
+/// up a camera, and a timeout that expires while they are still doing that
+/// reads as the feature being broken. Bounded all the same: the socket holds
+/// the discovery port while it waits.
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// How long the capture loop pauses after a failed read.
 const BACKOFF: Duration = Duration::from_millis(100);
@@ -82,6 +93,22 @@ pub struct DiscoveredDevice {
     pub name: String,
     /// Same as `id`, kept separate because the UI shows it as a subtitle.
     pub address: String,
+}
+
+/// A pairing invite, as the QR panel needs it.
+///
+/// The pairing code is deliberately not in here. It is inside `payload`
+/// because the phone needs it, and putting it in a second field would invite a
+/// UI that prints it somewhere the payload is not, which is a secret on screen
+/// for longer than it has to be.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingInvite {
+    /// The text to render as a QR code.
+    pub payload: String,
+    /// The addresses the phone was offered, so the user can see which links
+    /// this invite covers.
+    pub addresses: Vec<String>,
 }
 
 /// What the user asked for when starting a session.
@@ -119,6 +146,14 @@ pub enum BridgeError {
     /// The pairing code was not six digits.
     #[error("the pairing code must be six digits")]
     BadPairingCode,
+
+    /// This machine has no address a phone could send to.
+    #[error("this computer has no network address a phone could reach")]
+    NoLocalAddress,
+
+    /// Pairing was asked to wait with no invite on screen.
+    #[error("no pairing code is on screen")]
+    NoInvite,
 }
 
 impl From<BridgeError> for String {
@@ -147,6 +182,12 @@ struct Running {
 pub struct BridgeState {
     running: Mutex<Option<Running>>,
     snapshot: Arc<Mutex<BridgeSnapshot>>,
+    /// The invite currently on screen.
+    ///
+    /// Held because the announcement the phone sends back is authenticated
+    /// against the code and nonce that particular QR carried, and a new invite
+    /// must invalidate the old one rather than adding a second key that works.
+    invite: Mutex<Option<Invite>>,
 }
 
 impl BridgeState {
@@ -167,6 +208,12 @@ impl BridgeState {
             .lock()
             .map(|guard| guard.is_some())
             .unwrap_or(false)
+    }
+
+    /// The invite currently on screen, if one is.
+    #[must_use]
+    pub fn invite(&self) -> Option<Invite> {
+        self.invite.lock().ok().and_then(|guard| guard.clone())
     }
 }
 
@@ -209,6 +256,107 @@ fn scan_nonce() -> [u8; NONCE_BYTES] {
     nonce[..8].copy_from_slice(&(now as u64).to_le_bytes());
     nonce[8..].copy_from_slice(&address.rotate_left(29).to_le_bytes());
     nonce
+}
+
+/// A pairing code seed, taken from the first eight bytes of a fresh nonce.
+///
+/// Shifting rather than `from_le_bytes` on a slice keeps this free of a
+/// fallible conversion the caller would have to unwrap, in a function whose
+/// only job is to move bits.
+fn seed_from(nonce: &[u8; NONCE_BYTES]) -> u64 {
+    let mut seed = 0_u64;
+    for byte in nonce.iter().take(8) {
+        seed = (seed << 8) | u64::from(*byte);
+    }
+    seed
+}
+
+/// Build the invite the QR panel shows, replacing any previous one.
+///
+/// The code is generated here rather than on the phone because the desktop is
+/// the side displaying it. That inverts who has to read what: instead of the
+/// user copying six digits off the phone and the phone's address after them,
+/// the phone's camera reads both, and the desktop learns the phone's address
+/// from the datagram that comes back.
+///
+/// # Errors
+/// Returns [`BridgeError::Network`] when the adapter list cannot be read, and
+/// [`BridgeError::NoLocalAddress`] when nothing on it is an address a phone
+/// could send to.
+pub fn create_invite(state: &BridgeState) -> Result<PairingInvite, BridgeError> {
+    let addresses = adapters::local_ipv4().map_err(BridgeError::Network)?;
+
+    let nonce = scan_nonce();
+    let code = PairingCode::from_seed(seed_from(&nonce));
+
+    let invite = Invite::new(&addresses, discovery::DISCOVERY_PORT, code, nonce)
+        .ok_or(BridgeError::NoLocalAddress)?;
+
+    let view = PairingInvite {
+        payload: invite.to_payload(),
+        addresses: invite
+            .addresses
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
+    };
+
+    if let Ok(mut current) = state.invite.lock() {
+        // Replacing rather than adding: the previous code must stop working
+        // the moment a new one is on screen, or every invite ever shown would
+        // stay valid for the life of the process.
+        *current = Some(invite);
+    }
+
+    Ok(view)
+}
+
+/// Wait for an announcement from the phone that scanned the invite.
+///
+/// The phone sends this by unicast to an address the QR gave it, which is why
+/// this works across subnets where the broadcast probe never arrives. The
+/// phone's own address is taken from the datagram's source, never from
+/// anything inside it: an address in a payload is an address the sender chose.
+///
+/// Returns `Ok(None)` when nothing verified within [`PAIRING_TIMEOUT`], which
+/// is not an error. It usually means the user has not scanned yet.
+///
+/// # Errors
+/// Returns [`BridgeError::Network`] when the discovery port cannot be bound,
+/// which on Windows is most often the firewall or a second copy of the app.
+pub fn await_pairing(invite: &Invite) -> Result<Option<DiscoveredDevice>, BridgeError> {
+    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, invite.port)))
+        .map_err(|error| BridgeError::Network(error.to_string()))?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .map_err(|error| BridgeError::Network(error.to_string()))?;
+
+    let deadline = Instant::now() + PAIRING_TIMEOUT;
+    let mut datagram = [0_u8; 256];
+
+    while Instant::now() < deadline {
+        let Ok((length, from)) = socket.recv_from(&mut datagram) else {
+            continue;
+        };
+        // Anything that does not verify is dropped in silence, exactly as in
+        // a broadcast scan: it is either a stray datagram on a port Scream
+        // also uses or a device that should not be offered, and naming it
+        // would make the second look like the first.
+        let Some(announcement) =
+            discovery::decode_announce(&datagram[..length], &invite.nonce, &invite.code)
+        else {
+            continue;
+        };
+
+        let id = discovery::audio_address(from, &announcement).to_string();
+        return Ok(Some(DiscoveredDevice {
+            name: announcement.name,
+            address: id.clone(),
+            id,
+        }));
+    }
+
+    Ok(None)
 }
 
 /// Broadcast a discovery probe and collect the replies that prove they know
@@ -326,6 +474,11 @@ pub fn start(
     };
 
     let socket = UdpSocket::bind(bind).map_err(|error| BridgeError::Network(error.to_string()))?;
+    // The receiver answers on this same socket. Non-blocking, because the
+    // capture loop cannot afford to wait for a report that may never come.
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| BridgeError::Network(error.to_string()))?;
     if target.ip().is_multicast() {
         socket
             .set_multicast_ttl_v4(1)
@@ -486,6 +639,13 @@ pub fn capture_to_socket(
     let mut counters = telemetry::Accumulator::new(format);
     let mut consecutive_failures = 0_u32;
 
+    // Everything the UI says about the far end comes from here. Without it the
+    // sender can only describe itself, which is how it came to report a
+    // working session with nothing on the network.
+    let mut round_trip = RoundTrip::new();
+    let mut feedback_buffer = [0_u8; FEEDBACK_BYTES];
+    let started = std::time::Instant::now();
+
     while !stop.load(Ordering::Relaxed) {
         pcm.clear();
         let frames = match capture.read(&mut pcm) {
@@ -555,6 +715,12 @@ pub fn capture_to_socket(
 
         if frames > 0 {
             let result = packetizer.push(&pcm, |datagram| {
+                // Noted before the send rather than after, so a slow send is
+                // charged to the round trip it actually delayed.
+                if let Ok(packet) = sonduit_core::packet::SonduitPacket::decode(datagram) {
+                    round_trip
+                        .record_send(packet.timestamp_frames, started.elapsed().as_nanos() as u64);
+                }
                 socket
                     .send_to(datagram, target)
                     .map(|_| ())
@@ -564,6 +730,18 @@ pub fn capture_to_socket(
                 Ok(()) => counters.record_sent(frames, packetizer.packets()),
                 Err(error) => counters.record_send_error(&error.to_string()),
             }
+        }
+
+        // Drain whatever the receiver has sent back. Non-blocking, so an
+        // absent receiver costs one failed read per capture block and nothing
+        // else.
+        while let Ok((length, _from)) = socket.recv_from(&mut feedback_buffer) {
+            let Some(report) = Feedback::decode(&feedback_buffer[..length]) else {
+                continue;
+            };
+            let measured =
+                round_trip.observe_echo(report.echo, started.elapsed().as_nanos() as u64);
+            counters.record_feedback(report, round_trip.round_trip_ms().or(measured));
         }
 
         if let Some(view) = counters.due() {
@@ -702,6 +880,27 @@ mod tests {
         let state = BridgeState::default();
         assert!(!state.is_running());
         assert_eq!(state.snapshot().status, "disconnected");
+    }
+
+    #[test]
+    fn a_fresh_state_has_no_invite_to_pair_against() {
+        // Waiting for a phone before a QR has been shown must fail rather than
+        // wait on a code nobody has seen.
+        assert!(BridgeState::default().invite().is_none());
+    }
+
+    #[test]
+    fn every_one_of_the_first_eight_nonce_bytes_reaches_the_seed() {
+        // A seed that ignored most of its input would leave the code
+        // predictable from the clock, which is the one thing it must not be.
+        let mut nonce = [0_u8; NONCE_BYTES];
+        let base = seed_from(&nonce);
+
+        for index in 0..8 {
+            nonce[index] = 1;
+            assert_ne!(seed_from(&nonce), base, "byte {index} is discarded");
+            nonce[index] = 0;
+        }
     }
 
     #[test]

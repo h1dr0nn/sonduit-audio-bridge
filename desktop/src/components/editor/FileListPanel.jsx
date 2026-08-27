@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { FiTrash2, FiX, FiLoader, FiRefreshCw, FiMusic, FiSquare } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
-import { designTokens } from '../../utils/theme';
 import { WaveformPlayer } from './WaveformPlayer';
 import { formatBitrate } from '../../utils/metadataUtils';
 
@@ -41,17 +40,11 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload }
   };
 
   return (
-    <div
-      className="glass-surface relative flex flex-col rounded-card border border-slate-200 bg-white p-4 shadow-soft transition duration-smooth dark:border-white/10 dark:bg-white/5"
-      style={{
-        backdropFilter: `blur(${designTokens.blur})`,
-        WebkitBackdropFilter: `blur(${designTokens.blur})`,
-      }}
-    >
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="mb-4 flex flex-shrink-0 items-center justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">{t('session')}</p>
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{t('filesInQueue')}</h3>
+          <p className="text-xs uppercase tracking-[0.18em] text-ink-faint">{t('session')}</p>
+          <h3 className="text-lg font-semibold text-ink">{t('filesInQueue')}</h3>
         </div>
         {files.length > 0 && (
           <div className="flex items-center gap-2">
@@ -77,13 +70,15 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload }
         )}
       </div>
 
-      <div className="flex h-[244px] flex-col overflow-hidden rounded-2xl border border-white/40 bg-white/30 p-3 dark:border-white/5 dark:bg-white/5">
+      {/* The queue is the only part of this screen that grows without bound, so
+        * it is the part given the leftover height and its own scrollbar. */}
+      <div className="card-sunken flex min-h-0 flex-1 flex-col overflow-hidden p-3">
         {files.length === 0 ? (
-          <div className="flex h-full items-center justify-center rounded-xl bg-white/60 px-4 py-3 text-sm text-slate-600 shadow-inner dark:bg-white/5 dark:text-slate-300">
+          <div className="flex h-full items-center justify-center px-4 py-3 text-sm text-ink-soft">
             <span>{t('noFilesYet')}</span>
           </div>
         ) : (
-          <div className="h-[220px] space-y-2 overflow-y-auto pr-1 scrollbar-hide">
+          <div className="scroll-area min-h-0 flex-1 space-y-2 pr-1">
             {files.map((file, index) => (
               <div key={file.id || index} className="space-y-2">
                 <article

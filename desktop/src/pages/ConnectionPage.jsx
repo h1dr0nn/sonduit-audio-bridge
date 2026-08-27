@@ -1,7 +1,15 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { FiPlay, FiRefreshCw, FiSmartphone, FiSpeaker, FiSquare } from 'react-icons/fi';
+import {
+  FiMaximize,
+  FiPlay,
+  FiRefreshCw,
+  FiSmartphone,
+  FiSpeaker,
+  FiSquare,
+} from 'react-icons/fi';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { QrCode } from '../components/ui/QrCode';
 import { StatTile } from '../components/ui/StatTile';
 import { StatusPill } from '../components/ui/StatusPill';
 import { TextField } from '../components/ui/TextField';
@@ -18,12 +26,26 @@ const NO_TARGET = { kind: 'multicast', value: null };
 
 export function ConnectionPage() {
   const { t } = useTranslation();
-  const { available, status, error, devices, session, telemetry, scan, start, stop } = useBridge();
+  const {
+    available,
+    status,
+    error,
+    devices,
+    session,
+    telemetry,
+    scan,
+    invite,
+    awaitPairing,
+    start,
+    stop,
+  } = useBridge();
 
   const [target, setTarget] = useState(NO_TARGET);
   const [typed, setTyped] = useState('');
   const [pairing, setPairing] = useState('');
   const [scanning, setScanning] = useState(false);
+  const [invitation, setInvitation] = useState(null);
+  const [pairingState, setPairingState] = useState('idle');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState(null);
 
@@ -46,6 +68,37 @@ export function ConnectionPage() {
       setScanning(false);
     }
   }, [scan, pairing]);
+
+  /**
+   * Put a fresh code on screen and wait for a phone to read it.
+   *
+   * The wait is started in the same action rather than behind a second button:
+   * the code is only valid for one pairing window, and a user who showed one
+   * and then had to press something else to arm it would be looking at a code
+   * that does nothing.
+   */
+  const handleShowInvite = useCallback(async () => {
+    setFailure(null);
+    setPairingState('waiting');
+    try {
+      const next = await invite();
+      setInvitation(next);
+      const device = await awaitPairing();
+      if (device) {
+        setPairingState('paired');
+        // Selected as well as listed. The user asked for this phone by
+        // pointing a camera at the screen; making them click it again would be
+        // asking the same question twice.
+        setTarget({ kind: 'device', value: device.address });
+      } else {
+        setPairingState('timeout');
+      }
+    } catch (reason) {
+      setFailure(String(reason));
+      setPairingState('idle');
+      setInvitation(null);
+    }
+  }, [invite, awaitPairing]);
 
   const handleStart = useCallback(async () => {
     setBusy(true);
@@ -181,11 +234,52 @@ export function ConnectionPage() {
           </div>
         </Card>
 
+        <Card
+          className="lg:col-span-2"
+          title={t('connection.pairPhone')}
+          subtitle={t('connection.qrHint')}
+          actions={
+            <Button
+              size="sm"
+              icon={FiMaximize}
+              disabled={!available || pairingState === 'waiting'}
+              onClick={handleShowInvite}
+            >
+              {invitation ? t('connection.newQr') : t('connection.showQr')}
+            </Button>
+          }
+        >
+          {invitation ? (
+            <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start sm:gap-6">
+              <QrCode payload={invitation.payload} alt={t('connection.showQr')} />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs uppercase tracking-wide text-ink-faint">
+                  {t('connection.qrAddresses')}
+                </p>
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {invitation.addresses.map((address) => (
+                    <li key={address} className="truncate font-mono text-sm text-ink-soft">
+                      {address}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-sm text-ink">
+                  {pairingState === 'waiting' && t('connection.qrWaiting')}
+                  {pairingState === 'paired' && t('connection.qrPaired')}
+                  {pairingState === 'timeout' && t('connection.qrTimeout')}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <p className="py-4 text-center text-sm text-ink-soft">{t('connection.qrHint')}</p>
+          )}
+        </Card>
+
         <Card tone="accent" title={t('connection.session')}>
           <div className="mt-auto flex flex-col gap-3">
             <div className="flex items-center gap-2 opacity-90">
               <FiSpeaker className="h-5 w-5" strokeWidth={1.75} />
-              <span className="text-sm">{t('connection.endpoint')}</span>
+              <span className="text-sm">{t('connection.captureSource')}</span>
             </div>
             <p className="font-mono text-sm opacity-80">
               {session.endpoint ?? t('connection.noEndpoint')}

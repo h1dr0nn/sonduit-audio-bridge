@@ -2,10 +2,10 @@
 <resources>
     <!-- app_name and value_unknown are deliberately not translated:
          one is a product name and the other is a dash. -->
-    <string name="action_start">Commencer l ecoute</string>
-    <string name="action_stop">Arreter</string>
-    <string name="status_idle">A l arret</string>
-    <string name="status_waiting">A l ecoute, pas encore de son</string>
+    <string name="action_start">Commencer l\'écoute</string>
+    <string name="action_stop">Arrêter</string>
+    <string name="status_idle">À l\'arrêt</string>
+    <string name="status_waiting">À l\'écoute, pas encore de son</string>
     <string name="status_streaming_short">Lecture</string>
     <string name="status_streaming">Lecture %1$d kHz, %2$d ms en tampon</string>
     <string name="format_summary">%1$d kHz, %2$d canaux</string>
@@ -13,13 +13,25 @@
     <string name="stat_jitter">Gigue</string>
     <string name="stat_loss">Pertes</string>
     <string name="stat_packets">Paquets</string>
-    <string name="stat_malformed">Malformes</string>
-    <string name="stat_drift">Derive d horloge</string>
+    <string name="stat_malformed">Malformés</string>
+    <string name="stat_drift">Dérive d\'horloge</string>
     <string name="stat_correction">Correction</string>
     <string name="pairing_title">Code de couplage</string>
     <string name="pairing_new">Nouveau code</string>
-    <string name="pairing_hint">Saisissez ce code sur l ordinateur avant de rechercher. Sans lui, ce telephone n apparaitra pas.</string>
-    <string name="hint_same_network">Le telephone et l ordinateur doivent etre sur le meme reseau, ou relies en USB.</string>
+    <string name="pairing_hint">Saisissez ce code sur l\'ordinateur avant de rechercher. Sans lui, ce téléphone n\'apparaîtra pas.</string>
+    <string name="hint_same_network">Le téléphone et l\'ordinateur doivent être sur le même réseau, ou reliés en USB.</string>
     <string name="channel_name">Pont</string>
-    <string name="channel_description">Affiche pendant que Sonduit lit le son d un ordinateur.</string>
+    <string name="channel_description">Affiché pendant que Sonduit lit le son d\'un ordinateur.</string>
+    <string name="action_scan">Scanner l’ordinateur</string>
+    <string name="scan_title">Scannez le code affiché sur l’ordinateur</string>
+    <string name="scan_hint">Dirigez l’appareil photo vers le code carré que Sonduit affiche sur l’écran de l’ordinateur.</string>
+    <string name="scan_cancel">Annuler</string>
+    <string name="scan_permission_rationale">Sonduit a besoin de l’appareil photo pour lire le code d’association. Il ne sert à rien d’autre.</string>
+    <string name="scan_permission_grant">Autoriser l’appareil photo</string>
+    <string name="scan_permission_denied">L’accès à l’appareil photo est désactivé. Activez-le dans les Réglages pour scanner, ou saisissez le code sur l’ordinateur.</string>
+    <string name="scan_open_settings">Ouvrir les réglages</string>
+    <string name="scan_not_a_code">Ce n’est pas un code d’association Sonduit.</string>
+    <string name="scan_paired">Envoyé à l’ordinateur. Le son devrait démarrer d’ici peu.</string>
+    <string name="scan_failed">Impossible de joindre l’ordinateur. Vérifiez que les deux sont sur le même réseau ou reliés en USB.</string>
+    <string name="scan_camera_error">Impossible d’ouvrir l’appareil photo.</string>
 </resources>

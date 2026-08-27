@@ -22,4 +22,16 @@
     <string name="hint_same_network">端末とパソコンは同じネットワークにあるか、USB テザリングで接続されている必要があります。</string>
     <string name="channel_name">ブリッジ</string>
     <string name="channel_description">Sonduit がパソコンの音声を再生している間に表示されます。</string>
+    <string name="action_scan">パソコンのコードを読み取る</string>
+    <string name="scan_title">パソコンのコードをスキャン</string>
+    <string name="scan_hint">Sonduit がパソコンの画面に表示している四角いコードにカメラを向けてください。</string>
+    <string name="scan_cancel">キャンセル</string>
+    <string name="scan_permission_rationale">ペアリングコードを読み取るためにカメラが必要です。他の用途には使いません。</string>
+    <string name="scan_permission_grant">カメラを許可</string>
+    <string name="scan_permission_denied">カメラの権限がオフです。設定でオンにするか、パソコンでコードを入力してください。</string>
+    <string name="scan_open_settings">設定を開く</string>
+    <string name="scan_not_a_code">Sonduit のペアリングコードではありません。</string>
+    <string name="scan_paired">パソコンに送信しました。まもなく再生が始まります。</string>
+    <string name="scan_failed">パソコンに届きませんでした。同じネットワークか USB 接続を確認してください。</string>
+    <string name="scan_camera_error">カメラを開けませんでした。</string>
 </resources>

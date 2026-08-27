@@ -1,0 +1,62 @@
+{{!--
+  Plain-text NOTICE, not HTML. Handlebars escapes by default, so every
+  substitution here is triple-braced: a double brace turns the apostrophe in a
+  copyright line into &#x27;, and a notice is not allowed to be approximately
+  correct.
+
+  Crates with a null `source` came from a path in this repository, so they are
+  Sonduit's own and belong under the root LICENSE, not in a third-party file.
+
+  The texts are iterated from `licenses` rather than from `overview`.
+  `overview` holds one text per licence identifier, which sounds like what a
+  deduplicated notice wants until you read the result: its MIT entry is
+  whichever crate's copy was read first, so every MIT crate in the tree would
+  ship under a single "Copyright (c) Microsoft Corporation" line. `licenses`
+  is one entry per distinct text: identical boilerplate is merged and the
+  copyright lines that differ survive, which is the whole of what MIT and the
+  BSD licences require.
+--}}
+SONDUIT -- THIRD-PARTY LICENCES
+
+Generated from Cargo.lock by tools/gen-licences.mjs. Do not edit by hand; edits
+are lost on the next build.
+
+Sonduit itself is MIT licensed and its own text is installed as LICENSE. The
+Rust crates below are linked into Sonduit unmodified, each under the licence
+named against it, and every licence text they require is reproduced in full
+further down.
+
+FFmpeg is not a Rust crate and is not listed here. It is bundled as a separate
+executable and its licence travels beside it in FFMPEG-LICENSE.txt.
+
+================================================================================
+CRATES
+================================================================================
+{{#each crates}}{{#if package.source}}
+{{{package.name}}} {{{package.version}}}
+  Licence: {{{license}}}
+{{#if package.repository}}  Source:  {{{package.repository}}}
+{{/if}}{{#if package.authors}}  Authors: {{#each package.authors}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}
+{{/if}}{{/if}}{{/each}}
+
+================================================================================
+LICENCE TEXTS
+================================================================================
+
+Each text appears once. Where several crates ship byte-identical text they
+share one entry; where the copyright lines differ the entries are separate,
+because that line is the part the licence requires to be retained.
+{{#each licenses}}{{#if first_of_kind}}
+
+================================================================================
+{{{name}}} ({{{id}}})
+================================================================================
+{{/if}}
+
+--------------------------------------------------------------------------------
+Applies to:
+{{#each used_by}}{{#if crate.source}}  {{{crate.name}}} {{{crate.version}}}
+{{/if}}{{/each}}--------------------------------------------------------------------------------
+
+{{{text}}}
+{{/each}}

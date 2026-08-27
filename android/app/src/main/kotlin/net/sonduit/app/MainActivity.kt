@@ -12,11 +12,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import net.sonduit.app.audio.BridgeController
 import net.sonduit.app.ui.BridgeScreen
+import net.sonduit.app.ui.ScanScreen
 import net.sonduit.app.ui.SonduitTheme
 
 /**
@@ -52,6 +55,9 @@ class MainActivity : ComponentActivity() {
                 var running by remember { mutableStateOf(BridgeController.isRunning()) }
                 var error by remember { mutableStateOf(BridgeController.lastError) }
                 var pairingCode by remember { mutableStateOf(BridgeController.pairingCode()) }
+                var scanning by remember { mutableStateOf(false) }
+                var pairingStatus by remember { mutableStateOf<String?>(null) }
+                val scope = rememberCoroutineScope()
 
                 LaunchedEffect(Unit) {
                     // Four a second, matching the desktop. Fast enough to read
@@ -66,21 +72,48 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                BridgeScreen(
-                    telemetry = telemetry,
-                    running = running,
-                    error = error,
-                    pairingCode = pairingCode,
-                    onStart = { startBridge() },
-                    onStop = {
-                        BridgeService.stop(this@MainActivity)
-                        running = false
-                    },
-                    onRegenerateCode = {
-                        BridgeController.regeneratePairingCode()
-                        pairingCode = BridgeController.pairingCode()
-                    },
-                )
+                if (scanning) {
+                    ScanScreen(
+                        onScanned = { payload ->
+                            scanning = false
+                            scope.launch {
+                                pairingStatus = getString(pair(payload))
+                                // The computer chose the code, so this device
+                                // is now showing a different one than it was.
+                                pairingCode = BridgeController.pairingCode()
+                                running = BridgeController.isRunning()
+                            }
+                        },
+                        onCancel = { scanning = false },
+                    )
+                } else {
+                    BridgeScreen(
+                        telemetry = telemetry,
+                        running = running,
+                        error = error,
+                        pairingCode = pairingCode,
+                        pairingStatus = pairingStatus,
+                        onScan = {
+                            pairingStatus = null
+                            // Started before the camera opens rather than after
+                            // the scan: the announcement has to advertise the
+                            // port audio will arrive on, and the notification
+                            // prompt is better asked now than on top of a live
+                            // camera preview.
+                            if (!BridgeController.isRunning()) startBridge()
+                            scanning = true
+                        },
+                        onStart = { startBridge() },
+                        onStop = {
+                            BridgeService.stop(this@MainActivity)
+                            running = false
+                        },
+                        onRegenerateCode = {
+                            BridgeController.regeneratePairingCode()
+                            pairingCode = BridgeController.pairingCode()
+                        },
+                    )
+                }
             }
         }
     }
@@ -103,8 +136,51 @@ class MainActivity : ComponentActivity() {
         start()
     }
 
+    /**
+     * Pair from a scanned code, returning the string resource to show for it.
+     *
+     * The resource id rather than the text: only the UI layer should be
+     * reading resources, and only this layer knows which outcome happened.
+     */
+    private suspend fun pair(payload: String): Int {
+        if (!BridgeController.isRunning()) {
+            // The session is normally already up, because tapping Scan starts
+            // it. This covers the case where the service was still coming up
+            // while the user was pointing the camera.
+            startBridge()
+            if (!awaitRunning()) return R.string.scan_failed
+        }
+
+        return when (BridgeController.acceptInvite(payload)) {
+            BridgeController.PairResult.SENT -> R.string.scan_paired
+            BridgeController.PairResult.NOT_A_CODE -> R.string.scan_not_a_code
+            BridgeController.PairResult.UNREACHABLE -> R.string.scan_failed
+            BridgeController.PairResult.NOT_RUNNING -> R.string.scan_failed
+        }
+    }
+
+    /** Wait for the service to have a socket bound, or give up. */
+    private suspend fun awaitRunning(): Boolean {
+        repeat(START_POLLS) {
+            if (BridgeController.isRunning()) return true
+            delay(START_POLL_MS)
+        }
+        return BridgeController.isRunning()
+    }
+
     private companion object {
         /** Zero means the Rust side picks its own default. */
         const val DEFAULT_PORT = 0
+
+        /**
+         * How long to wait for the foreground service to bind its socket.
+         *
+         * The system delivers the start intent on its own schedule, so there
+         * is a gap where there is no port to announce. Five seconds is far
+         * longer than that gap and still short of the pairing window the
+         * computer holds open.
+         */
+        const val START_POLLS = 50
+        const val START_POLL_MS = 100L
     }
 }
