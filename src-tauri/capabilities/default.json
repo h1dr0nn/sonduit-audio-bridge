@@ -19,6 +19,7 @@
     "notification:default",
     "store:default",
     "log:default",
-    "process:default"
+    "process:default",
+    "process:allow-exit"
   ]
 }

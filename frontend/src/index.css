@@ -144,16 +144,32 @@ body {
   height: 100%;
 }
 
-.titlebar-brand {
+.titlebar-cluster {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-left: 14px;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  height: 100%;
+  padding-left: 8px;
+  gap: 2px;
+}
+
+.titlebar-icon-btn {
+  width: 32px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
   color: var(--titlebar-text);
-  pointer-events: none;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+  transition: background var(--duration-fast) ease;
+}
+
+.titlebar-icon-btn:hover {
+  background: var(--titlebar-hover);
 }
 
 .titlebar-controls {

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { MenuDropdown } from './MenuDropdown';
 
 /**
  * Resolve the Tauri window handle, or null when the page is being served
@@ -18,7 +19,7 @@ function tauriWindow() {
  * Custom window chrome. The config sets `decorations: false`, so minimise,
  * maximise and close are ours to draw and ours to wire.
  */
-export function TitleBar() {
+export function TitleBar({ onNavigate, canRescan, t }) {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -51,7 +52,9 @@ export function TitleBar() {
 
   return (
     <div className="titlebar" data-tauri-drag-region>
-      <div className="titlebar-brand">Sonduit</div>
+      <div className="titlebar-cluster">
+        <MenuDropdown onNavigate={onNavigate} canRescan={canRescan} t={t} />
+      </div>
       <div className="titlebar-drag" data-tauri-drag-region />
       <div className="titlebar-controls">
         <button

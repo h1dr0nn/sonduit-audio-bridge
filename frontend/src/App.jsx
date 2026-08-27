@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Rail } from './components/AppShell/Rail';
 import { TitleBar } from './components/AppShell/TitleBar';
 import { SettingsProvider } from './context/SettingsContext';
+import { useBridge } from './hooks/useBridge';
 import { useTheme } from './hooks/useTheme';
 import { useTranslation } from './i18n';
 import { AboutPage } from './pages/AboutPage';
@@ -14,6 +15,7 @@ function Shell() {
   const [page, setPage] = useState('connection');
   const { theme, setTheme } = useTheme();
   const { t } = useTranslation();
+  const { available } = useBridge();
 
   // The native acrylic tint lives in Rust and cannot read the webview's stored
   // theme, so the frontend pushes it on mount and on every toggle.
@@ -23,7 +25,7 @@ function Shell() {
 
   return (
     <div className="app-shell">
-      <TitleBar />
+      <TitleBar onNavigate={setPage} canRescan={available} t={t} />
       <div className="flex min-h-0 flex-1 gap-3 px-3 pb-3">
         <Rail current={page} onSelect={setPage} t={t} />
         <main className="scroll-area min-w-0 flex-1 pr-1">
