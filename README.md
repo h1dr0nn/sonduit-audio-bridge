@@ -1,103 +1,143 @@
-# 🎵 Harmonix - Sound Editor
+# Sonduit
 
-**Professional audio converter with an elegant, modern interface**
+Low latency system audio bridge from Windows to Android.
 
-Harmonix SE is a powerful desktop application for converting, enhancing, and processing audio files. Built with cutting-edge technology and designed with a beautiful macOS/iOS-inspired interface.
+Sonduit sends what your PC is playing to a phone on the same network, over
+Wi-Fi or over a USB cable, and plays it there with as little delay as the two
+operating systems allow.
 
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.3-brightgreen)
+## Status
 
----
+**Early scaffolding. Not usable yet.**
 
-## ✨ Features
+What exists and is verified:
 
-- 🔄 **Format Conversion** - MP3, AAC, FLAC, WAV, OGG and more
-- 🎚️ **Audio Enhancement** - Smart analysis, mastering, LUFS normalization
-- ✂️ **Audio Cleanup** - Automatic silence trimming
-- 🛠️ **Audio Modification** - Speed, pitch adjustment, and precision cutting
-- 🎨 **Beautiful Interface** - Modern design, drag & drop, waveform preview
-- 🌐 **Multi-language** - 11+ languages supported
-- 🌓 **Light & Dark Modes** - Auto theme switching
+- The shared Rust core: wire protocol, ring buffer, adaptive jitter buffer and
+  drift estimation, with 83 tests including an end-to-end run over a real UDP
+  socket that asserts on the resulting WAV file.
+- The desktop shell: it builds, runs, and renders. Custom window chrome,
+  native acrylic backdrop, light and dark themes, eleven languages.
+- Full CI, release automation and language linting.
 
----
+What does not exist yet:
 
-## 📥 Download
+- Audio capture on Windows. `sonduit-capture-win` is scaffolding.
+- The Android app. `android/` is empty.
+- Therefore: **no audio has ever been played through this.** See
+  [docs/environment.md](docs/environment.md).
 
-### Latest Release: v1.0.3
+Two things you should know before forming expectations:
 
-Download the latest version for your platform:
+- **Windows does not yet see the phone as a selectable output device.** That
+  requires a signed kernel driver, and the prebuilt driver this project
+  intended to reuse turns out to be unusable. The reasoning is in
+  [ADR-002](docs/adr/ADR-002-desktop-capture.md).
+- **The latency figures below are budgets, not measurements.** Nothing has been
+  measured. See [docs/latency-budget.md](docs/latency-budget.md).
 
-- **macOS** (Intel & Apple Silicon)
-- **Windows** (64-bit)
-- **Linux** (64-bit)
+## Targets
 
-👉 [Download from Releases](https://github.com/h1dr0nn/SoundConverterApp/releases/latest)
+| Transport | Target, mouth to ear |
+| --- | --- |
+| Wi-Fi | 40-80 ms |
+| USB tethering | 25-50 ms |
 
----
+Bluetooth is explicitly out of scope as a transport.
 
-## 🚀 Getting Started
+## Layout
 
-1. **Add Files** - Drag and drop or browse to select audio files
-2. **Choose Mode** - Format, Enhance, Clean, or Modify
-3. **Select Output** - Choose where to save converted files
-4. **Process** - Click "Process Files" and watch real-time progress
+```text
+crates/
+  sonduit-core/               protocol, ring buffer, jitter, drift. No I/O, no platform code
+  sonduit-transport/          UDP, discovery, sources and sinks
+  sonduit-capture-win/        WASAPI capture
+  sonduit-playback-android/   AAudio playback
+  sonduit-ffi/                UniFFI surface for the Android app
+desktop/                      Tauri v2 app: src/ frontend, src-tauri/ shell
+android/                      Gradle project (not written yet)
+driver/                       vendored driver and install scripts (empty, see ADR-002)
+docs/                         architecture decisions, research, protocol, budget
+tools/                        linting and version derivation
+```
 
-**Tip:** Use **Smart Analysis** in Enhance mode for automatic content detection and optimal settings.
+## Building
 
----
+### What you need
 
-## � Auto-Updates
+For the shared core and the transport, which is most of the interesting code:
 
-Harmonix SE can check for updates automatically:
+- Rust 1.85 or newer
 
-1. Go to **Settings > About**
-2. Click **Check for Updates**
-3. If an update is available, you'll be prompted to install
+That is genuinely all. `sonduit-core` has no platform dependencies and does no
+I/O, so it builds and tests anywhere, including on a machine with no sound card
+(see [ADR-001](docs/adr/ADR-001-shared-core-language.md)).
 
-Updates are downloaded and installed seamlessly with minimal disruption.
+```bash
+cargo test --workspace
+```
 
----
+For the desktop app, additionally:
 
-## 💡 Tips & Tricks
+- Node.js 22 or newer
+- On Windows: Visual Studio Build Tools with the C++ workload, and the Windows
+  SDK
 
-- **Use Smart Analysis** for automatic optimization
-- **Enable concurrent processing** for faster batch conversions
-- **Preview audio** with the built-in waveform player before converting
-- **Save custom presets** for your most-used settings
-- **Check the About page** for keyboard shortcuts
+```bash
+cd desktop
+npm ci
+npm run tauri dev
+```
 
----
+For the Android app, additionally:
 
-## 🛟 Support
+- JDK 17
+- Android SDK, platform 34 or newer
+- Android NDK r27 or newer, with `ANDROID_NDK_HOME` set
+- `cargo install cargo-ndk`
+- `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`
 
-**Found a bug?** [Report it on GitHub](https://github.com/h1dr0nn/SoundConverterApp/issues)
+A physical device is required to judge anything about latency. An emulator is
+enough to prove the app starts and no more.
 
-**Have a feature request?** [Share your ideas](https://github.com/h1dr0nn/SoundConverterApp/discussions)
+### Checks
 
-**Need help?** Check the [Wiki](https://github.com/h1dr0nn/SoundConverterApp/wiki) or open a discussion
+Run before every commit. CI runs the same set.
 
----
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
-## � Acknowledgments
+node tools/lint/check-source-ascii.mjs
+node tools/lint/check-commits.mjs HEAD~1..HEAD
+node --test tools/version.test.mjs
+node tools/version.mjs check
+```
 
-| Layer    | Technology                   |
-| -------- | ---------------------------- |
-| Frontend | React 18, Tailwind CSS, Vite |
-| Desktop  | Tauri 2.0                    |
-| Backend  | Python 3.12, FFmpeg          |
-| Build    | Rust, Node.js                |
+## Documentation
 
----
+Start here:
 
-## � License
+- [docs/protocol.md](docs/protocol.md) - the wire format, byte for byte. The
+  single source of truth.
+- [docs/latency-budget.md](docs/latency-budget.md) - where every millisecond is
+  meant to go. The measure every pull request is judged against.
+- [docs/adr/](docs/adr/) - the architecture decisions and why they were made,
+  including three places where research overturned the original plan.
+- [docs/research/](docs/research/) - the evidence behind those decisions, with
+  sources and an explicit list of what could not be verified.
+- [docs/licensing.md](docs/licensing.md) - what is taken from where, and the
+  decisions that would force this project to GPL.
+- [docs/environment.md](docs/environment.md) - what can and cannot be built and
+  verified, and therefore what to distrust.
+- [docs/roadmap.md](docs/roadmap.md) - what is next, riskiest first.
+- [CONTRIBUTING.md](CONTRIBUTING.md) - layering rules, commit format and
+  language conventions.
 
-MIT License - Free for personal and commercial use.
+## Licence
 
-See [LICENSE](./LICENSE) for details.
+MIT. See [LICENSE](LICENSE).
 
----
-
-**Made with ❤️ by h1dr0n**
-
-_Transform your audio workflow with Harmonix SE_
+Sonduit reads the Scream project's MS-PL driver source to document the wire
+protocol it speaks. It contains no code from any GPL-licensed project, and the
+reasoning is written down in [docs/licensing.md](docs/licensing.md).
