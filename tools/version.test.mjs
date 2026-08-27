@@ -21,6 +21,7 @@ import {
   parseVersion,
   splitCommitRecords,
   versionCode,
+  rewriteWorkspaceDeps,
 } from './version.mjs';
 
 const RECORD = '\u001e';
@@ -201,4 +202,29 @@ test('each field is strictly narrower than the one above it', () => {
       versionCode({ major: 1, minor: 1, patch: 0 }, 0),
     '1.0.99 must sort below 1.1.0-dev.0',
   );
+});
+
+test('workspace dependency requirements follow the workspace version', () => {
+  // These drifted the first time the version changed and broke the whole
+  // workspace: every crate required ^0.1.0 while every crate was 1.0.4.
+  const before = [
+    '[workspace.dependencies]',
+    'sonduit-core = { path = "crates/sonduit-core", version = "0.1.0" }',
+    'sonduit-playback-android = { path = "crates/sonduit-playback-android", version = "0.1.0" }',
+    '',
+    'thiserror = "2"',
+  ].join(String.fromCharCode(10));
+
+  const after = rewriteWorkspaceDeps(before, '1.0.4');
+
+  assert.match(after, /sonduit-core = \{ path = "crates\/sonduit-core", version = "1\.0\.4" \}/);
+  assert.match(after, /sonduit-playback-android = .*version = "1\.0\.4" \}/);
+  assert.match(after, /thiserror = "2"/, 'an unrelated dependency was rewritten');
+});
+
+test('a third-party dependency that looks similar is left alone', () => {
+  // The pattern must not touch anything outside this workspace, or a bump
+  // would silently change a real external requirement.
+  const before = 'sonduit-lookalike-external = "0.1.0"';
+  assert.equal(rewriteWorkspaceDeps(before, '9.9.9'), before);
 });

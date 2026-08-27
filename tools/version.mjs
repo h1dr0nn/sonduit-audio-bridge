@@ -279,12 +279,16 @@ function syncGradle(version, code) {
  * asked for ^0.1.0 while every crate was 1.0.4, and the whole workspace stopped
  * resolving.
  */
-function syncWorkspaceDeps(version) {
-  const text = readFileSync(CARGO_TOML, 'utf8');
-  const updated = text.replace(
+export function rewriteWorkspaceDeps(text, version) {
+  return text.replace(
     /^(sonduit-[a-z-]+ = \{ path = "[^"]+", version = ")[^"]+(" \})$/gm,
     `$1${version}$2`,
   );
+}
+
+function syncWorkspaceDeps(version) {
+  const text = readFileSync(CARGO_TOML, 'utf8');
+  const updated = rewriteWorkspaceDeps(text, version);
   if (updated === text) return null;
   writeFileSync(CARGO_TOML, updated);
   return { path: `${CARGO_TOML} [workspace.dependencies]`, after: version };
@@ -365,7 +369,12 @@ function main() {
       for (const result of [
         syncTauri(version),
         syncGradle(version, code),
-        syncWorkspaceDeps(base),
+        // Deliberately NOT `base`. Tauri and Gradle are stamped with whatever
+        // version was asked for, including a develop one, but the workspace
+        // dependency requirements have to match the crates in this tree, and
+        // those are whatever Cargo.toml says. Stamping a develop version here
+        // would make every crate require a version none of them has.
+        syncWorkspaceDeps(readWorkspaceVersion()),
       ]) {
         if (result) console.log(`updated ${result.path} -> ${result.after}`);
       }

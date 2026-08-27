@@ -117,16 +117,14 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: cargo ndk -t arm64-v8a build -p sonduit-ffi --release
 
-      - name: Build APK if the Gradle project exists
-        id: apk
-        run: |
-          if [ -f android/settings.gradle ] || [ -f android/settings.gradle.kts ]; then
-            cd android && ./gradlew assembleDebug --no-daemon
-            echo "built=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::android/ has no Gradle project yet; publishing the native library only"
-            echo "built=false" >> "$GITHUB_OUTPUT"
-          fi
+      # Gradle drives cargo-ndk itself and generates the UniFFI bindings from
+      # the library it built, so this step is also what proves the Kotlin and
+      # the Rust still agree on the interface.
+      - name: Build APK
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
         with:
