@@ -12,7 +12,7 @@ members = [
 # The version lives here and nowhere else. Gradle and Tauri read it from this
 # file through tools/version.mjs; never edit a version in two places.
 [workspace.package]
-version = "0.1.0"
+version = "1.0.4"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
