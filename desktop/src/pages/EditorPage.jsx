@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { FiSettings } from 'react-icons/fi';
+import { FiFolder, FiPlay, FiSettings, FiSliders } from 'react-icons/fi';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { dirname } from '@tauri-apps/api/path';
@@ -16,17 +16,22 @@ import { MasterControls, PRESETS } from '../components/editor/MasterControls';
 import { TrimControls } from '../components/editor/TrimControls';
 import { ModifyControls } from '../components/editor/ModifyControls';
 import { ErrorModal } from '../components/editor/ErrorModal';
-import { useTheme } from '../hooks/useTheme';
 import { useConvertAudio } from '../hooks/useTauriCommand';
-import { designTokens } from '../utils/theme';
-import { themeClasses } from '../utils/themeColors';
 import { getFileMetadata, formatFileSize, formatDuration, getAudioDuration } from '../utils/audioUtils';
 import { notifySuccess, notifyError } from '../utils/notifications';
 
 import { useSettingsContext } from '../context/SettingsContext';
 import { useTranslation } from '../i18n';
+import { cn } from '../utils/cn';
 
 const formatOptions = ['AAC', 'MP3', 'WAV', 'FLAC', 'OGG', 'M4A'];
+
+/** The three stages of a job: bring audio in, say what to do, watch it run. */
+const EDITOR_TABS = [
+  { id: 'files', Icon: FiFolder, labelKey: 'editor.tabFiles' },
+  { id: 'process', Icon: FiSliders, labelKey: 'editor.tabProcess' },
+  { id: 'run', Icon: FiPlay, labelKey: 'editor.tabRun' },
+];
 
 export function EditorPage({ onOpenSettings }) {
   // Harmonix lifted this state into App so it survived navigating to the
@@ -34,8 +39,7 @@ export function EditorPage({ onOpenSettings }) {
   // the editor owns its own queue.
   const [files, setFiles] = useState([]);
   const [outputFolder, setOutputFolder] = useState('');
-
-  const { theme } = useTheme();
+  const [editorTab, setEditorTab] = useState('files');
   const { convert, loading: converting } = useConvertAudio();
   const { settings } = useSettingsContext();
   const { t } = useTranslation();
@@ -641,150 +645,215 @@ export function EditorPage({ onOpenSettings }) {
   const hasReadyFiles = files.some(f => f.status === 'ready');
   const canProcess = hasReadyFiles && outputFolder && !converting;
 
+  // Falls back to three minutes so the Modify sliders have a sane range before
+  // any file is loaded.
+  const modifyDurationSeconds = (() => {
+    if (files.length === 0) return 180;
+    const durationText = files[0].duration;
+    if (!durationText || durationText === '00:00') return 180;
+    const [minutes, seconds] = durationText.split(':').map(Number);
+    return minutes * 60 + seconds;
+  })();
+
   return (
-    <div
-      className={`h-screen overflow-y-auto bg-gradient-to-br ${themeClasses.pageBackground} text-slate-900 transition duration-smooth dark:text-slate-100`}
-      style={{ fontFamily: designTokens.font }}
-    >
-      <div className="mx-auto flex min-h-full w-full max-w-full flex-col gap-4 overflow-x-hidden p-4 lg:gap-6 lg:p-6">
-        {/* Header */}
-        <header className={`flex flex-col gap-4 rounded-card border ${themeClasses.card} p-4 shadow-soft backdrop-blur-[32px] transition duration-smooth lg:p-5`}>
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Sonduit</p>
-              <h1 className="text-2xl font-semibold text-slate-900 dark:text-white">{t('audioSuite')}</h1>
-              <p className="text-sm text-slate-600 dark:text-slate-300">{t('appDesc')}</p>
-            </div>
-            <button
-              onClick={onOpenSettings}
-              className={`flex h-12 w-12 items-center justify-center rounded-full border ${themeClasses.button} shadow-md transition duration-smooth hover:-translate-y-[1px] hover:shadow-lg`}
-              aria-label="Settings"
-            >
-              <FiSettings className="h-6 w-6 text-slate-700 dark:text-slate-300" />
-            </button>
-          </div>
-        </header>
-
-        <div className="flex flex-1 gap-6">
-          {/* Sidebar */}
-          <aside className={`glass-surface scrollbar-hide hidden min-w-[280px] max-w-[380px] flex-col rounded-card border ${themeClasses.card} p-5 shadow-soft transition duration-smooth lg:flex`}>
-            <div className="relative flex flex-1 flex-col space-y-6">
-              {/* Mode Selector in Sidebar */}
-              <ModeSelector selected={mode} onChange={setMode} />
-              
-              <div className="space-y-2">
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">{t('workspace')}</p>
-                <h2 className="text-xl font-semibold text-slate-900 dark:text-white">{t('sessionOverview')}</h2>
-                <p className="text-sm text-slate-600 dark:text-slate-300">
-                  {mode === 'format' && t('modeFormatDesc')}
-                  {mode === 'enhance' && t('modeEnhanceDesc')}
-                  {mode === 'clean' && t('modeCleanDesc')}
-                  {mode === 'modify' && t('modeModifyDesc')}
-                </p>
-              </div>
-              
-              <div className={`space-y-3 rounded-2xl border ${themeClasses.surface} p-4`}>
-                <div className="flex items-center justify-between text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  <span>{t('files')}</span>
-                  <span>{sessionSummary.filesCount}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  <span>{t('mode')}</span>
-                  <span>{sessionSummary.format}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  <span>{t('status')}</span>
-                  <span>{sessionSummary.status}</span>
-                </div>
-              </div>
-            </div>
-          </aside>
-
-          {/* Main Content */}
-          <main className="scrollbar-hide flex flex-1 flex-col gap-4 lg:gap-6">
-            {/* Drag & Drop + Controls */}
-            <section className={`flex flex-col gap-4 rounded-card border ${themeClasses.card} p-5 shadow-soft backdrop-blur-[32px] transition duration-smooth min-[1320px]:flex-row`}>
-              <div className="min-[1320px]:min-w-[440px] min-[1320px]:max-w-[600px] min-[1320px]:flex-1" style={{flex: '1 1 520px'}}>
-                <DragDropArea onFilesAdded={handleFilesAdded} />
-              </div>
-              <div className={`flex h-full min-w-0 flex-1 flex-col justify-between gap-6 rounded-card border ${themeClasses.surface} p-4 min-[1320px]:min-w-[440px]`}>
-                {mode === 'format' && (
-                  <FormatSelector formats={formatOptions} selected={selectedFormat} onSelect={setSelectedFormat} />
-                )}
-                {mode === 'enhance' && (
-                  <MasterControls 
-                    preset={masterPreset}
-                    onPresetChange={setMasterPreset}
-                    parameters={masterParams}
-                    onParametersChange={setMasterParams}
-                    onSmartAnalysis={handleSmartAnalysis}
-                  />
-                )}
-                {mode === 'clean' && (
-                  <TrimControls
-                    threshold={trimThreshold}
-                    onThresholdChange={setTrimThreshold}
-                    minSilence={trimMinSilence}
-                    onMinSilenceChange={setTrimMinSilence}
-                    padding={trimPadding}
-                    onPaddingChange={setTrimPadding}
-                  />
-                )}
-                {mode === 'modify' && (
-                  <ModifyControls
-                    parameters={modifyParams}
-                    onParametersChange={setModifyParams}
-                    duration={(() => {
-                      if (files.length === 0) return 180; // Default 3 mins if no files
-                      const durationStr = files[0].duration;
-                      if (!durationStr || durationStr === '00:00') return 180;
-                      const [mins, secs] = durationStr.split(':').map(Number);
-                      return (mins * 60) + secs;
-                    })()}
-                  />
-                )}
-                <OutputFolderChooser path={outputFolder} onChoose={setOutputFolder} />
-              </div>
-            </section>
-
-            {/* File List + Progress */}
-            <section className={`flex flex-1 flex-col gap-4 rounded-card border ${themeClasses.card} p-5 shadow-soft backdrop-blur-[32px] transition duration-smooth min-[1320px]:flex-row`}>
-              <div className="flex h-full flex-col overflow-hidden min-[1320px]:min-w-[440px] min-[1320px]:max-w-[600px] min-[1320px]:flex-1" style={{flex: '1 1 520px'}}>
-                <FileListPanel 
-                  files={files} 
-                  onClearAll={handleClearAll} 
-                  onRemoveFile={handleRemoveFile}
-                  onReload={handleReload}
-                />
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col gap-4 min-[1320px]:min-w-[440px]">
-                <ProgressIndicator 
-                  progress={progress} 
-                  status={processingStatus}
-                  currentFile={currentFile}
-                />
-                <button
-                  onClick={handleProcess}
-                  disabled={!canProcess}
-                  className="rounded-full bg-accent px-6 py-3 text-sm font-semibold text-white shadow-md transition duration-smooth hover:-translate-y-[1px] hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
-                >
-                  {converting ? t('processing') : t('processFiles')}
-                </button>
-                {toast && (
-                  <ToastMessage
-                    title={toast.type === 'success' ? t('success') : toast.type === 'error' ? t('error') : t('info')}
-                    message={toast.message}
-                    tone={toast.type}
-                  />
-                )}
-              </div>
-            </section>
-          </main>
+    <div className="flex flex-col gap-4">
+      {/* The run control lives on the header row rather than in a bar of its
+        * own: the right half of this row was empty, and a separate strip cost
+        * vertical space on every tab. */}
+      <header className="flex flex-wrap items-end justify-between gap-4 px-1">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight text-ink">{t('audioSuite')}</h1>
+          <p className="mt-1 text-sm text-ink-soft">{t('appDesc')}</p>
         </div>
-      </div>
 
-      {/* Error Modal */}
-      <ErrorModal 
+        <div className="flex items-center gap-4">
+          <dl className="flex items-center gap-4 text-sm">
+            <div className="text-right">
+              <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('files')}</dt>
+              <dd className="font-mono text-ink">{sessionSummary.filesCount}</dd>
+            </div>
+            <div className="text-right">
+              <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('mode')}</dt>
+              <dd className="font-mono text-ink">{sessionSummary.format}</dd>
+            </div>
+          </dl>
+
+          <button
+            type="button"
+            onClick={() => {
+              setEditorTab('run');
+              handleProcess();
+            }}
+            disabled={!canProcess}
+            className={cn(
+              'rounded-pill px-6 py-2.5 text-sm font-semibold text-white',
+              'transition-opacity duration-fast ease-out',
+              'disabled:cursor-not-allowed disabled:opacity-45',
+            )}
+            style={{ background: 'var(--accent-color)' }}
+          >
+            {converting ? t('processing') : t('processFiles')}
+          </button>
+        </div>
+      </header>
+
+      {/* Sub-navigation. The page used to stack every stage at once, which left
+        * the drop zone, the mode controls, the queue and the progress readout
+        * competing for the same screen. */}
+      <nav
+        role="tablist"
+        aria-label={t('audioSuite')}
+        className="card-sunken flex gap-1 self-start p-1"
+      >
+        {EDITOR_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={editorTab === tab.id}
+            onClick={() => setEditorTab(tab.id)}
+            className={cn(
+              'flex items-center gap-2 rounded-pill px-4 py-2 text-sm font-medium',
+              'transition-colors duration-fast ease-out',
+              editorTab === tab.id
+                ? 'bg-card text-ink shadow-card'
+                : 'text-ink-soft hover:text-ink',
+            )}
+          >
+            <tab.Icon className="h-4 w-4" strokeWidth={1.9} />
+            {t(tab.labelKey)}
+            {tab.id === 'files' && files.length > 0 && (
+              <span className="rounded-pill bg-accent-soft px-2 py-0.5 font-mono text-xs text-accent">
+                {files.length}
+              </span>
+            )}
+          </button>
+        ))}
+      </nav>
+
+      {/* ---- Files: get audio in, decide where it goes ---- */}
+      {editorTab === 'files' && (
+        <div className="flex flex-col gap-4">
+          <section className="card p-5">
+            <DragDropArea onFilesAdded={handleFilesAdded} />
+          </section>
+
+          <section className="card p-5">
+            <FileListPanel
+              files={files}
+              onClearAll={handleClearAll}
+              onRemoveFile={handleRemoveFile}
+              onReload={handleReload}
+            />
+          </section>
+
+          <section className="card p-5">
+            <OutputFolderChooser path={outputFolder} onChoose={setOutputFolder} />
+          </section>
+        </div>
+      )}
+
+      {/* ---- Process: choose what to do to it ---- */}
+      {editorTab === 'process' && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(260px,320px)_1fr]">
+          <section className="card p-5">
+            <ModeSelector selected={mode} onChange={setMode} />
+          </section>
+
+          <section className="card flex flex-col gap-5 p-5">
+            <div>
+              <h2 className="text-lg font-semibold text-ink">{t('sessionOverview')}</h2>
+              <p className="mt-1 text-sm text-ink-soft">
+                {mode === 'format' && t('modeFormatDesc')}
+                {mode === 'enhance' && t('modeEnhanceDesc')}
+                {mode === 'clean' && t('modeCleanDesc')}
+                {mode === 'modify' && t('modeModifyDesc')}
+              </p>
+            </div>
+
+            {mode === 'format' && (
+              <FormatSelector
+                formats={formatOptions}
+                selected={selectedFormat}
+                onSelect={setSelectedFormat}
+              />
+            )}
+            {mode === 'enhance' && (
+              <MasterControls
+                preset={masterPreset}
+                onPresetChange={setMasterPreset}
+                parameters={masterParams}
+                onParametersChange={setMasterParams}
+                onSmartAnalysis={handleSmartAnalysis}
+              />
+            )}
+            {mode === 'clean' && (
+              <TrimControls
+                threshold={trimThreshold}
+                onThresholdChange={setTrimThreshold}
+                minSilence={trimMinSilence}
+                onMinSilenceChange={setTrimMinSilence}
+                padding={trimPadding}
+                onPaddingChange={setTrimPadding}
+              />
+            )}
+            {mode === 'modify' && (
+              <ModifyControls
+                parameters={modifyParams}
+                onParametersChange={setModifyParams}
+                duration={modifyDurationSeconds}
+              />
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* ---- Run: watch it happen ---- */}
+      {editorTab === 'run' && (
+        <div className="flex flex-col gap-4">
+          <section className="card p-5">
+            <ProgressIndicator
+              progress={progress}
+              status={processingStatus}
+              currentFile={currentFile}
+            />
+          </section>
+
+          <section className="card p-5">
+            <h2 className="mb-4 text-lg font-semibold text-ink">{t('sessionOverview')}</h2>
+            <dl className="grid grid-cols-3 gap-3">
+              <div className="card-sunken px-4 py-3">
+                <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('files')}</dt>
+                <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.filesCount}</dd>
+              </div>
+              <div className="card-sunken px-4 py-3">
+                <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('mode')}</dt>
+                <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.format}</dd>
+              </div>
+              <div className="card-sunken px-4 py-3">
+                <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('status')}</dt>
+                <dd className="mt-1 font-mono text-lg text-ink">{sessionSummary.status}</dd>
+              </div>
+            </dl>
+          </section>
+
+          {toast && (
+            <ToastMessage
+              title={
+                toast.type === 'success'
+                  ? t('success')
+                  : toast.type === 'error'
+                    ? t('error')
+                    : t('info')
+              }
+              message={toast.message}
+              tone={toast.type}
+            />
+          )}
+        </div>
+      )}
+
+      <ErrorModal
         isOpen={errorFiles.length > 0}
         errorFiles={errorFiles}
         onClose={() => setErrorFiles([])}
