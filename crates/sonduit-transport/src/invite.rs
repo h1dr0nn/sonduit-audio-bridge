@@ -216,7 +216,12 @@ impl Invite {
 }
 
 /// Whether an address is one a phone on some shared link could send to.
-fn is_reachable(address: Ipv4Addr) -> bool {
+///
+/// Public because the desktop filters its own adapter list with it before
+/// building an invite. Two notions of "usable address" would mean a QR code
+/// whose contents disagreed with the list printed beside it.
+#[must_use]
+pub fn is_reachable(address: Ipv4Addr) -> bool {
     !(address.is_loopback()
         || address.is_unspecified()
         || address.is_multicast()

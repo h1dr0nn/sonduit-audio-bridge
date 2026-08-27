@@ -890,6 +890,82 @@ mod tests {
     }
 
     #[test]
+    fn a_phone_that_scanned_the_invite_is_accepted_and_located_by_its_source_address() {
+        // The whole QR path, minus the camera: build the invite the panel
+        // would show, have a stand-in phone parse it and answer the way the
+        // FFI does, and check the desktop learns where it is. Over loopback,
+        // on a port of its own, so it neither needs a network nor collides
+        // with a real discovery listener.
+        use sonduit_transport::invite::Invite;
+        use std::net::Ipv4Addr;
+
+        const PORT: u16 = 45_011;
+
+        let nonce = scan_nonce();
+        let invite = Invite::new(
+            // A routable address, because an invite refuses to carry loopback:
+            // it is never somewhere a phone could send. The stand-in phone
+            // below sends over loopback regardless, which is what a real one
+            // does from another machine.
+            &[Ipv4Addr::new(10, 10, 0, 61)],
+            PORT,
+            PairingCode::from_seed(seed_from(&nonce)),
+            nonce,
+        )
+        .expect("a routable address makes a valid invite");
+
+        let payload = invite.to_payload();
+        let phone = std::thread::spawn(move || {
+            let scanned = Invite::parse(&payload).expect("the phone must be able to read it");
+            let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .expect("an ephemeral loopback socket");
+            let datagram =
+                discovery::encode_announce("Pixel 7a", 4010, &scanned.nonce, &scanned.code);
+
+            // Repeated because the listener may not be bound yet, and a single
+            // datagram lost to that race would make this test flaky rather
+            // than failing.
+            for _ in 0..40 {
+                let _ = socket.send_to(
+                    &datagram,
+                    SocketAddr::from((Ipv4Addr::LOCALHOST, scanned.port)),
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        });
+
+        let found = await_pairing(&invite).expect("the listener must bind");
+        let _ = phone.join();
+
+        let device = found.expect("an announcement keyed by the invite must be accepted");
+        assert_eq!(device.name, "Pixel 7a");
+        // The address comes from the datagram, the port from the announcement.
+        assert_eq!(device.address, "127.0.0.1:4010");
+    }
+
+    #[test]
+    fn an_announcement_keyed_by_a_stale_invite_is_ignored() {
+        // Showing a new code must retire the old one. Without this a photograph
+        // of any invite ever displayed would keep working.
+        use sonduit_transport::invite::Invite;
+        use std::net::Ipv4Addr;
+
+        let code = PairingCode::from_seed(1);
+        let stale = discovery::encode_announce("Attacker", 4010, &[0x11; NONCE_BYTES], &code);
+        let current = Invite {
+            addresses: vec![Ipv4Addr::LOCALHOST],
+            port: 45_012,
+            code,
+            nonce: [0x22; NONCE_BYTES],
+        };
+
+        assert_eq!(
+            discovery::decode_announce(&stale, &current.nonce, &current.code),
+            None
+        );
+    }
+
+    #[test]
     fn every_one_of_the_first_eight_nonce_bytes_reaches_the_seed() {
         // A seed that ignored most of its input would leave the code
         // predictable from the clock, which is the one thing it must not be.

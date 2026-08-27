@@ -121,7 +121,10 @@ fn main() {
     println!("  rtt     {:?} ms", answered.telemetry.round_trip_ms);
     println!("  depth   {:?} ms", answered.telemetry.buffer_depth_ms);
     println!("  loss    {:?} %", answered.telemetry.packet_loss_pct);
-    println!("  got     {:?} packets", answered.telemetry.packets_received);
+    println!(
+        "  got     {:?} packets",
+        answered.telemetry.packets_received
+    );
 
     println!("with nobody listening:");
     let dead = {

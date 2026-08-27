@@ -1064,4 +1064,71 @@ mod tests {
         assert_eq!(telemetry.packets_malformed, 2);
         assert_eq!(telemetry.packets_accepted, 0);
     }
+
+    #[test]
+    fn scanned_text_that_is_not_an_invite_is_refused_rather_than_acted_on() {
+        // The camera sees whatever is in frame. None of it may start pairing.
+        let bridge = Bridge::new();
+        for text in ["", "https://example.com", "SDQ9:482913:4011:A:10.0.0.2"] {
+            assert!(
+                matches!(
+                    bridge.accept_invite(text.to_string()),
+                    Err(FfiError::BadInvite)
+                ),
+                "accepted {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pairing_before_a_session_is_listening_is_refused() {
+        // The announcement advertises the port audio will arrive on, and an
+        // idle bridge has not bound one. Announcing a port nothing is
+        // listening on would have the desktop send audio into a closed socket
+        // and report a healthy session.
+        let bridge = Bridge::new();
+        let invite = Invite::new(
+            &[Ipv4Addr::new(10, 10, 0, 61)],
+            discovery::DISCOVERY_PORT,
+            PairingCode::parse("482913").unwrap(),
+            [0x5A; sonduit_transport::pairing::NONCE_BYTES],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            bridge.accept_invite(invite.to_payload()),
+            Err(FfiError::NotRunning)
+        ));
+    }
+
+    #[test]
+    fn scanning_a_code_makes_this_device_answer_to_the_desktops_code() {
+        // The desktop chose the code, so this device has to adopt it: a later
+        // broadcast probe from the same desktop is answered with the same key
+        // or the rescan finds nothing.
+        let bridge = Bridge::new();
+        let port = 41_013;
+        if bridge.start(port).is_err() {
+            return;
+        }
+
+        let before = bridge.pairing_code();
+        let invite = Invite::new(
+            &[Ipv4Addr::new(10, 10, 0, 61)],
+            discovery::DISCOVERY_PORT,
+            PairingCode::parse("482913").unwrap(),
+            [0x5A; sonduit_transport::pairing::NONCE_BYTES],
+        )
+        .unwrap();
+
+        // Either outcome is legitimate here: whether the datagram can leave
+        // depends on this machine having a route, and the test is about the
+        // code, not about the network.
+        let _ = bridge.accept_invite(invite.to_payload());
+        let after = bridge.pairing_code();
+        bridge.stop().unwrap();
+
+        assert_eq!(after, "482913");
+        assert_ne!(after, before, "the seeded code should not already match");
+    }
 }

@@ -206,8 +206,14 @@ pub fn local_ipv4() -> Result<Vec<Ipv4Addr>, String> {
         };
 
         for address in all_unicast(current.FirstUnicastAddress) {
+            // Filtered here as well as in the invite, because this list is
+            // shown to the user beside the QR code. The loopback interface is
+            // always up and always has 127.0.0.1, and printing it would tell
+            // the user their phone can reach an address it never can.
             if let IpAddr::V4(ip) = address {
-                bucket.push(ip);
+                if sonduit_transport::invite::is_reachable(ip) {
+                    bucket.push(ip);
+                }
             }
         }
     }
@@ -460,6 +466,26 @@ mod tests {
             adapter.target(4010),
             "192.168.42.129:4010".parse::<SocketAddr>().unwrap()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_local_address_list_offers_nothing_a_phone_cannot_send_to() {
+        // Runs against the real adapter list, because the bug this guards
+        // against is not in the filtering logic but in what Windows actually
+        // hands back: a disconnected adapter keeps its last address, and a
+        // machine with no route still has 127.0.0.1 and often a 169.254 one.
+        // Any of those in a QR code sends the phone at an address that will
+        // never answer.
+        let addresses = local_ipv4().expect("Windows must be able to list its own adapters");
+        println!("local IPv4 addresses offered to a phone: {addresses:?}");
+
+        for address in &addresses {
+            assert!(!address.is_loopback(), "{address} is loopback");
+            assert!(!address.is_unspecified(), "{address} is unspecified");
+            assert!(!address.is_link_local(), "{address} is link-local");
+            assert!(!address.is_multicast(), "{address} is multicast");
+        }
     }
 
     #[test]

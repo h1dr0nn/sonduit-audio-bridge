@@ -11,7 +11,6 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { QrCode } from '../components/ui/QrCode';
 import { StatTile } from '../components/ui/StatTile';
-import { StatusPill } from '../components/ui/StatusPill';
 import { TextField } from '../components/ui/TextField';
 import { useBridge } from '../hooks/useBridge';
 import { useTranslation } from '../i18n';
@@ -127,7 +126,10 @@ export function ConnectionPage() {
   const shown = failure ?? error;
 
   return (
-    <div className="flex flex-col gap-4">
+    // Full height with the columns scrolling their own contents, matching the
+    // editor. min-h-0 on every flex and grid child in the chain is what makes
+    // that work: a flex child defaults to min-height auto and will not shrink.
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <header className="flex items-end justify-between gap-4 px-1">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-ink">
@@ -136,7 +138,8 @@ export function ConnectionPage() {
           <p className="mt-1 text-sm text-ink-soft">{t('connection.subtitle')}</p>
         </div>
         <div className="flex items-center gap-3">
-          <StatusPill state={status} label={t(`status.${status}`)} />
+          {/* No status pill here: the titlebar carries the same state, and two
+              of them side by side is one too many. */}
           {running ? (
             <Button variant="quiet" icon={FiSquare} disabled={busy} onClick={handleStop}>
               {t('connection.stop')}
@@ -160,9 +163,9 @@ export function ConnectionPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,1fr)_minmax(300px,380px)] gap-4">
+        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4 pr-1">
         <Card
-          className="lg:col-span-2"
           title={t('connection.devices')}
           actions={
             <Button
@@ -235,7 +238,6 @@ export function ConnectionPage() {
         </Card>
 
         <Card
-          className="lg:col-span-2"
           title={t('connection.pairPhone')}
           subtitle={t('connection.qrHint')}
           actions={
@@ -271,10 +273,15 @@ export function ConnectionPage() {
               </div>
             </div>
           ) : (
-            <p className="py-4 text-center text-sm text-ink-soft">{t('connection.qrHint')}</p>
+            <p className="py-6 text-center text-sm text-ink-faint">
+              {t('connection.qrEmpty')}
+            </p>
           )}
         </Card>
 
+        </div>
+
+        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4 pr-1">
         <Card tone="accent" title={t('connection.session')}>
           <div className="mt-auto flex flex-col gap-3">
             <div className="flex items-center gap-2 opacity-90">
@@ -306,10 +313,8 @@ export function ConnectionPage() {
             </dl>
           </div>
         </Card>
-      </div>
-
-      <Card title={t('telemetry.title')} subtitle={t('telemetry.subtitle')}>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Card title={t('telemetry.title')} subtitle={t('telemetry.subtitle')}>
+        <div className="grid grid-cols-2 gap-3">
           <StatTile label={t('telemetry.latency')} value={telemetry.latencyMs} unit="ms" />
           <StatTile label={t('telemetry.bufferDepth')} value={telemetry.bufferDepthMs} unit="ms" />
           <StatTile label={t('telemetry.packetLoss')} value={telemetry.packetLossPct} unit="%" />
@@ -318,7 +323,9 @@ export function ConnectionPage() {
         {!running && (
           <p className="mt-4 text-center text-xs text-ink-faint">{t('telemetry.noData')}</p>
         )}
-      </Card>
+        </Card>
+        </div>
+      </div>
     </div>
   );
 }
