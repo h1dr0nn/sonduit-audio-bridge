@@ -171,6 +171,22 @@ impl BridgeSnapshot {
         self.error = Some(message.to_string());
     }
 
+    /// Clear a fault that has resolved.
+    ///
+    /// A status pinned on an error the user has already fixed, by plugging the
+    /// headset back in, is worse than no status: it says the bridge is broken
+    /// while audio is playing.
+    pub fn clear_error(&mut self) {
+        if self.status == "error" {
+            self.status = if self.telemetry.packets_sent.unwrap_or(0) > 0 {
+                "connected".to_string()
+            } else {
+                "connecting".to_string()
+            };
+        }
+        self.error = None;
+    }
+
     /// Attach the most recent failure without claiming the session is broken.
     ///
     /// A transient send failure explains a non-zero loss figure; it does not
@@ -196,6 +212,7 @@ pub struct Accumulator {
     packets: u64,
     send_failures: u64,
     capture_failures: u64,
+    reopens: u64,
     last_error: Option<String>,
 }
 
@@ -212,6 +229,7 @@ impl Accumulator {
             packets: 0,
             send_failures: 0,
             capture_failures: 0,
+            reopens: 0,
             last_error: None,
         }
     }
@@ -232,6 +250,21 @@ impl Accumulator {
     pub fn record_capture_error(&mut self, message: &str) {
         self.capture_failures += 1;
         self.last_error = Some(message.to_string());
+    }
+
+    /// Record that the capture device was replaced after failing.
+    pub fn record_reopen(&mut self) {
+        self.reopens += 1;
+        self.last_error = None;
+    }
+
+    /// How many times the capture device has been replaced this session.
+    ///
+    /// A session that reopens repeatedly is a session with a real problem, and
+    /// the count is the only evidence of it once each one has recovered.
+    #[must_use]
+    pub const fn reopens(&self) -> u64 {
+        self.reopens
     }
 
     /// The most recent error, if one has happened.
@@ -414,6 +447,53 @@ mod tests {
         assert!(snapshot.session.is_none());
         // Stale numbers next to a disconnected pill read as a live session.
         assert_eq!(snapshot.telemetry, TelemetryView::default());
+    }
+
+    #[test]
+    fn a_resolved_fault_stops_being_reported() {
+        // A headset plugged back in must not leave the status reading broken
+        // while audio is playing.
+        let mut snapshot = BridgeSnapshot::starting(SessionInfo::new(
+            "Speakers",
+            Format::stereo_48k(),
+            "192.168.1.5:4010".parse().unwrap(),
+            false,
+        ));
+        snapshot.apply(TelemetryView {
+            packets_sent: Some(100),
+            ..TelemetryView::default()
+        });
+        snapshot.mark_error("the capture device disappeared");
+        assert_eq!(snapshot.status, "error");
+
+        snapshot.clear_error();
+
+        assert_eq!(snapshot.status, "connected");
+        assert!(snapshot.error.is_none());
+    }
+
+    #[test]
+    fn clearing_a_fault_before_anything_was_sent_reports_connecting() {
+        // Recovered, but with no evidence yet that audio is reaching anyone.
+        let mut snapshot = BridgeSnapshot::default();
+        snapshot.mark_error("the capture device disappeared");
+        snapshot.clear_error();
+        assert_eq!(snapshot.status, "connecting");
+    }
+
+    #[test]
+    fn a_reopen_clears_the_error_it_recovered_from() {
+        let mut counters = accumulator();
+        counters.record_capture_error("device invalidated");
+        assert!(counters.last_error().is_some());
+
+        counters.record_reopen();
+
+        assert_eq!(counters.reopens(), 1);
+        assert!(
+            counters.last_error().is_none(),
+            "the error that was recovered from is still being reported"
+        );
     }
 
     #[test]

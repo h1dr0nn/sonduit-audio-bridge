@@ -18,6 +18,11 @@ release or a dev build.
 | Release, tagged on `main` | `va.b.c` | `v1.2.3` |
 | Develop build | `va.b.c-dev.N+<sha>` | `1.3.0-dev.42+9f316eda` |
 
+Develop builds are published under one rolling tag, `develop-build`, which
+every push to `develop` overwrites. The tag is deliberately not called
+`develop`: a tag sharing a name with a branch makes every unqualified reference
+to it ambiguous, and git refuses to push it at all.
+
 `1.3.0` is the **next** version implied by the Conventional Commits
 accumulated since the last release. This is valid SemVer, sorts correctly
 (`1.3.0-dev.42 < 1.3.0`), and a dev build can never be mistaken for a release.
@@ -160,7 +165,7 @@ The Harmonix git tags are **kept**. History is the only archive, and
 | Branch | Role |
 | --- | --- |
 | `main` | protected, releases only, every commit tagged |
-| `develop` | integration; everything lands here first |
+| `develop` | integration; everything lands here first, published as `develop-build` |
 | `feat/*`, `fix/*`, `chore/*` | short-lived, PR into `develop` |
 
 ### Releasing

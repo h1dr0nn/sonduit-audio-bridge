@@ -38,9 +38,11 @@ What has not been done:
   [docs/environment.md](docs/environment.md).
 - **USB tethering has never been tried.** Carrier entitlement can veto it, and
   that is the largest risk to [ADR-004](docs/adr/ADR-004-transport.md).
-- **Discovery has no pairing or authentication.** Anyone on the network can
-  answer a probe. Not acceptable for a release; tracked in
-  [docs/roadmap.md](docs/roadmap.md).
+- **The audio is not encrypted.** Pairing stops an unpaired device being
+  chosen, so nobody receives the stream by accident. It does nothing about
+  anyone who can already see the traffic: the PCM is in the clear on the wire
+  and reconstructing it is trivial. Fine on a home network or a USB cable;
+  treat a shared or public network as if the audio were audible in the room.
 - **Windows does not see the phone as a selectable output device.** That
   requires a signed kernel driver, and the prebuilt driver this project
   intended to reuse turns out to be unusable. See

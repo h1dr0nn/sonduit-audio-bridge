@@ -59,6 +59,20 @@ const BACKOFF: Duration = Duration::from_millis(100);
 /// them is not.
 const FAILURES_BEFORE_ERROR: u32 = 10;
 
+/// Consecutive failed reads before the capture device is reopened.
+///
+/// Lower than the error threshold on purpose: recovery is attempted before the
+/// user is told anything is wrong, so an unplugged headset usually looks like
+/// nothing more than a short gap.
+const FAILURES_BEFORE_REOPEN: u32 = 3;
+
+/// How long a reopened session waits before trying again after a failure.
+///
+/// Reopening is far more expensive than a failed read, and a device that is
+/// genuinely gone will refuse every attempt. This keeps a disconnected session
+/// from hammering the audio engine.
+const REOPEN_BACKOFF: Duration = Duration::from_millis(750);
+
 /// A receiver that answered a discovery probe.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiscoveredDevice {
@@ -476,24 +490,64 @@ pub fn capture_to_socket(
         pcm.clear();
         let frames = match capture.read(&mut pcm) {
             Ok(frames) => {
+                if consecutive_failures > 0 {
+                    // Reading again after a run of failures means the device
+                    // came back. Clearing the error matters as much as
+                    // recording it did: a status stuck on a fault that has
+                    // resolved is worse than no status.
+                    if let Ok(mut current) = snapshot.lock() {
+                        current.clear_error();
+                    }
+                }
                 consecutive_failures = 0;
                 frames
             }
             Err(error) => {
                 counters.record_capture_error(&error.to_string());
                 consecutive_failures += 1;
-                if consecutive_failures == FAILURES_BEFORE_ERROR {
-                    // Only now is this worth showing as a broken session. A
-                    // single failed read happens when the default device
-                    // changes and recovers by itself; a second of them does
-                    // not.
-                    if let Ok(mut current) = snapshot.lock() {
-                        current.mark_error(&error.to_string());
+
+                // Unplugging a headset or switching the default output kills
+                // the stream, and WASAPI has no way to move a client to
+                // another endpoint: the only recovery is a new client. Before
+                // this, the user had to stop and start the bridge by hand,
+                // having been told only that capture failed.
+                if consecutive_failures >= FAILURES_BEFORE_REOPEN {
+                    match reopen(capture) {
+                        Ok(()) => {
+                            counters.record_reopen();
+                            consecutive_failures = 0;
+                            // The new device may be at a different rate, and
+                            // the packetizer is built around the old one.
+                            // Sending the new audio through it would play it
+                            // at the wrong speed.
+                            let reopened = capture.format();
+                            if reopened != format {
+                                if let Ok(mut current) = snapshot.lock() {
+                                    current.mark_error(
+                                        "the new playback device runs at a different format;                                          restart the bridge",
+                                    );
+                                }
+                                return;
+                            }
+                            if let Ok(mut current) = snapshot.lock() {
+                                current.clear_error();
+                            }
+                            continue;
+                        }
+                        Err(reopen_error) => {
+                            if consecutive_failures == FAILURES_BEFORE_ERROR {
+                                if let Ok(mut current) = snapshot.lock() {
+                                    current.mark_error(&reopen_error);
+                                }
+                            }
+                            std::thread::sleep(REOPEN_BACKOFF);
+                            continue;
+                        }
                     }
                 }
-                // The endpoint has probably gone: default device changed,
-                // headphones unplugged. Backing off keeps the loop from
-                // spinning at full speed while the user works out what broke.
+
+                // Backing off keeps the loop from spinning at full speed
+                // between attempts.
                 std::thread::sleep(BACKOFF);
                 continue;
             }
@@ -529,6 +583,21 @@ pub fn capture_to_socket(
         current.apply(counters.view_now());
         current.mark_stopped();
     }
+}
+
+/// Replace a dead capture client with a fresh one on the current default
+/// endpoint.
+///
+/// Opened in place so the caller keeps its `&mut`, and so the old client is
+/// dropped, releasing the endpoint, before the new one asks for it.
+#[cfg(windows)]
+fn reopen(capture: &mut sonduit_capture_win::LoopbackCapture) -> Result<(), String> {
+    use sonduit_capture_win::{open, CaptureMode};
+
+    let replacement = open(CaptureMode::EndpointLoopback, CAPTURE_PERIOD_MS)
+        .map_err(|error| format!("could not reopen the playback device: {error}"))?;
+    *capture = replacement;
+    Ok(())
 }
 
 /// Push snapshots to the webview on a timer.

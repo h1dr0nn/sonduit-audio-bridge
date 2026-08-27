@@ -22,41 +22,40 @@ These cannot be done from a development machine and are not code problems.
 
 ## 1. Before this can be called a release
 
-Ordered. Each one is a reason a 2.0.0 tag would be dishonest today.
+Each one is a reason a 2.0.0 tag would be dishonest today.
 
-### 1.1 Discovery has no authentication
-
-ADR-006. Any device on the network can answer a probe, and the desktop will
-start sending system audio to whatever answered first. On a shared network that
-is an eavesdropping bug, not a missing feature.
-
-Minimum: a pairing code shown on the phone and typed on the desktop, mixed into
-a key that authenticates the announce reply. Encrypting the audio itself is a
-separate and larger decision.
-
-### 1.2 Nothing has been measured
+### 1.1 Nothing has been measured
 
 `latency-budget.md` is arithmetic. Until an APK runs on a phone with a loopback
-cable, the 40-80 ms target is a hypothesis. The app already reports the granted
-sharing mode and burst size, so the first run answers most of it.
+cable, the 40-80 ms target is a hypothesis and not a claim. The app already
+reports the granted sharing mode and the burst size, so the first run on real
+hardware answers most of it.
 
-### 1.3 Transport-aware buffer depth
+This is the only item on this list that cannot be worked on from here.
 
-ADR-004: one constant either wastes 18 ms on USB or underruns on Wi-Fi. The
-sender already labels the link, so the receiver can be told which it is.
+### 1.2 The audio itself is not encrypted
 
-### 1.4 The tethered interface is not found automatically
+Pairing stops an unpaired device being *selected*, which was the eavesdropping
+bug. It does nothing about anyone who can already see the traffic: the PCM is
+in the clear and reconstructing it is trivial.
 
-Windows adapter enumeration to locate the RNDIS or NCM interface and read its
-DHCP gateway. Today the user types an address. Never hardcode 192.168.42.129:
-the range is conventional, not guaranteed.
-
-### 1.5 The installer does not open the firewall
-
-The tether adapter lands on the Public profile, which blocks all inbound. A
-first run over USB will look like a total failure with no diagnostic.
+The README now states this plainly, which is the minimum. A cipher keyed from
+the pairing exchange is the real answer and is not written.
 
 ---
+
+## 1a. Release blockers already cleared
+
+Kept here rather than deleted, so the list above is read as what remains and
+not as everything there ever was.
+
+| Was | Now |
+| --- | --- |
+| A dead capture device ended the session | The client is replaced in place; verified against a live endpoint |
+| Discovery had no authentication | Pairing code, HMAC over a per-probe nonce, verified over real sockets |
+| One buffer depth for every link | `JitterConfig::for_transport`, chosen from the sender's address |
+| The tethered phone had to be typed in | Adapter enumeration reads the gateway; probes go to it directly |
+| The installer left the firewall shut | NSIS hook adds an inbound rule for the discovery port on all three profiles |
 
 ## 2. Known gaps in what is already written
 
@@ -65,10 +64,10 @@ Honest list of things that exist but are not finished.
 | Gap | Where |
 | --- | --- |
 | Process loopback returns `ModeUnavailable`; only endpoint loopback works | `sonduit-capture-win` |
-| A capture device that disappears is reported but not recovered from | `desktop/src-tauri/src/bridge` |
 | The jitter buffer adapts symmetrically; roc uses a 1.7x threshold with asymmetric cooldowns | `sonduit-core::jitter` |
 | A lost packet is concealed with silence, not with anything better | `sonduit-core::jitter` |
 | The drift estimator is not reset on route change or suspend, only on format change | `sonduit-ffi` |
+| Discovery is authenticated but the audio stream is not encrypted | ADR-006, see section 1.2 |
 | No aggregated third-party licence file is shipped | `licensing.md` section 5 |
 | FFmpeg LGPL notice is not shown in About, and no LGPL text ships in the bundle | `licensing.md` section 2.2 |
 | Mastering uses a single loudnorm pass; two-pass would be more accurate | `convert/args.rs` |
@@ -106,8 +105,9 @@ the README says so.
 
 ## 4. Repository hygiene
 
-- Create the `develop` branch and set `main` protection. The branch model in
-  ADR-008 is documented but not yet configured on the remote.
+- Set `main` protection. The `develop` branch exists and publishes rolling
+  builds, but `main` is still writable directly, which the branch model in
+  ADR-008 says it should not be.
 - Decide whether to delete the Harmonix `v1.0.4` GitHub Release. The four
   releases up to `v1.0.3` were removed as instructed; `v1.0.4` was not named
   and its assets are not recoverable, so it was left alone.
