@@ -20,6 +20,17 @@
     "store:default",
     "log:default",
     "process:default",
-    "process:allow-exit"
+    "process:allow-exit",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "fs:allow-exists",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        "**"
+      ]
+    }
   ]
 }

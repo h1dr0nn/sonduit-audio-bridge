@@ -9,6 +9,7 @@ import {
   FiSearch,
   FiSettings,
   FiSidebar,
+  FiSliders,
   FiSun,
 } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
@@ -65,6 +66,13 @@ export function CommandPalette({
         label: t('nav.telemetry'),
         icon: FiActivity,
         run: go('telemetry'),
+      },
+      {
+        id: 'go-editor',
+        section: t('palette.navigate'),
+        label: t('nav.editor'),
+        icon: FiSliders,
+        run: go('editor'),
       },
       {
         id: 'go-settings',

@@ -1,10 +1,11 @@
 import React from 'react';
-import { FiActivity, FiHelpCircle, FiRadio, FiSettings } from 'react-icons/fi';
+import { FiActivity, FiHelpCircle, FiRadio, FiSettings, FiSliders } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
 
 const PRIMARY = [
   { id: 'connection', Icon: FiRadio, labelKey: 'nav.connection' },
   { id: 'telemetry', Icon: FiActivity, labelKey: 'nav.telemetry' },
+  { id: 'editor', Icon: FiSliders, labelKey: 'nav.editor' },
 ];
 
 const SECONDARY = [

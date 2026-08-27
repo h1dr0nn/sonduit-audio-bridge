@@ -9,6 +9,7 @@ import { useTheme } from './hooks/useTheme';
 import { useTranslation } from './i18n';
 import { AboutPage } from './pages/AboutPage';
 import { ConnectionPage } from './pages/ConnectionPage';
+import { EditorPage } from './pages/EditorPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TelemetryPage } from './pages/TelemetryPage';
 
@@ -86,6 +87,7 @@ function Shell() {
         <main className="scroll-area min-w-0 flex-1 pr-1">
           {page === 'connection' && <ConnectionPage />}
           {page === 'telemetry' && <TelemetryPage />}
+          {page === 'editor' && <EditorPage />}
           {page === 'settings' && <SettingsPage theme={theme} onSetTheme={setTheme} />}
           {page === 'about' && <AboutPage />}
         </main>
