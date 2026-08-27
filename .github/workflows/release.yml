@@ -204,7 +204,8 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
-          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+          # --platform is not optional: the API 21 sysroot has no libaaudio.so.
+          cargo ndk --platform 27 -t arm64-v8a -t armeabi-v7a -t x86_64 \
             build -p sonduit-ffi --release
 
       # Release signing needs a keystore this repository does not have, so the

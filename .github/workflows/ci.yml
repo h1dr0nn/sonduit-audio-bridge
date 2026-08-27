@@ -65,8 +65,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+
+      # sonduit-desktop is excluded here and covered by the windows job. It is
+      # a Tauri application, so on Linux it drags in GTK, glib and webkit
+      # development headers that this runner does not have and that nothing
+      # about the shared code needs.
+      - run: cargo clippy --workspace --exclude sonduit-desktop --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude sonduit-desktop
 
       # The structural rule from ADR-001, enforced rather than trusted:
       # sonduit-core must build with no platform crates in its tree.
@@ -155,7 +160,10 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
-          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+          # --platform is not optional. Without it cargo-ndk links against the
+          # API 21 sysroot, where libaaudio.so does not exist yet, and the
+          # build fails with an unfindable -laaudio.
+          cargo ndk --platform 27 -t arm64-v8a -t armeabi-v7a -t x86_64 \
             build -p sonduit-ffi -p sonduit-playback-android --release
 
       # Gradle drives cargo-ndk itself and generates the UniFFI bindings from

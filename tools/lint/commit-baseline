@@ -1,0 +1,15 @@
+# Commits at or before this one are not checked.
+#
+# Three commits reached main with subjects this linter rejects: a scope of
+# "tools" that the list did not have, a scope of "capture" where the crate is
+# sonduit-capture-win, and a subject three characters over the limit. They were
+# pushed because the linter was never run locally before committing, which is
+# the actual mistake.
+#
+# History in this repository is the only archive there is, so none of them can
+# be rewritten. Recording where the rule starts being enforced is the honest
+# alternative to widening the rule until the violations fit.
+#
+# Move this forward only to grandfather something that genuinely cannot be
+# fixed. Every new commit is checked.
+9377ad8738884bffe5032acb6a96f402a5771fc9

@@ -42,7 +42,18 @@ const SCOPES = [
   'ci',
   'docs',
   'deps',
+  // The build and version tooling under tools/. A real part of the repository
+  // that had no scope, so commits touching it had nothing correct to say.
+  'tools',
 ];
+
+/**
+ * Commits at or before this one are not checked.
+ *
+ * See the file itself for why it exists. Read lazily and tolerantly: a missing
+ * baseline means check everything, which is the safe direction.
+ */
+const BASELINE_FILE = 'tools/lint/commit-baseline';
 
 const MAX_SUBJECT = 72;
 
@@ -128,6 +139,45 @@ function commitsInRange(range) {
   return output.split('\n').filter(Boolean);
 }
 
+/** The baseline commit, or null when there is none or it is not in this tree. */
+function baselineCommit() {
+  let sha;
+  try {
+    sha = readFileSync(BASELINE_FILE, 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+      .pop();
+  } catch {
+    return null;
+  }
+  if (!sha || !/^[0-9a-f]{40}$/.test(sha)) return null;
+
+  try {
+    // A shallow clone will not have it. Checking everything is then correct.
+    execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], { stdio: 'ignore' });
+  } catch {
+    return null;
+  }
+  return sha;
+}
+
+/** Drop commits that are ancestors of, or equal to, the baseline. */
+function afterBaseline(hashes) {
+  const baseline = baselineCommit();
+  if (!baseline) return hashes;
+
+  return hashes.filter((hash) => {
+    if (hash === baseline) return false;
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', hash, baseline], { stdio: 'ignore' });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+}
+
 function messageOf(hash) {
   return execFileSync('git', ['log', '-1', '--format=%B', hash], { encoding: 'utf8' });
 }
@@ -150,7 +200,7 @@ function main() {
   const range = args[0] ?? 'HEAD~1..HEAD';
   let hashes;
   try {
-    hashes = commitsInRange(range);
+    hashes = afterBaseline(commitsInRange(range));
   } catch (error) {
     console.error(`Could not read commits in range "${range}": ${error.message}`);
     process.exit(1);
