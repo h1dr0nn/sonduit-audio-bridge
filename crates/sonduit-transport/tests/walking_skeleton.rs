@@ -72,6 +72,7 @@ fn sine_survives_the_whole_chain_and_lands_in_a_wav_file() {
             max_ms: 200,
             jitter_multiplier: 3.0,
             max_packets: 256,
+            ..JitterConfig::default()
         },
     );
 
@@ -204,6 +205,7 @@ fn the_chain_reorders_and_conceals_when_the_network_misbehaves() {
             max_ms: 200,
             jitter_multiplier: 3.0,
             max_packets: 256,
+            ..JitterConfig::default()
         },
     );
 

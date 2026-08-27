@@ -586,7 +586,26 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
         previous_timestamp = Some(timestamp);
 
         if let Some(estimator) = estimator.as_mut() {
+            let resets_before = estimator.resets();
             estimator.observe(sender_frames, arrival);
+
+            // The estimator throws its history away after a long gap: the
+            // phone slept, or the route changed. The correction derived from
+            // that history has to go with it, or the controller spends the
+            // next minute unwinding a number that described a session that is
+            // over.
+            if estimator.resets() != resets_before {
+                controller.reset();
+                if let Some(resampler) = resampler.as_mut() {
+                    resampler.reset();
+                }
+                if let Ok(mut source) = shared.source.lock() {
+                    source.buffer_mut().reset();
+                }
+                if let Ok(mut slot) = shared.drift.lock() {
+                    *slot = (None, 0.0);
+                }
+            }
         }
 
         // Resample before the packet enters the buffer, not on the way out:

@@ -80,6 +80,29 @@ pub struct JitterConfig {
     /// Packets held before the buffer refuses more, protecting against a
     /// sender that floods faster than the sink drains.
     pub max_packets: usize,
+
+    /// How much better conditions must look before the target is allowed to
+    /// shrink, as a ratio of the current target to what jitter now suggests.
+    ///
+    /// Growing and shrinking on the same threshold makes the target oscillate:
+    /// it shrinks the moment the link looks calm, underruns on the next burst,
+    /// grows again, and repeats. roc uses 1.7 for the same reason; anything at
+    /// or below 1.0 disables the hysteresis entirely.
+    pub shrink_threshold: f64,
+
+    /// Packets to wait after shrinking before changing the target again.
+    ///
+    /// A shrink is the change that can cause an underrun, so it is followed by
+    /// the shorter of the two cooldowns: if it was wrong, the buffer needs to
+    /// be allowed to grow back quickly.
+    pub shrink_cooldown_packets: u32,
+
+    /// Packets to wait after growing before changing the target again.
+    ///
+    /// Longer than the shrink cooldown. Growing costs latency the user hears,
+    /// and giving it straight back at the first quiet moment is what produces
+    /// the oscillation this exists to prevent.
+    pub grow_cooldown_packets: u32,
 }
 
 /// Which link the audio is arriving over.
@@ -122,6 +145,12 @@ impl JitterConfig {
                 max_ms: 200,
                 jitter_multiplier: 3.0,
                 max_packets: 256,
+                shrink_threshold: 1.7,
+                // At 6 ms packets these are roughly 5 and 15 seconds, matching
+                // roc. Long enough that a single quiet burst cannot move the
+                // target, short enough to follow a link that really changed.
+                shrink_cooldown_packets: 830,
+                grow_cooldown_packets: 2_500,
             },
             Transport::Usb => Self {
                 target_ms: 10,
@@ -132,6 +161,12 @@ impl JitterConfig {
                 max_ms: 80,
                 jitter_multiplier: 3.0,
                 max_packets: 256,
+                shrink_threshold: 1.7,
+                // Shorter than on Wi-Fi. USB conditions do not drift the way a
+                // shared radio does, so a change that persists this long is
+                // real rather than a burst.
+                shrink_cooldown_packets: 500,
+                grow_cooldown_packets: 1_500,
             },
         }
     }
@@ -175,6 +210,13 @@ pub struct JitterStats {
     pub duplicates: u64,
     /// Packets that arrived after their slot had already been played.
     pub too_late: u64,
+    /// Times the target depth was raised.
+    pub target_grew: u64,
+    /// Times the target depth was lowered.
+    ///
+    /// A session where this keeps pace with `target_grew` is oscillating, and
+    /// the user is hearing every cycle of it.
+    pub target_shrank: u64,
     /// Packets dropped because the buffer was full.
     pub overflows: u64,
     /// Slots given up on and concealed.
@@ -203,6 +245,18 @@ pub struct JitterBuffer {
     previous_observation: Option<(i64, u32)>,
     /// True once the buffer has filled to its target and started playing.
     playing: bool,
+    /// The depth the buffer is actually aiming for, in milliseconds.
+    ///
+    /// Held rather than recomputed, because the whole point of the hysteresis
+    /// is that the target does not follow the jitter estimate immediately.
+    target_ms: f64,
+    /// Packets accepted, used as the clock for the cooldowns.
+    ///
+    /// Packets rather than wall time: this crate has no clock, and a buffer
+    /// that has received nothing has no reason to retarget anyway.
+    accepted_ticks: u32,
+    /// The tick at which the target may next change.
+    retarget_allowed_at: u32,
     stats: JitterStats,
 }
 
@@ -219,6 +273,15 @@ impl JitterBuffer {
             jitter_frames: 0.0,
             previous_observation: None,
             playing: false,
+            // Clamped, not taken as given. JitterConfig has no validation, so
+            // a starting target outside the configured range is possible and
+            // would be honoured forever if the link never got worse.
+            target_ms: f64::from(config.target_ms).clamp(
+                f64::from(config.min_ms.min(config.max_ms)),
+                f64::from(config.min_ms.max(config.max_ms)),
+            ),
+            accepted_ticks: 0,
+            retarget_allowed_at: 0,
             stats: JitterStats::default(),
         }
     }
@@ -253,7 +316,16 @@ impl JitterBuffer {
     /// One packet, plus `jitter_multiplier` times the jitter estimate, floored
     /// at the configured target and clamped to the configured range.
     #[must_use]
-    pub fn target_ms(&self) -> f64 {
+    pub const fn target_ms(&self) -> f64 {
+        self.target_ms
+    }
+
+    /// The depth the current jitter estimate on its own would suggest.
+    ///
+    /// What the target was before hysteresis; kept public because it is the
+    /// only way to see how far the held target has been allowed to lag.
+    #[must_use]
+    pub fn suggested_target_ms(&self) -> f64 {
         let packet_ms = self
             .format
             .packet_duration_nanos()
@@ -270,6 +342,53 @@ impl JitterBuffer {
         adaptive
             .max(f64::from(self.config.target_ms))
             .clamp(low, high)
+    }
+
+    /// Move the held target towards what jitter now suggests, if allowed.
+    ///
+    /// # Why this is not symmetric
+    ///
+    /// Growing and shrinking on the same rule makes the target oscillate. The
+    /// buffer shrinks the moment the link looks calm, underruns on the next
+    /// burst, grows again, and repeats, and the user hears every cycle. So a
+    /// shrink has to clear a ratio threshold as well as a cooldown, and the
+    /// cooldown after growing is the longer of the two: growing costs latency
+    /// once, while giving it back too eagerly costs a dropout every time.
+    ///
+    /// RFC 3550's own text says its estimator "is not intended to be taken
+    /// quantitatively", which is the other half of the reason not to follow it
+    /// closely.
+    fn retarget(&mut self) {
+        let suggested = self.suggested_target_ms();
+
+        // Growing is always allowed to start immediately in one case: a target
+        // that has never moved is still the configured default, and waiting a
+        // cooldown before the first honest measurement is just a slower start.
+        let first_move = self.retarget_allowed_at == 0 && self.accepted_ticks > 0;
+        if !first_move && self.accepted_ticks < self.retarget_allowed_at {
+            return;
+        }
+
+        if suggested > self.target_ms {
+            self.target_ms = suggested;
+            self.retarget_allowed_at = self
+                .accepted_ticks
+                .saturating_add(self.config.grow_cooldown_packets);
+            self.stats.target_grew += 1;
+            return;
+        }
+
+        // Shrinking needs the link to look not merely better but much better.
+        // A threshold at or below one disables the hysteresis, which is a
+        // legitimate choice for a caller that wants the raw estimate.
+        let threshold = self.config.shrink_threshold.max(1.0);
+        if suggested > 0.0 && self.target_ms / suggested >= threshold {
+            self.target_ms = suggested;
+            self.retarget_allowed_at = self
+                .accepted_ticks
+                .saturating_add(self.config.shrink_cooldown_packets);
+            self.stats.target_shrank += 1;
+        }
     }
 
     fn target_packets(&self) -> usize {
@@ -359,6 +478,13 @@ impl JitterBuffer {
 
         self.entries.insert(extended, pcm);
         self.stats.accepted += 1;
+        self.accepted_ticks = self.accepted_ticks.saturating_add(1);
+
+        // Retargeting is driven from the accept path rather than from pop:
+        // the jitter estimate only changes when a packet arrives, so a buffer
+        // being drained by a silent sender has nothing new to act on.
+        self.retarget();
+
         PushOutcome::Accepted
     }
 
@@ -410,6 +536,12 @@ impl JitterBuffer {
 
     /// Drop everything and re-arm, for a format change or a new sender.
     pub fn reset(&mut self) {
+        self.target_ms = f64::from(self.config.target_ms).clamp(
+            f64::from(self.config.min_ms.min(self.config.max_ms)),
+            f64::from(self.config.min_ms.max(self.config.max_ms)),
+        );
+        self.accepted_ticks = 0;
+        self.retarget_allowed_at = 0;
         self.entries.clear();
         self.extender = SequenceExtender::default();
         self.next = None;
@@ -513,6 +645,7 @@ mod tests {
                 max_ms: 200,
                 jitter_multiplier: 3.0,
                 max_packets: 64,
+                ..JitterConfig::default()
             },
         )
     }
@@ -766,6 +899,7 @@ mod tests {
             max_ms: 40,
             jitter_multiplier: 3.0,
             max_packets: 512,
+            ..JitterConfig::default()
         };
         let mut buffer = JitterBuffer::new(Format::stereo_48k(), config);
 
@@ -995,10 +1129,14 @@ mod tests {
                 max_ms: 50,
                 jitter_multiplier: 3.0,
                 max_packets: 64,
+                ..JitterConfig::default()
             },
         );
-        let target = buffer.target_ms();
-        assert!(target.is_finite(), "target must stay a real number");
-        assert!((50.0..=100.0).contains(&target), "got {target}");
+        // Both the held target and the one the estimate suggests have to stay
+        // inside the range, however the range was written.
+        for target in [buffer.target_ms(), buffer.suggested_target_ms()] {
+            assert!(target.is_finite(), "target must stay a real number");
+            assert!((50.0..=100.0).contains(&target), "got {target}");
+        }
     }
 }

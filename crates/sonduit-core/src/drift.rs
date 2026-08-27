@@ -88,6 +88,18 @@ pub struct DriftConfig {
     /// Corrections are deliberately small and frequent. Dropping a large block
     /// at once is audible; shedding a few frames spread over time is not.
     pub max_correction_frames: usize,
+
+    /// Receiver-side gap that invalidates the history, in nanoseconds.
+    ///
+    /// A pause this long means the two clocks were not being compared across
+    /// it: the phone slept, the route changed, the user walked out of range.
+    /// The regression does not know that, and fitting a line through the gap
+    /// measures the gap rather than the drift, producing an estimate that can
+    /// be wrong by orders of magnitude and a correction that chases it.
+    ///
+    /// Two seconds is far longer than any jitter this project tolerates and
+    /// far shorter than any pause a user would not notice.
+    pub gap_reset_nanos: u64,
 }
 
 impl DriftConfig {
@@ -99,6 +111,7 @@ impl DriftConfig {
             deadband_ppm: 2.0,
             depth_tolerance_frames: 240, // 5 ms at 48 kHz
             max_correction_frames: 48,   // 1 ms at 48 kHz
+            gap_reset_nanos: 2_000_000_000,
         }
     }
 }
@@ -108,6 +121,14 @@ impl DriftConfig {
 pub struct DriftEstimator {
     config: DriftConfig,
     observations: VecDeque<Observation>,
+    /// Receiver time of the last observation, for gap detection.
+    last_receiver_nanos: Option<u64>,
+    /// Times the history has been discarded because of a gap.
+    ///
+    /// Worth reporting: a session that resets repeatedly never accumulates
+    /// enough history to resolve anything, and the drift figure it shows is
+    /// noise however confident it looks.
+    resets: u64,
 }
 
 impl DriftEstimator {
@@ -117,12 +138,27 @@ impl DriftEstimator {
         Self {
             config,
             observations: VecDeque::with_capacity(WINDOW),
+            last_receiver_nanos: None,
+            resets: 0,
         }
     }
 
     /// Record that the sender had produced `sender_frames` when the receiver's
     /// monotonic clock read `receiver_nanos`.
     pub fn observe(&mut self, sender_frames: u64, receiver_nanos: u64) {
+        // A long gap, or a clock that went backwards, means the history
+        // describes a relationship that no longer holds. Keeping it would fit
+        // a line across the discontinuity and call the result drift.
+        if let Some(previous) = self.last_receiver_nanos {
+            let moved_backwards = receiver_nanos < previous;
+            let gap = receiver_nanos.saturating_sub(previous);
+            if moved_backwards || gap >= self.config.gap_reset_nanos {
+                self.observations.clear();
+                self.resets += 1;
+            }
+        }
+        self.last_receiver_nanos = Some(receiver_nanos);
+
         if self.observations.len() == WINDOW {
             self.observations.pop_front();
         }
@@ -135,6 +171,13 @@ impl DriftEstimator {
     /// Discard all history, for a new stream or a format change.
     pub fn reset(&mut self) {
         self.observations.clear();
+        self.last_receiver_nanos = None;
+    }
+
+    /// Times the history has been discarded because of a gap in arrivals.
+    #[must_use]
+    pub const fn resets(&self) -> u64 {
+        self.resets
     }
 
     /// Observations currently held.
@@ -276,6 +319,72 @@ mod tests {
             let seconds = sender_frames as f64 / actual_rate;
             estimator.observe(sender_frames, (seconds * 1e9) as u64);
         }
+    }
+
+    #[test]
+    fn a_long_pause_discards_the_history() {
+        // The phone slept, or the route changed. The regression cannot see
+        // that; fitting a line across the gap measures the gap and calls it
+        // drift, and the correction then chases a number that describes
+        // nothing.
+        let mut estimator = estimator();
+        feed(&mut estimator, LONG, f64::from(RATE), 288);
+        assert!(estimator.drift_ppm().is_some());
+
+        let after_gap = LONG as u64 * 288 * 1_000_000_000 / u64::from(RATE) + 5_000_000_000;
+        estimator.observe(LONG as u64 * 288, after_gap);
+
+        assert_eq!(estimator.observation_count(), 1, "the history survived");
+        assert_eq!(estimator.resets(), 1);
+        assert!(
+            estimator.drift_ppm().is_none(),
+            "an estimate was offered from one observation"
+        );
+    }
+
+    #[test]
+    fn a_gap_shorter_than_the_threshold_keeps_the_history() {
+        // Ordinary jitter must not throw away twenty-five seconds of history;
+        // that would leave the estimator permanently unable to resolve
+        // anything on a link that stutters.
+        let mut estimator = estimator();
+        feed(&mut estimator, LONG, f64::from(RATE), 288);
+        let before = estimator.observation_count();
+
+        let nominal = LONG as u64 * 288 * 1_000_000_000 / u64::from(RATE);
+        estimator.observe(LONG as u64 * 288, nominal + 500_000_000);
+
+        assert_eq!(estimator.resets(), 0);
+        assert!(estimator.observation_count() >= before.min(WINDOW - 1));
+        assert!(estimator.drift_ppm().is_some());
+    }
+
+    #[test]
+    fn a_clock_that_moves_backwards_discards_the_history() {
+        // Should be impossible from a monotonic source, which is why it is
+        // worth checking: if one ever appears, the alternative is a negative
+        // time delta and an estimate that is arbitrarily wrong.
+        let mut estimator = estimator();
+        feed(&mut estimator, LONG, f64::from(RATE), 288);
+
+        estimator.observe(0, 0);
+
+        assert_eq!(estimator.resets(), 1);
+        assert_eq!(estimator.observation_count(), 1);
+    }
+
+    #[test]
+    fn an_explicit_reset_also_forgets_the_last_arrival_time() {
+        // Otherwise the first observation of the next stream is compared
+        // against the previous stream's clock and looks like a gap, spending a
+        // reset for nothing.
+        let mut estimator = estimator();
+        feed(&mut estimator, LONG, f64::from(RATE), 288);
+
+        estimator.reset();
+        estimator.observe(0, 0);
+
+        assert_eq!(estimator.resets(), 0, "a spurious gap was detected");
     }
 
     #[test]

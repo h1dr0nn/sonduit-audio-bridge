@@ -55,6 +55,8 @@ not as everything there ever was.
 | Discovery had no authentication | Pairing code, HMAC over a per-probe nonce, verified over real sockets |
 | One buffer depth for every link | `JitterConfig::for_transport`, chosen from the sender's address |
 | The tethered phone had to be typed in | Adapter enumeration reads the gateway; probes go to it directly |
+| The buffer target chased the jitter estimate | Asymmetric retargeting with a 1.7x shrink threshold and cooldowns |
+| Drift history survived a sleep or a route change | A gap of two seconds discards it, and the correction with it |
 | The installer left the firewall shut | NSIS hook adds an inbound rule for the discovery port on all three profiles |
 
 ## 2. Known gaps in what is already written
@@ -64,9 +66,7 @@ Honest list of things that exist but are not finished.
 | Gap | Where |
 | --- | --- |
 | Process loopback returns `ModeUnavailable`; only endpoint loopback works | `sonduit-capture-win` |
-| The jitter buffer adapts symmetrically; roc uses a 1.7x threshold with asymmetric cooldowns | `sonduit-core::jitter` |
 | A lost packet is concealed with silence, not with anything better | `sonduit-core::jitter` |
-| The drift estimator is not reset on route change or suspend, only on format change | `sonduit-ffi` |
 | Discovery is authenticated but the audio stream is not encrypted | ADR-006, see section 1.2 |
 | No aggregated third-party licence file is shipped | `licensing.md` section 5 |
 | Mastering uses a single loudnorm pass; two-pass would be more accurate | `convert/args.rs` |
