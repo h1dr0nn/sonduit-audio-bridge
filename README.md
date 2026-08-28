@@ -74,9 +74,10 @@ enough to prove the app starts and no more.
 
 ## Status
 
-**Audio has been heard. It has not been measured since it was fixed.**
+**Audio has been heard. One session has now been read off the telemetry panel,
+and it did not settle.**
 
-### Heard once, and not measured since
+### Heard once, and three fixes that are still unproven
 
 Sonduit has run on a physical Android phone over USB tethering, and sound came
 out of it. It was also wrong, in two ways that were diagnosed from that
@@ -84,8 +85,8 @@ session: the latency the receiver reported swung between roughly 20 and 60 ms
 on a repeating cycle, and the audio crackled at the bottom of each swing. Both
 are understood, and three fixes for them are in the tree.
 
-**None of those three fixes has been run on the phone.** They are believed to
-work and are not known to work:
+**None of those three fixes is known to have run on the phone.** They are
+believed to work and are not known to work:
 
 - **The sender declares which link it is on.** Flag bit 0 of the packet header,
   `FLAG_WIRED_LINK` in `crates/sonduit-core/src/packet.rs`. The receiver had
@@ -103,10 +104,39 @@ work and are not known to work:
   starve at the bottom of each cycle fed concealment into audio that had
   arrived intact, which is the crackle.
 
-So the swing and the crackle should be gone, and nobody has listened since.
-**No latency figure in this repository is a measurement.** Every number in
-[docs/latency-budget.md](docs/latency-budget.md) is still arithmetic, and the
-20-60 ms above describes the fault that was fixed, not the product.
+So the swing and the crackle should be gone. Somebody has now listened, and the
+reading is below. It does not clear those three fixes: the desktop binary that
+was running had been built three minutes before the packetiser and the sender's
+bridge were last edited, so the reading cannot be credited to any particular
+revision of them. The 20-60 ms above still describes the fault that was fixed,
+not the product.
+
+### Read once, on 28 August 2026
+
+A session was running and its telemetry was read without disturbing it. A Pixel
+7a over USB tethering, 48 kHz / 16-bit / stereo, audio the listener called good.
+Seventeen readings over four minutes.
+
+- **Latency 40 ms rising to 69 ms.** It never came back down, and the buffer
+  depth behind it went 12, 18, 24, 30, 36, 42 ms without shrinking once. That is
+  a session drifting upward, not a session at 40 ms.
+- **Packet loss 0.00%**, across roughly forty thousand packets. Nothing was lost
+  at any point in the window.
+- **The panel understates the path it describes.** Its latency figure covers the
+  sender, the network and the receiver's jitter buffer. The phone's own log
+  shows a second buffer after that one, between the jitter buffer and the audio
+  callback, holding a median of 110 ms that no telemetry reports and no budget
+  line covers. Capture to ear was therefore somewhere around 150-180 ms, before
+  the AAudio buffer and the device output path are counted at all.
+
+**This is one reading of one session, on one phone, over one cable, taken from
+the software's own account of itself.** There was no loopback cable, no Wi-Fi,
+no second device and no average over time, and "sounds good and reads 40 ms" is
+not a claim that Sonduit achieves 40 ms. What it replaces is "nothing has been
+measured", with "one thing has been read, and it found a hole in the
+accounting". Every number in
+[docs/latency-budget.md](docs/latency-budget.md) is still arithmetic; the
+reading is recorded in section 6 there, deliberately outside the budget table.
 
 ### What exists and is verified on a machine
 
@@ -131,12 +161,13 @@ So the swing and the crackle should be gone, and nobody has listened since.
 
 ### What has not been done
 
-- **Nothing has been measured on hardware.** No loopback-cable timing, no
-  round-trip figure, and no record of whether AAudio granted exclusive
-  low-latency mode on the phone that played. The app reports the granted
-  sharing mode and the burst size, so the next session on a device answers most
-  of this; until then every figure below is a budget. See
-  [docs/environment.md](docs/environment.md).
+- **Nothing has been measured properly on hardware.** One live session has been
+  read off the telemetry panel, above, which is the software describing itself
+  and is not a measurement. There is still no loopback-cable timing and no
+  record of whether AAudio granted exclusive low-latency mode on the phone that
+  played. The app reports the granted sharing mode and the burst size, so the
+  next session on a device answers most of this; until then every figure in the
+  budget is a budget. See [docs/environment.md](docs/environment.md).
 - **Wi-Fi has not been heard.** The session that produced sound was over USB
   tethering. The Wi-Fi path shares everything but the interface it binds, and
   that is an argument, not evidence.

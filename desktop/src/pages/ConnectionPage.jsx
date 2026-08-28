@@ -14,6 +14,7 @@ import { Dialog } from '../components/ui/Dialog';
 import { QrCode } from '../components/ui/QrCode';
 import { StatTile } from '../components/ui/StatTile';
 import { TextField } from '../components/ui/TextField';
+import { useSettingsContext } from '../context/SettingsContext';
 import { useBridge } from '../hooks/useBridge';
 import { useTranslation } from '../i18n';
 
@@ -36,6 +37,9 @@ const PAIRING_WINDOW_SECONDS = 90;
 
 export function ConnectionPage() {
   const { t } = useTranslation();
+  // Read here rather than in the backend's own store: the preference belongs
+  // to the session that is being started, so it travels with the start call.
+  const { settings } = useSettingsContext();
   const {
     available,
     status,
@@ -183,13 +187,13 @@ export function ConnectionPage() {
     setBusy(true);
     try {
       const address = target.kind === 'manual' ? typed.trim() : target.value;
-      await start({ target: address || null });
+      await start({ target: address || null, preferredTransport: settings.preferredTransport });
     } catch (reason) {
       showToast({ id: 'session', tone: 'error', titleKey: 'connection.startFailed', detail: String(reason) });
     } finally {
       setBusy(false);
     }
-  }, [start, target, typed]);
+  }, [settings.preferredTransport, start, target, typed]);
 
   const handleStop = useCallback(async () => {
     setBusy(true);

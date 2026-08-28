@@ -1,7 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { FiActivity, FiChevronDown } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
+import { formatWithUnit } from '../../utils/readings';
 import { Tooltip } from '../ui/Tooltip';
+
+/**
+ * How the backend names each link, and the key that says it in the user's
+ * language. The backend deliberately keeps sending the short machine words so
+ * this is the only place the wording lives; an unknown one falls through to
+ * the raw value rather than to a blank.
+ */
+const TRANSPORT_LABEL_KEY = {
+  usb: 'connection.transportUsb',
+  wifi: 'connection.transportWifi',
+  multicast: 'connection.transportMulticast',
+};
 
 const DOT = {
   disconnected: 'bg-ink-faint',
@@ -93,7 +106,14 @@ export function StatusMenu({ status, session, telemetry, available, t }) {
             {t('connection.session')}
           </p>
           <Line label={t('connection.captureSource')} value={session.endpoint} />
-          <Line label={t('connection.transport')} value={session.transport} />
+          <Line
+            label={t('connection.transport')}
+            value={
+              TRANSPORT_LABEL_KEY[session.transport]
+                ? t(TRANSPORT_LABEL_KEY[session.transport])
+                : session.transport
+            }
+          />
           <Line label={t('connection.sampleRate')} value={session.sampleRate} />
           <Line label={t('connection.channels')} value={session.channels} />
 
@@ -102,17 +122,20 @@ export function StatusMenu({ status, session, telemetry, available, t }) {
           <p className="px-3 pb-1 pt-1 text-xs font-medium uppercase tracking-wide text-ink-faint">
             {t('telemetry.title')}
           </p>
+          {/* Through the same rounding the tiles use. Interpolating the raw
+            * value here put `37.3735737102045 ms` in front of a user, which
+            * claims a precision no part of this measurement has. */}
           <Line
             label={t('telemetry.latency')}
-            value={telemetry.latencyMs === null ? null : `${telemetry.latencyMs} ms`}
+            value={formatWithUnit(telemetry.latencyMs, 'ms')}
           />
           <Line
             label={t('telemetry.bufferDepth')}
-            value={telemetry.bufferDepthMs === null ? null : `${telemetry.bufferDepthMs} ms`}
+            value={formatWithUnit(telemetry.bufferDepthMs, 'ms')}
           />
           <Line
             label={t('telemetry.packetLoss')}
-            value={telemetry.packetLossPct === null ? null : `${telemetry.packetLossPct} %`}
+            value={formatWithUnit(telemetry.packetLossPct, '%')}
           />
 
           {!available && (

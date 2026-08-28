@@ -3,13 +3,17 @@
 Targets: **40-80 ms over Wi-Fi**, **25-50 ms over USB**, mouth to ear, at
 48 kHz / 16-bit / stereo.
 
-> **Every number in this document is a budget, not a measurement.** Audio has
-> since been played on a real phone over USB tethering, which proves the chain
-> carries sound; it produced no timing figure. Nothing here has been measured
-> end to end, because that needs a loopback cable and a session nobody has run
-> yet, and there is still no signed capture driver (`environment.md`). Figures
-> are derived from vendor documentation and from arithmetic that is shown so it
-> can be checked. **Do not quote any of these as a result.**
+> **Every number in the budget table is a budget, not a measurement.** Those
+> figures are derived from vendor documentation and from arithmetic that is
+> shown so it can be checked, and **none of them may be quoted as a result.**
+> Nothing in the chain has been measured against a loopback cable, and there is
+> still no signed capture driver (`environment.md`).
+>
+> One live session has since been read off the running telemetry panel. It is
+> written down in [section 6](#6-the-one-session-that-has-been-read), on its own
+> and outside the table, so that it cannot be mistaken for a budget line. It
+> does not confirm the table: it never settled, it covers seven of the nine
+> stages, and it found a buffer this document does not list at all.
 
 ---
 
@@ -102,8 +106,89 @@ Honestly ranked by how much they could move:
 - **Stages 4 and 6 are conservative.** Both are a copy and a syscall.
 - **Stage 7 is a policy, not a measurement**, and the code reports its actual
   depth and target at runtime through `Telemetry`.
+- **One live session has been read.** It is in section 6 rather than in this
+  list, because a panel reading is weaker evidence than the arithmetic above
+  and must not be filed beside it.
 
-## 6. How this document is used
+## 6. The one session that has been read
+
+**This is the only measured content in this document.** Nothing in it feeds the
+table above, and nothing in the table above came from it.
+
+On 28 August 2026, between 13:00 and 13:05 local time, a desktop build bridged
+WASAPI loopback capture to a Google Pixel 7a at 10.10.22.160:4010 over USB
+tethering, at 48 kHz / 16-bit / stereo. The person listening judged the audio
+good. Seventeen readings were taken from the live Telemetry card without
+touching the session, and the phone's own log was read alongside them.
+
+| Local time | Latency | Jitter buffer depth | Packet loss |
+| --- | --- | --- | --- |
+| 13:00:59 | 40 ms | 12 ms | 0.00% |
+| 13:01:19 | 40 ms | 18 ms | 0.00% |
+| 13:01:50 | 51 ms | 30 ms | 0.00% |
+| 13:02:48 | 60 ms | 36 ms | 0.00% |
+| 13:03:25 | 60 ms | 36 ms | 0.00% |
+| 13:03:49 | 63 ms | 42 ms | 0.00% |
+| 13:04:01 | 69 ms | 42 ms | 0.00% |
+| 13:04:57 | 65 ms | 42 ms | 0.00% |
+
+Those rows are a selection. The full seventeen ran between 40 and 69 ms, and
+loss was 0.00% across roughly forty thousand packets, with nothing lost at any
+point in the window.
+
+Three things follow, and none of them is a validation of the table.
+
+1. **It did not settle.** The figure was 40 ms when it was first read and 69 ms
+   four minutes later, and the depth behind it went 12, 18, 24, 30, 36, 42 ms
+   and never once shrank. A number still climbing when the observer stops
+   watching is not an operating point, and quoting its lowest reading would be
+   dishonest.
+2. **The panel's figure is stages 1 to 7 and nothing else.** It is the sender's
+   own 16 ms, plus a halved round trip, plus the depth the receiver reports.
+   Stages 8 and 9 are not in it. Neither is the buffer described below.
+3. **Stage 7 ran at three times its USB budget.** The receiver's adaptive
+   target settled at 36 ms against the 12 ms budgeted here, and its depth
+   reached 42 ms.
+
+Clock drift over the same window ran between -135 and +38 ppm, with the
+resampler correcting between 94 and 264 ppm.
+
+### The stage this table does not have
+
+The phone's log reports a second buffer, sitting between the jitter buffer and
+the audio callback, that no telemetry carries and that has no line in section 2.
+`Handoff::queued_ms` in `sonduit-core` is the single-producer ring the receive
+thread pushes into and the callback drains. `JitterBuffer::depth_ms`, the only
+depth the feedback report sends back, is measured upstream of it.
+
+Across 480 log lines it held a median of **110 ms**, ranging from 86 to 116 ms,
+and it stayed steady there while the depth ahead of it climbed. It never
+triggered `resync_if_hopeless`, which fires at four times target: 110 ms sits
+under 144 ms and simply persists.
+
+Audio has to cross it. Capture to ear in this session was therefore not 40 to
+69 ms. It was that plus roughly 110 ms, before stages 8 and 9 are counted at
+all. **The panel understates the path it describes by more than the entire USB
+budget.** That is an accounting defect rather than a slow link, and it is the
+most useful thing this session produced.
+
+### What this reading is not
+
+- One session, one phone, one machine, one cable. Not a benchmark.
+- Read off a telemetry panel, not against a loopback cable. Every figure in it
+  is the software's own account of itself.
+- Judged good by ear. That is a listener's opinion, and an opinion is not
+  timing.
+- Not Wi-Fi, not a second device, and not an average of anything: a series of
+  instantaneous readings, four minutes long.
+- Taken from a debug build whose binary was three minutes older than the
+  working-tree state of the packetiser and the sender's bridge, so it cannot be
+  credited to any particular revision of those.
+- Silent on jitter, late packets and reordering. The feedback protocol does not
+  carry them and `TelemetryView` sets all three to `None` deliberately, so the
+  panel shows nothing for them and this session measured nothing for them.
+
+## 7. How this document is used
 
 **Any pull request that adds latency to a stage must say which stage and how
 much, and update this table.** A change that pushes the total past the target
@@ -111,10 +196,12 @@ band needs a compensating reduction elsewhere or an explicit decision to move
 the target.
 
 When real measurements exist they replace the budget column, and this notice
-comes off. Until then the honest summary is:
+comes off. Section 6 is not that: it covers seven of the nine stages, it never
+settled, and it found a buffer this table does not list. The honest summary is
+still:
 
-> Sonduit's latency has never been measured. These are the numbers the design
-> is aiming at.
+> These are the numbers the design is aiming at, not numbers it has hit. One
+> session has been read, in section 6, and it does not agree with them.
 
 ## Sources
 

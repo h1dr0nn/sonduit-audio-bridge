@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CommandPalette } from './components/AppShell/CommandPalette';
-import { ToastViewport } from './components/ui/Toast';
+import { showToast, ToastViewport } from './components/ui/Toast';
 import { Rail } from './components/AppShell/Rail';
 import { TitleBar } from './components/AppShell/TitleBar';
 import { SettingsProvider } from './context/SettingsContext';
@@ -15,6 +15,57 @@ import { SettingsPage } from './pages/SettingsPage';
 import { TelemetryPage } from './pages/TelemetryPage';
 
 const SIDEBAR_KEY = 'sonduit-sidebar-expanded';
+
+/**
+ * What to say when the session moves from one link to the other.
+ *
+ * Keyed by where it went. A migration the user is not told about reads as a
+ * glitch -- the latency figure jumps, the transport line changes, and nothing
+ * explains either; the same event announced reads as the app doing its job.
+ */
+const LINK_TOAST = {
+  usb: {
+    tone: 'success',
+    titleKey: 'connection.linkSwitchedToUsb',
+    bodyKey: 'connection.linkSwitchedToUsbBody',
+  },
+  wifi: {
+    tone: 'info',
+    titleKey: 'connection.linkSwitchedToWifi',
+    bodyKey: 'connection.linkSwitchedToWifiBody',
+  },
+};
+
+/**
+ * Announce a link change, and only a change.
+ *
+ * Lives in the shell rather than on the connection page: the backend can move
+ * the session at any moment, and a user watching the telemetry page would
+ * otherwise see the numbers move with nothing to explain it.
+ *
+ * The first transport a session reports is not a change -- the session started
+ * on it -- so it is recorded and not announced. Stopping clears the memory, so
+ * starting again on the same link is likewise silent.
+ */
+function useLinkAnnouncements(transport, t) {
+  const previous = useRef(null);
+
+  useEffect(() => {
+    const was = previous.current;
+    previous.current = transport ?? null;
+    if (!transport || !was || was === transport) return;
+
+    const announcement = LINK_TOAST[transport];
+    if (!announcement) return;
+
+    showToast({
+      id: 'link',
+      tone: announcement.tone,
+      titleKey: announcement.titleKey,
+      message: t(announcement.bodyKey),
+    });
+  }, [transport, t]);
+}
 
 function readSidebarPreference() {
   try {
@@ -33,6 +84,8 @@ function Shell() {
   const { theme, setTheme } = useTheme();
   const { t } = useTranslation();
   const bridge = useBridge();
+
+  useLinkAnnouncements(bridge.session.transport, t);
 
   // The native acrylic tint lives in Rust and cannot read the webview's stored
   // theme, so the frontend pushes it on mount and on every change.

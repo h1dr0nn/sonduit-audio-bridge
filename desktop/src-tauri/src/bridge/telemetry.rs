@@ -12,6 +12,8 @@ use serde::Serialize;
 use sonduit_core::format::{Format, PCM_PAYLOAD_BYTES};
 use sonduit_transport::feedback::{end_to_end_ms, one_way_ms, Feedback};
 
+use crate::bridge::link::LinkKind;
+
 /// How often the accumulator produces a new view.
 ///
 /// Matched to the emit interval. Recomputing more often would only average
@@ -30,9 +32,16 @@ pub struct SessionInfo {
     pub channels: u8,
     /// Bit depth on the wire.
     pub bit_depth: u8,
-    /// Where audio is being sent.
+    /// Where audio is being sent. Follows the session across a migration.
     pub target: String,
-    /// Which link this is, as far as the address can tell.
+    /// Which link this is.
+    ///
+    /// Not derived here and not guessed at. It is
+    /// [`LinkKind::label`] of the link the send loop is actually using, which
+    /// is the same value the packet header carries as `FLAG_WIRED_LINK`. The
+    /// panel used to test the target against 192.168.42/24 instead, and said
+    /// "Wi-Fi" for a phone tethering on 10.114.89.x while the audio went over
+    /// the cable.
     pub transport: String,
     /// Wire format in use.
     pub wire: String,
@@ -41,36 +50,28 @@ pub struct SessionInfo {
 impl SessionInfo {
     /// Describe a session that is about to start.
     #[must_use]
-    pub fn new(endpoint: &str, format: Format, target: SocketAddr, scream: bool) -> Self {
+    pub fn new(
+        endpoint: &str,
+        format: Format,
+        target: SocketAddr,
+        link: LinkKind,
+        scream: bool,
+    ) -> Self {
         Self {
             endpoint: endpoint.to_string(),
             sample_rate: format.sample_rate,
             channels: format.channels,
             bit_depth: format.bit_depth.bits(),
             target: target.to_string(),
-            transport: classify_transport(target),
+            transport: link.label().to_string(),
             wire: if scream { "scream" } else { "sonduit" }.to_string(),
         }
     }
-}
 
-/// Guess the link from the destination address.
-///
-/// This is a label, not a routing decision. Android's tethering range is fixed
-/// at 192.168.42/24 in AOSP and most OEMs keep it, so the guess is usually
-/// right; when it is wrong the only cost is a word in the UI.
-fn classify_transport(target: SocketAddr) -> String {
-    match target.ip() {
-        std::net::IpAddr::V4(ip) if ip.is_multicast() => "multicast".to_string(),
-        std::net::IpAddr::V4(ip) => {
-            let octets = ip.octets();
-            if octets[0] == 192 && octets[1] == 168 && octets[2] == 42 {
-                "usb".to_string()
-            } else {
-                "wifi".to_string()
-            }
-        }
-        std::net::IpAddr::V6(_) => "wifi".to_string(),
+    /// Point the session at a different route, after a migration.
+    pub fn moved_to(&mut self, target: SocketAddr, link: LinkKind) {
+        self.target = target.to_string();
+        self.transport = link.label().to_string();
     }
 }
 
@@ -208,6 +209,18 @@ impl BridgeSnapshot {
             };
         }
         self.error = None;
+    }
+
+    /// Record that the session has moved onto a different link.
+    ///
+    /// The whole of what the user is told, and the whole of what the wire is
+    /// told, come from the same value: the frontend watches `transport` change
+    /// and announces it, and the packetizer sets its header flag from the same
+    /// [`LinkKind`]. There is no second derivation to disagree with this one.
+    pub fn note_link(&mut self, target: SocketAddr, link: LinkKind) {
+        if let Some(session) = self.session.as_mut() {
+            session.moved_to(target, link);
+        }
     }
 
     /// Attach the most recent failure without claiming the session is broken.
@@ -524,6 +537,7 @@ mod tests {
             "Speakers",
             Format::stereo_48k(),
             "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
             false,
         ));
         assert_eq!(snapshot.status, "connecting");
@@ -541,6 +555,7 @@ mod tests {
             "Speakers",
             Format::stereo_48k(),
             "239.255.77.77:4010".parse().unwrap(),
+            LinkKind::Multicast,
             false,
         ));
 
@@ -565,6 +580,7 @@ mod tests {
             "Speakers",
             Format::stereo_48k(),
             "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
             false,
         ));
         snapshot.apply(answered());
@@ -583,6 +599,7 @@ mod tests {
             "Speakers",
             Format::stereo_48k(),
             "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
             false,
         ));
         snapshot.apply(TelemetryView {
@@ -606,6 +623,7 @@ mod tests {
             "Speakers",
             Format::stereo_48k(),
             "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
             false,
         ));
         snapshot.apply(TelemetryView {
@@ -653,6 +671,7 @@ mod tests {
             "Speakers",
             Format::stereo_48k(),
             "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
             false,
         ));
         snapshot.apply(answered());
@@ -677,22 +696,31 @@ mod tests {
     }
 
     #[test]
-    fn the_tethering_range_is_labelled_usb() {
+    fn the_label_is_the_link_that_was_established_and_not_the_address() {
+        // The bug. This address is nowhere near 192.168.42/24, and the panel
+        // used to call it Wi-Fi on that basis while the audio went over the
+        // cable. The label now comes from the same LinkKind the packet header
+        // does, so it cannot say anything the wire does not.
         let usb = SessionInfo::new(
             "Speakers",
             Format::stereo_48k(),
-            "192.168.42.129:4010".parse().unwrap(),
+            "10.114.89.244:4010".parse().unwrap(),
+            LinkKind::Wired,
             false,
         );
         assert_eq!(usb.transport, "usb");
+        assert_eq!(usb.transport, LinkKind::Wired.label());
     }
 
     #[test]
-    fn an_ordinary_lan_address_is_labelled_wifi() {
+    fn an_address_in_the_android_range_reached_over_wifi_is_labelled_wifi() {
+        // The mirror of the same mistake: a home network on 192.168.42/24 is
+        // not a phone, and the old guess called it USB.
         let wifi = SessionInfo::new(
             "Speakers",
             Format::stereo_48k(),
-            "192.168.1.5:4010".parse().unwrap(),
+            "192.168.42.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
             false,
         );
         assert_eq!(wifi.transport, "wifi");
@@ -704,9 +732,38 @@ mod tests {
             "Speakers",
             Format::stereo_48k(),
             "239.255.77.77:4010".parse().unwrap(),
+            LinkKind::Multicast,
             false,
         );
         assert_eq!(group.transport, "multicast");
+    }
+
+    #[test]
+    fn a_migration_moves_the_label_and_the_address_together() {
+        // The panel showing the old address beside the new link, or the other
+        // way round, would read as a bug in whichever half looked stale.
+        let mut snapshot = BridgeSnapshot::starting(SessionInfo::new(
+            "Speakers",
+            Format::stereo_48k(),
+            "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
+            false,
+        ));
+
+        snapshot.note_link("10.114.89.244:4010".parse().unwrap(), LinkKind::Wired);
+
+        let session = snapshot.session.expect("the session survives a migration");
+        assert_eq!(session.transport, "usb");
+        assert_eq!(session.target, "10.114.89.244:4010");
+    }
+
+    #[test]
+    fn a_migration_reported_after_the_session_stopped_changes_nothing() {
+        // The watcher and the send loop race the stop button. Neither may
+        // resurrect a session the user has ended.
+        let mut snapshot = BridgeSnapshot::default();
+        snapshot.note_link("10.114.89.244:4010".parse().unwrap(), LinkKind::Wired);
+        assert!(snapshot.session.is_none());
     }
 
     #[test]
@@ -715,6 +772,7 @@ mod tests {
             "Headset",
             Format::stereo_48k(),
             "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
             true,
         );
         assert_eq!(session.sample_rate, 48_000);

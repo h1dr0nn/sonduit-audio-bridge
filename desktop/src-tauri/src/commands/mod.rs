@@ -5,6 +5,7 @@ use crate::bridge::{
 };
 use crate::convert::{self, BackendResult, ConvertPayload};
 use crate::core::window::apply_backdrop;
+use sonduit_transport::pairing::PairingCode;
 use tauri::{AppHandle, State, WebviewWindow};
 
 /// Liveness probe used by the frontend to confirm the Tauri backend is up.
@@ -62,11 +63,23 @@ pub fn bridge_snapshot(state: State<'_, BridgeState>) -> BridgeSnapshot {
 ///
 /// Blocking for as long as the scan window, so it runs off the async runtime.
 #[tauri::command]
-pub async fn bridge_scan(code: String) -> Result<Vec<DiscoveredDevice>, String> {
-    tauri::async_runtime::spawn_blocking(move || bridge::discover(&code))
+pub async fn bridge_scan(
+    state: State<'_, BridgeState>,
+    code: String,
+) -> Result<Vec<DiscoveredDevice>, String> {
+    // Parsed here as well as inside the scan, because the credential has to
+    // outlive the blocking task: it is what proves, later and over a different
+    // path, that a phone answering on a cable is this phone. Without it a
+    // session cannot migrate at all.
+    let credential = PairingCode::parse(&code).ok_or("the pairing code must be six digits")?;
+
+    let found = tauri::async_runtime::spawn_blocking(move || bridge::discover(&code))
         .await
         .map_err(|error| format!("background task failed: {error}"))?
-        .map_err(Into::into)
+        .map_err(String::from)?;
+
+    state.remember(&found, &credential);
+    Ok(found)
 }
 
 /// Generate the pairing invite the connection page renders as a QR code.
@@ -91,11 +104,20 @@ pub async fn bridge_await_pairing(
     state: State<'_, BridgeState>,
 ) -> Result<Option<DiscoveredDevice>, String> {
     let session = state.pairing_session()?;
+    let credential = session.code();
 
-    tauri::async_runtime::spawn_blocking(move || bridge::await_pairing(&session))
+    let found = tauri::async_runtime::spawn_blocking(move || bridge::await_pairing(&session))
         .await
         .map_err(|error| format!("background task failed: {error}"))?
-        .map_err(Into::into)
+        .map_err(String::from)?;
+
+    // The code that proved this device, kept for the same reason the scan
+    // keeps its own: it is the only thing that can later prove the phone on a
+    // newly appeared cable is the phone the session is streaming to.
+    if let Some(device) = &found {
+        state.remember(std::slice::from_ref(device), &credential);
+    }
+    Ok(found)
 }
 
 /// Stop waiting, and retire the code that was on screen.

@@ -1,26 +1,6 @@
 import React from 'react';
 import { cn } from '../../utils/cn';
-
-/**
- * Round a reading to the precision the eye can use.
- *
- * A raw double reached the screen as `1557.430087`, which overflowed its tile
- * and implied a precision the measurement does not have. Milliseconds are read
- * whole; a percentage below one still needs its decimals, because 0.4% and
- * 0.0% mean different things.
- */
-function format(value, unit) {
-  if (typeof value !== 'number') return value;
-  if (!Number.isFinite(value)) return '—';
-
-  if (unit === '%') {
-    return value >= 10 ? value.toFixed(0) : value.toFixed(2);
-  }
-  if (unit === 'ppm') {
-    return value.toFixed(1);
-  }
-  return Math.abs(value) >= 10 ? value.toFixed(0) : value.toFixed(1);
-}
+import { formatReading } from '../../utils/readings';
 
 /**
  * Single telemetry readout.
@@ -48,7 +28,7 @@ export function StatTile({ label, value, unit, tone = 'default', className }) {
           tone === 'danger' && hasValue && 'text-danger',
         )}
       >
-        {hasValue ? format(value, unit) : '—'}
+        {hasValue ? formatReading(value, unit) : '—'}
         {hasValue && unit && <span className="ml-1 text-sm font-normal text-ink-soft">{unit}</span>}
       </p>
     </div>

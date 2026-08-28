@@ -170,6 +170,11 @@ export function useBridge() {
         target: options.target ?? null,
         bind: options.bind ?? null,
         screamCompatible: options.screamCompatible ?? false,
+        // What the settings page calls "Preferred transport". The backend
+        // watches the links for the whole session and moves between them on
+        // its own; this only says whether a cable appearing is allowed to
+        // take a working Wi-Fi session away.
+        preferredTransport: options.preferredTransport ?? null,
       },
     });
     // The first event is up to a quarter of a second away, and a button that
