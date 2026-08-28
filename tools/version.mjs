@@ -215,7 +215,7 @@ export function lastReleaseTag() {
   try {
     tags = execFileSync(
       'git',
-      ['tag', '--list', 'v[0-9]*.[0-9]*.[0-9]*', '--merged', 'HEAD', '--sort=-v:refname'],
+      ['tag', '--list', 'release-v[0-9]*.[0-9]*.[0-9]*', '--merged', 'HEAD', '--sort=-v:refname'],
       { encoding: 'utf8' },
     )
       .split('\n')
