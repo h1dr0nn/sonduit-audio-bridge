@@ -1,13 +1,17 @@
 # ADR-008: Versioning, changelogs and release flow
 
 - Status: accepted, with **one correction to the proposed formula**; the branch
-  model and the develop version string were both **amended on 2026-08-28**
+  model, the develop version string and **when the tree version moves** were
+  all **amended on 2026-08-28**
 - Date: 2026-08-27
 - Amended: 2026-08-28, see [Branches](#branches)
 - Amended: 2026-08-28, see [Version strings](#version-strings)
+- Amended: 2026-08-28, see
+  [When the tree version moves](#when-the-tree-version-moves)
 - Supersedes: this ADR's own three-branch model, `main` / `develop` /
-  short-lived branches into `develop`; and its own commit-implied develop
-  version
+  short-lived branches into `develop`; its own commit-implied develop
+  version; and its own rule that the version in the tree moves only when a
+  release is cut
 
 ## Context
 
@@ -53,6 +57,11 @@ As amended, and as it stands:
 > (`1.3.0-dev.42 < 1.3.0`), and a dev build can never be mistaken for a
 > release.
 
+That `unchanged` means the develop build takes the tree version **verbatim**
+rather than applying a bump to it. It is not a claim that the tree version
+itself sits still between releases; see
+[When the tree version moves](#when-the-tree-version-moves).
+
 **Why it changed**, in the maintainer's terms: *if it is develop then make it
 build 1.1.x; only raise it to 2.0 when releasing.*
 
@@ -76,13 +85,102 @@ Two things follow from the version being a decision rather than a computation:
    produced could name two different releases -- and did.
 
 The commit-implied version is not lost: `node tools/version.mjs next` still
-prints it, which is what a maintainer deciding the release version wants. It
-simply no longer names anything on its own.
+prints it, which is what a maintainer deciding the release version wants --
+and, since [When the tree version moves](#when-the-tree-version-moves), what a
+maintainer deciding a mid-development bump reads too, with the caveats recorded
+there. It simply no longer names anything on its own.
 
 **What this amendment does not touch.** The versionCode layout, the dev
 counter, and the changelog policy are unchanged. `N` is still commits since
 the last release, and a develop build still sorts below the release of the
 same version.
+
+### When the tree version moves
+
+**Amended 2026-08-28.** The third amendment of the day, in the same shape as
+the two above: the original rule is kept legible rather than overwritten,
+because it was reasoned, and because what went wrong with it is only visible
+next to it.
+
+As originally decided:
+
+> The number in the tree moves **when a release is cut, and at no other time**.
+> Development does not touch it; a develop build distinguishes itself with the
+> `-dev.N` counter instead, so the release number space is not burned through
+> by ordinary work.
+
+As amended, and as it stands:
+
+> The version in the tree **moves with accumulated work**, by the same
+> Conventional Commits rule the release tooling already applies: a batch of
+> `feat` is a minor bump, a batch of `fix` a patch bump. It stays a deliberate
+> edit in an ordinary commit -- one line in one file, then
+> `node tools/version.mjs sync`. `2.0.0` remains reserved for the first real
+> release, which is the maintainer's call and **is not reached by
+> accumulation**.
+
+**Why the original rule was reasonable.** It keeps the release number space
+clean, it keeps `v1.2.7` unambiguous -- which is the whole of the
+[Context](#context) above -- and it makes the version a decision rather than a
+computation, which is what the [Version strings](#version-strings) amendment
+exists to protect. For a project that releases on any regular cadence it is the
+right rule, and none of that reasoning has been shown wrong.
+
+**What made it wrong here** is one fact the rule did not anticipate: **nothing
+has ever been released.** `git tag --list 'release-v*'` is empty. Under "move
+it at a release" the number therefore never moved at all: the tree sat at
+1.1.0 through five `feat` and nine `fix` commits, and the number on screen and
+in the About panel said nothing whatever about what the build contained. In
+the maintainer's terms: *I have edited so many things and the version still
+hasn't gone up.* **A rule whose correctness depends on releasing regularly is
+the wrong rule for a project that has not released once.**
+
+The change is narrow, and it is worth being precise about how narrow. It is
+not a finding that versions should track commits in general. It is that a
+number nobody ever moves is not a version, it is a constant, and a constant on
+the About panel is worse than no number at all.
+
+**Why the bump was 1.2.0 and not 2.0.0.** `node tools/version.mjs next` prints
+`2.0.0`. It is correct by its own rule and wrong for this decision. Two
+commits in `harmonix-final..HEAD` carry a breaking-change marker:
+
+| Commit | Marker | What it breaks |
+| --- | --- | --- |
+| `81202e9` `chore!` | `BREAKING CHANGE:` footer | nothing. It records that Harmonix SE predates all of this and that Sonduit is not a compatible successor |
+| `ca16f29` `fix(core)!` | `!` on the subject | nothing. It removed an enum variant that could no longer be produced |
+
+No crate is published and no build has shipped, so neither commit breaks
+anything for anybody. Neither should drag the tree to a major, and `2.0.0` is
+spoken for.
+
+**The tooling does not compute this bump for you, and it is not going to be
+made to.** `version.mjs next` answers exactly one question -- what do the
+commits since the last *release* imply, applied to the tree version -- and now
+that the tree version also moves between releases, that range spans commits an
+earlier mid-development bump has already accounted for. So `next` re-counts
+them and compounds: setting the breaking-change markers above aside, the five
+`feat` commits that justified 1.1.0 -> 1.2.0 would imply 1.3.0 from the
+resulting 1.2.0 tree without a single new commit. No command computes a
+"since the last bump" range, and nothing records where the last bump was.
+`next` is therefore a prompt, not an answer: read the range and decide. That is
+the same position the [Version strings](#version-strings) amendment took, for
+the same reason -- the version is a decision, and a tool that guessed it would
+be asserting one nobody made.
+
+**Nothing else in the tooling objects.** Verified against
+`tools/version.mjs` and `.github/workflows/`: `version.mjs check` passes on a
+mid-development bump, `sync` rewrites the four derived files as usual, and both
+tag checks -- `develop.yml` and `release.yml`, each comparing the tag against
+`version.mjs read` -- are checks against the tree version, which is precisely
+the number this amendment moves. A bump mid-development is an ordinary `sync`
+and an ordinary commit.
+
+**What this amendment changes elsewhere.** The version-string formats, the
+versionCode layout and the changelog policy are unchanged. Two things further
+down did change and are corrected in place with a pointer back here: what the
+[dev counter](#the-dev-counter-is-commits-since-the-last-release-not-the-ci-run-number)
+resets on, and what a version that moves upward mid-development does to the
+[versionCode](#lowering-the-version-forces-a-reinstall-on-every-phone).
 
 ### The version lives in exactly one place
 
@@ -197,6 +295,35 @@ on every device carrying it, and the app data goes with it. That is cheap while
 nothing has been published, and it is the reason a version is lowered then or
 not at all.
 
+**Upward is the direction the version now moves, and it is the safe one.**
+Since [When the tree version moves](#when-the-tree-version-moves) the tree
+version rises during development, and every rise raises the versionCode with
+it. The phone was carrying `10100999` from the 1.1.0 tree; a synced 1.2.0 tree
+stamps `10200999`, which installs over it with nothing to uninstall.
+Monotonicity survives a mid-development bump for exactly the reason it survives
+a release: the smallest bump, a patch, adds 1_000, and `N` can only ever add
+998, so a later version cannot produce a lower code than an earlier one however
+far the counter has run. Checked:
+
+```text
+1.1.0-dev.38  -> 10100038
+1.2.0-dev.75  -> 10200075
+1.2.1-dev.998 -> 10201998
+1.2.2-dev.0   -> 10202000
+```
+
+That `10200999` is the release slot of a version this project does not intend
+to release, since `2.0.0` is reserved for the first one. It costs nothing:
+codes are spent and never reused, and the ceiling is 209 majors away.
+
+One wrinkle, and it is not new. `version.mjs sync` with no argument stamps the
+plain tree version, which takes the release slot, so a locally built install of
+1.2.0 carries `10200999` while a CI develop build of the same 1.2.0 carries
+`10200075`. The develop APK will not install over the local one. That is the
+layout working as designed -- the release slot is the top of its version block
+-- and a tree bump clears it, because the next block begins above the whole of
+the last one.
+
 ### The dev counter is commits since the last release, not the CI run number
 
 The obvious choice, `github.run_number`, is wrong twice over. It grows without
@@ -208,6 +335,22 @@ makes every develop build fail.
 Commits since the last release is monotonic within a release cycle and resets
 at every release, which is exactly the property the field needs. Exceeding 998
 commits in one cycle throws with a clear message rather than wrapping.
+
+**With no release tag the counter has never reset, and a tree bump does not
+reset it.** This is worth naming because it is easy to assume otherwise now
+that the tree version moves. `lastReleaseTag()` lists
+`release-v[0-9]*.[0-9]*.[0-9]*` and there is no such tag, so `releaseRange()`
+falls back to `harmonix-final..HEAD` and `N` is every Sonduit commit there has
+ever been. Checked: `version.mjs dev` prints `1.2.0-dev.75+c44bf47b` against
+the 1.2.0 tree, with 75 commits in that range. Moving the tree version changes
+the **base** of the string and nothing else; the counter is derived from the
+range, and the range is anchored to a release tag, not to the version. So the
+"release cycle" the 998 budget is measured against is currently the whole life
+of the project -- 75 spent -- and only a `release-v` tag will reset it.
+
+`N` also counts **commits, not builds**. It advances with every commit whether
+or not anything is built, which is a faster rate than a per-tag build count.
+See the [Consequences](#consequences).
 
 The cost: **a develop build cannot be reproduced locally with the same version
 string** unless the same commits are present. Accepted, because the embedded
@@ -322,6 +465,11 @@ publishes. The version in `Cargo.toml` is bumped in an ordinary commit before
 the tag; `release.yml` refuses the tag if the two disagree, so the two cannot
 drift apart silently.
 
+That pre-tag bump is now the last of several rather than the only edit the
+number ever sees, and it is the one that carries the release decision: for the
+first release it is what reaches `2.0.0`, which accumulation deliberately does
+not. See [When the tree version moves](#when-the-tree-version-moves).
+
 There was briefly a `release-pr.yml` that computed the bump, drafted the
 changelog and kept a `Release vX.Y.Z` pull request open from a `release/vX.Y.Z`
 branch. It was removed. Automating the bump bought little -- it is one line in
@@ -332,14 +480,28 @@ integration branch is gone too now, for the reason above; the workflow, the
 
 ## Consequences
 
-- The release version is edited by hand, once, in `Cargo.toml`. Everything
-  else is derived from it, and CI fails if the derived files disagree or if the
-  tag disagrees with the file.
-- 998 develop builds per release cycle is a real ceiling, and
-  `devCounter` in `tools/version.mjs` throws with a clear message rather than
-  wrapping into the release slot. At one build per `develop-vX.Y.Z` tag -- a
-  deliberate act, not a push -- reaching it is implausible, and cutting a
-  release resets it.
+- The version is edited by hand in `Cargo.toml`: before a release tag, and
+  whenever accumulated work warrants a bump. See
+  [When the tree version moves](#when-the-tree-version-moves). Everything else
+  is derived from it, and CI fails if the derived files disagree or if the tag
+  disagrees with the file.
+- **The number on screen now means something between releases.** That is the
+  point of the amendment and it is the consequence that matters: a build's
+  version moves with what went into it, instead of being frozen at the last
+  release -- which here was none.
+- **998 is a commit budget, not a build budget, and nothing has reset it yet.**
+  `devCounter` in `tools/version.mjs` counts commits since the last *release*
+  tag and throws with a clear message rather than wrapping into the release
+  slot. There is no release tag, so the range is `harmonix-final..HEAD` and the
+  count stands at 75. A mid-development version bump does **not** reset it;
+  only cutting a release does. 998 is still far off, but it is being spent by
+  ordinary commits rather than by deliberate build tags, which is faster than
+  this document originally assumed.
+- **`version.mjs next` is now a prompt rather than an answer.** Its range is
+  "since the last release", so after a mid-development bump it re-counts
+  commits that bump already accounted for, and it reads the two harmless
+  breaking-change markers in the current range as a major. Left alone
+  deliberately: the version is a decision, not a computation.
 - **A version that goes down cannot be installed over one that went up.** The
   versionCode follows the version, Android refuses a downgrade, and the fix is
   a manual uninstall on every device holding the higher build -- not a change
