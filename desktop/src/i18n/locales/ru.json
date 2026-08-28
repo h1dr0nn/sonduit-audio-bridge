@@ -70,6 +70,7 @@
   "connection.pairingHint": "Шесть цифр, показанных в приложении Sonduit на телефоне",
   "connection.qrAddresses": "Адреса в этом коде",
   "connection.qrEmpty": "Кода пока нет. Нажмите «Показать код сопряжения».",
+  "connection.qrExpires": "Код истечёт через {{seconds}} с",
   "connection.qrHint": "Откройте Sonduit на телефоне, нажмите «Сканировать» и наведите камеру на этот код.",
   "connection.qrPaired": "Телефон подключён",
   "connection.qrTimeout": "Никто не отсканировал код вовремя. Покажите новый код и попробуйте снова.",

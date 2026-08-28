@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FiMaximize,
   FiPlay,
@@ -9,6 +9,7 @@ import {
 } from 'react-icons/fi';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { Dialog } from '../components/ui/Dialog';
 import { QrCode } from '../components/ui/QrCode';
 import { StatTile } from '../components/ui/StatTile';
 import { TextField } from '../components/ui/TextField';
@@ -22,6 +23,15 @@ import { useTranslation } from '../i18n';
  * which would leave the start button unable to say what it would do.
  */
 const NO_TARGET = { kind: 'multicast', value: null };
+
+/**
+ * How long an invite stays open, in seconds.
+ *
+ * Matches the window `bridge::await_pairing` waits for. Shown as a countdown
+ * so the code visibly has a life: one that never expires is a secret left on
+ * a screen indefinitely.
+ */
+const PAIRING_WINDOW_SECONDS = 90;
 
 export function ConnectionPage() {
   const { t } = useTranslation();
@@ -45,6 +55,7 @@ export function ConnectionPage() {
   const [scanning, setScanning] = useState(false);
   const [invitation, setInvitation] = useState(null);
   const [pairingState, setPairingState] = useState('idle');
+  const [expiresIn, setExpiresIn] = useState(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState(null);
 
@@ -79,6 +90,7 @@ export function ConnectionPage() {
   const handleShowInvite = useCallback(async () => {
     setFailure(null);
     setPairingState('waiting');
+    setExpiresIn(PAIRING_WINDOW_SECONDS);
     try {
       const next = await invite();
       setInvitation(next);
@@ -96,8 +108,41 @@ export function ConnectionPage() {
       setFailure(String(reason));
       setPairingState('idle');
       setInvitation(null);
+    } finally {
+      setExpiresIn(null);
     }
   }, [invite, awaitPairing]);
+
+  /**
+   * Closing the dialog ends the code's life.
+   *
+   * A pairing code is a shared secret with a purpose; one that stays valid
+   * after it has been used, or after the user has stopped looking at it, is a
+   * secret sitting on a screen for no reason. The backend generates a fresh
+   * one for every invite, so throwing this away costs nothing.
+   */
+  const handleCloseInvite = useCallback(() => {
+    setInvitation(null);
+    setPairingState('idle');
+    setExpiresIn(null);
+  }, []);
+
+  // Counts the window down so the user can see the code is not permanent.
+  // Purely a display: the backend stops listening on its own.
+  useEffect(() => {
+    if (pairingState !== 'waiting' || expiresIn === null) return undefined;
+    if (expiresIn <= 0) return undefined;
+    const timer = setTimeout(() => setExpiresIn((left) => (left ?? 1) - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [pairingState, expiresIn]);
+
+  // A code that has been used has done its job. Leaving the dialog open with a
+  // live code invites a second, unwanted device.
+  useEffect(() => {
+    if (pairingState !== 'paired') return undefined;
+    const timer = setTimeout(handleCloseInvite, 1500);
+    return () => clearTimeout(timer);
+  }, [pairingState, handleCloseInvite]);
 
   const handleStart = useCallback(async () => {
     setBusy(true);
@@ -164,18 +209,28 @@ export function ConnectionPage() {
       )}
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,1fr)_minmax(300px,380px)] gap-4">
-        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4 pr-1">
+        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4">
         <Card
           title={t('connection.devices')}
           actions={
-            <Button
-              size="sm"
-              icon={FiRefreshCw}
-              disabled={!available || scanning || pairing.replace(/\D/g, '').length !== 6}
-              onClick={handleScan}
-            >
-              {scanning ? t('connection.scanning') : t('connection.scan')}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                icon={FiMaximize}
+                disabled={!available}
+                onClick={handleShowInvite}
+              >
+                {t('connection.showQr')}
+              </Button>
+              <Button
+                size="sm"
+                icon={FiRefreshCw}
+                disabled={!available || scanning || pairing.replace(/\D/g, '').length !== 6}
+                onClick={handleScan}
+              >
+                {scanning ? t('connection.scanning') : t('connection.scan')}
+              </Button>
+            </div>
           }
         >
           {devices.length === 0 ? (
@@ -237,51 +292,9 @@ export function ConnectionPage() {
           </div>
         </Card>
 
-        <Card
-          title={t('connection.pairPhone')}
-          subtitle={t('connection.qrHint')}
-          actions={
-            <Button
-              size="sm"
-              icon={FiMaximize}
-              disabled={!available || pairingState === 'waiting'}
-              onClick={handleShowInvite}
-            >
-              {invitation ? t('connection.newQr') : t('connection.showQr')}
-            </Button>
-          }
-        >
-          {invitation ? (
-            <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start sm:gap-6">
-              <QrCode payload={invitation.payload} alt={t('connection.showQr')} />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs uppercase tracking-wide text-ink-faint">
-                  {t('connection.qrAddresses')}
-                </p>
-                <ul className="mt-1 flex flex-col gap-0.5">
-                  {invitation.addresses.map((address) => (
-                    <li key={address} className="truncate font-mono text-sm text-ink-soft">
-                      {address}
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-3 text-sm text-ink">
-                  {pairingState === 'waiting' && t('connection.qrWaiting')}
-                  {pairingState === 'paired' && t('connection.qrPaired')}
-                  {pairingState === 'timeout' && t('connection.qrTimeout')}
-                </p>
-              </div>
-            </div>
-          ) : (
-            <p className="py-6 text-center text-sm text-ink-faint">
-              {t('connection.qrEmpty')}
-            </p>
-          )}
-        </Card>
-
         </div>
 
-        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4 pr-1">
+        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4">
         <Card tone="accent" title={t('connection.session')}>
           <div className="mt-auto flex flex-col gap-3">
             <div className="flex items-center gap-2 opacity-90">
@@ -326,6 +339,44 @@ export function ConnectionPage() {
         </Card>
         </div>
       </div>
+
+      <Dialog
+        open={invitation !== null}
+        title={t('connection.pairPhone')}
+        confirmLabel={t('close')}
+        onClose={handleCloseInvite}
+      >
+        <div className="flex flex-col items-center gap-4">
+          <QrCode payload={invitation?.payload ?? ''} alt={t('connection.showQr')} />
+
+          <p className="text-center text-sm text-ink-soft">{t('connection.qrHint')}</p>
+
+          <div className="w-full">
+            <p className="text-xs uppercase tracking-wide text-ink-faint">
+              {t('connection.qrAddresses')}
+            </p>
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {(invitation?.addresses ?? []).map((address) => (
+                <li key={address} className="truncate font-mono text-sm text-ink-soft">
+                  {address}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <p className="text-center text-sm text-ink">
+            {pairingState === 'waiting' && t('connection.qrWaiting')}
+            {pairingState === 'paired' && t('connection.qrPaired')}
+            {pairingState === 'timeout' && t('connection.qrTimeout')}
+          </p>
+
+          {expiresIn !== null && pairingState === 'waiting' && (
+            <p className="text-xs text-ink-faint">
+              {t('connection.qrExpires', { seconds: expiresIn })}
+            </p>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }

@@ -70,6 +70,7 @@
   "connection.pairingHint": "휴대폰의 Sonduit 앱에 표시된 여섯 자리 숫자",
   "connection.qrAddresses": "이 코드에 담긴 주소",
   "connection.qrEmpty": "아직 코드가 없습니다. 페어링 코드 표시를 누르세요.",
+  "connection.qrExpires": "이 코드는 {{seconds}}초 후 만료됩니다",
   "connection.qrHint": "휴대폰에서 Sonduit을 열고 스캔을 누른 뒤 이 코드에 카메라를 비추세요.",
   "connection.qrPaired": "휴대폰이 페어링되었습니다",
   "connection.qrTimeout": "시간 안에 스캔되지 않았습니다. 새 코드를 표시하고 다시 시도하세요.",

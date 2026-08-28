@@ -70,6 +70,7 @@
   "connection.pairingHint": "Sáu chữ số hiện trên ứng dụng Sonduit ở điện thoại",
   "connection.qrAddresses": "Địa chỉ trong mã này",
   "connection.qrEmpty": "Chưa có mã. Bấm Hiện mã ghép nối để tạo.",
+  "connection.qrExpires": "Mã hết hạn sau {{seconds}} giây",
   "connection.qrHint": "Mở Sonduit trên điện thoại, chạm Quét, rồi hướng camera vào mã này.",
   "connection.qrPaired": "Đã ghép nối điện thoại",
   "connection.qrTimeout": "Không có điện thoại nào quét kịp. Hãy hiện mã mới và thử lại.",

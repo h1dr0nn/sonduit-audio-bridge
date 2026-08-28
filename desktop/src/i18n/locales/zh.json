@@ -70,6 +70,7 @@
   "connection.pairingHint": "手机上 Sonduit 应用显示的六位数字",
   "connection.qrAddresses": "此码包含的地址",
   "connection.qrEmpty": "还没有配对码。点击显示配对码。",
+  "connection.qrExpires": "此代码将在 {{seconds}} 秒后失效",
   "connection.qrHint": "在手机上打开 Sonduit，点按扫描，然后把摄像头对准此码。",
   "connection.qrPaired": "手机已配对",
   "connection.qrTimeout": "没有手机及时扫描。请显示新的码后重试。",

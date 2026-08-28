@@ -70,6 +70,7 @@
   "connection.pairingHint": "Les six chiffres affichés dans Sonduit sur le téléphone",
   "connection.qrAddresses": "Adresses contenues dans ce code",
   "connection.qrEmpty": "Pas encore de code. Touchez Afficher le code de couplage.",
+  "connection.qrExpires": "Ce code expire dans {{seconds}} s",
   "connection.qrHint": "Ouvrez Sonduit sur le téléphone, touchez Scanner, puis dirigez l’appareil photo vers ce code.",
   "connection.qrPaired": "Téléphone associé",
   "connection.qrTimeout": "Aucun téléphone n’a scanné à temps. Affichez un nouveau code et réessayez.",

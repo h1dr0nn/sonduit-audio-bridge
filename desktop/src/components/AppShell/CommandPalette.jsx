@@ -193,13 +193,16 @@ export function CommandPalette({
         * the titlebar instead leaves a visible seam. */}
       <div className="modal-backdrop" role="presentation" onMouseDown={onClose} />
 
-      {/* Positioned rather than flex-centred, so the panel keeps a fixed
-        * distance below the titlebar regardless of its own height. */}
+      {/* Centred in the area below the titlebar, like every other overlay
+        * here. Centring against the whole window instead puts the panel
+        * visibly high, because the titlebar overlays the top of that area and
+        * is not part of it. */}
+      <div className="modal-center">
       <div
         role="dialog"
         aria-modal="true"
         aria-label={t('nav.commandPalette')}
-        className="modal-panel w-[560px] max-w-[90vw] overflow-hidden rounded-card"
+        className="modal-surface w-[560px] max-w-[90vw] overflow-hidden rounded-card"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-line-soft px-4">
@@ -270,6 +273,7 @@ export function CommandPalette({
           <span>{t('palette.navigateHint')}</span>
           <span className="ml-auto">Esc</span>
         </div>
+      </div>
       </div>
     </>
   );

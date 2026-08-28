@@ -87,7 +87,7 @@ function Shell() {
         {/* Scrolls for the pages that are a plain stack of cards. The editor
           * claims the height with `h-full` and scrolls inside its own columns,
           * so it never reaches this scrollbar. */}
-        <main className="scroll-area min-w-0 flex-1 pr-1">
+        <main className="scroll-area min-w-0 flex-1">
           {page === 'connection' && <ConnectionPage />}
           {page === 'telemetry' && <TelemetryPage />}
           {page === 'editor' && <EditorPage />}
