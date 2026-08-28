@@ -25,13 +25,21 @@ function RailButton({ id, Icon, label, active, expanded, onSelect }) {
         aria-label={label}
         aria-current={active ? 'page' : undefined}
         className={cn(
-          'flex h-11 items-center transition-colors duration-fast ease-out',
+          'rail-item flex h-11 items-center transition-colors duration-fast ease-out',
           expanded ? 'w-full gap-3 rounded-[14px] px-3' : 'w-11 justify-center rounded-pill',
-          active ? 'bg-white text-[#17171a]' : 'text-white/55 hover:bg-white/10 hover:text-white/85',
+          // Colour lives in index.css with the rest of the window chrome: it is
+          // all token work, and a utility class cannot spell an accent mix.
+          active && 'rail-item--active',
         )}
       >
-        <Icon className="h-[18px] w-[18px] flex-none" strokeWidth={1.9} />
-        {expanded && <span className="truncate text-sm font-medium">{label}</span>}
+        <Icon className="h-[18px] w-[18px] flex-none" strokeWidth={2} />
+        {/* The weight carries the state as well as the fill does, so the rail
+          * still reads at a glance when the accent is a pale one. */}
+        {expanded && (
+          <span className={cn('truncate text-sm', active ? 'font-semibold' : 'font-medium')}>
+            {label}
+          </span>
+        )}
       </button>
     </Tooltip>
   );

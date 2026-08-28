@@ -19,7 +19,24 @@
   --surface-app: rgba(244, 243, 240, 0.82);
   --surface-card: #ffffff;
   --surface-sunken: #f1f0ed;
-  --surface-rail: #1b1b1d;
+  /* The rail is a surface of its own: one deliberate step BELOW the card, not
+   * a different material. It used to be near-black in both themes, which is
+   * what made it read as a slab bolted to the side of a light window.
+   *
+   * The step is measured in CIE L*, because that is the axis the eye reads and
+   * because the two themes have very different room to move in:
+   *
+   *   light   card 100.0  ->  rail 92.7   step 7.3   (shell sits at 95.8)
+   *   dark    card  17.3  ->  rail 13.9   step 3.4   (shell sits at  8.9)
+   *
+   * Light has the whole range below the shell to fall into, so the rail can
+   * drop past the shell and still be nowhere near dark. Dark has 8.4 L* in
+   * total between the card and the shell, and the shell is the floor -- go
+   * below it and the rail stops being a surface and becomes a hole in the
+   * window, which is exactly what the old #131316 was. So the dark step is
+   * about half the light one, and lands the rail midway between the two
+   * surfaces it sits amongst rather than at a fixed offset from either. */
+  --surface-rail: #eceae6;
   --surface-invert: #1b1b1d;
 
   /* Text */
@@ -29,6 +46,13 @@
   --text-on-invert: #f7f7f5;
   --text-on-accent: #ffffff;
 
+  /* Idle text on the rail. One notch below --text-secondary, and needed for
+   * one reason only: --text-secondary is calibrated against the card, and the
+   * rail is deliberately below it, which costs 0.8 of a contrast ratio and
+   * drops the labels under 4.5:1. The dark theme is not symmetric here and
+   * gets no notch -- see .dark. */
+  --rail-ink: #66666d;
+
   /* Lines */
   --line-soft: rgba(23, 23, 26, 0.07);
   --line-strong: rgba(23, 23, 26, 0.12);
@@ -36,6 +60,14 @@
   /* Accent — user configurable, seeded by useSettings */
   --accent-color: #7c93e8;
   --accent-soft: rgba(124, 147, 232, 0.14);
+
+  /* The rail's "you are here" fill, mixed from whichever accent is set.
+   *
+   * Not --accent-soft: SettingsContext pins that at 16% for both themes, and
+   * 16% of an accent over the dark card is not visible. The two themes need
+   * different strengths to read as the same weight, which a single token
+   * written by JS cannot give. */
+  --rail-active: color-mix(in srgb, var(--accent-color) 30%, transparent);
 
   /* Semantic */
   --ok: #2fa96b;
@@ -84,7 +116,7 @@
   --surface-app: rgba(26, 26, 30, 0.70);
   --surface-card: #2a2a31;
   --surface-sunken: #1f1f25;
-  --surface-rail: #131316;
+  --surface-rail: #232329;
   --surface-invert: #f2f1ee;
 
   --text-primary: #f4f4f2;
@@ -92,10 +124,17 @@
   --text-tertiary: #74747c;
   --text-on-invert: #17171a;
 
+  /* No notch here. Stepping a surface down costs contrast in the light theme
+   * and GAINS it in the dark one, so the same secondary ink that reads at
+   * 5.6:1 on the dark card reads at 6.2:1 on the rail below it. Darkening it
+   * further would be a fix for a problem this theme does not have. */
+  --rail-ink: var(--text-secondary);
+
   --line-soft: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.14);
 
   --accent-soft: rgba(124, 147, 232, 0.2);
+  --rail-active: color-mix(in srgb, var(--accent-color) 38%, transparent);
 
   --titlebar-text: rgba(255, 255, 255, 0.88);
   --titlebar-text-dim: rgba(255, 255, 255, 0.5);
@@ -363,9 +402,46 @@ body {
 
 /* The rail sets its own radius: a full pill reads well at 56px wide, but at
  * 208px the same 999px radius bulges into a stadium and the active item spills
- * past the curve. See Rail.jsx. */
+ * past the curve. See Rail.jsx.
+ *
+ * It takes the card's hairline and no shadow, for the same reasons `.card`
+ * does; only its fill is its own, and that fill is a measured step below the
+ * card rather than a colour from somewhere else. See --surface-rail. */
 .rail {
   background: var(--surface-rail);
+  border: 1px solid var(--line-soft);
+}
+
+/* One navigation item.
+ *
+ * Here rather than in utilities, the way the titlebar buttons are: these are
+ * chrome, and every colour they use has to come from a token. The version this
+ * replaced hardcoded `bg-white`, `#17171a` and three shades of `white/NN`,
+ * which is what made the rail the one part of the window that ignored the
+ * theme. */
+.rail-item {
+  color: var(--rail-ink);
+  background: transparent;
+}
+
+/* The rail sits below the card, so an item under the pointer LIFTS to card
+ * level. Hovering downwards, the way a menu row on a card does, would push it
+ * towards the shell and read as the item receding. */
+.rail-item:hover {
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+
+/* "You are here" is a tint of the user's accent, never a filled slab.
+ *
+ * The label and icon stay at --text-primary, so the contrast the item depends
+ * on is ink against a near-card background and does not move when the accent
+ * does. That matters: Settings offers six accents and half of them -- amber,
+ * green, red -- are far too light to carry text or a glyph at their full
+ * strength. The hue identifies the item; the ink keeps it readable. */
+.rail-item--active {
+  background: var(--rail-active);
+  color: var(--text-primary);
 }
 
 /* ---- Scrollbars ---- */
