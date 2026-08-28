@@ -101,7 +101,8 @@ fn a_receiver_that_answers_is_measured() {
     let started = Instant::now();
 
     let timestamp = 12_345_u32;
-    round_trip.record_send(timestamp, started.elapsed().as_nanos() as u64);
+    let sent_nanos = started.elapsed().as_nanos() as u64;
+    round_trip.record_send(timestamp, sent_nanos);
     socket.send_to(&timestamp.to_le_bytes(), target).unwrap();
 
     let mut buffer = [0_u8; FEEDBACK_BYTES];
@@ -115,14 +116,19 @@ fn a_receiver_that_answers_is_measured() {
     assert_eq!(report.depth_ms(), 28.4);
     assert!(report.playing);
 
+    let echoed_nanos = started.elapsed().as_nanos() as u64;
     let measured = round_trip
-        .observe_echo(report.echo, started.elapsed().as_nanos() as u64)
+        .observe_echo(report.echo, echoed_nanos)
         .expect("the echo should match the send");
 
-    // Loopback, so this is small but never negative and never absurd.
-    assert!(
-        (0.0..200.0).contains(&measured),
-        "round trip measured as {measured} ms"
+    // The echo has to be matched back to the send this test recorded, and the
+    // answer is the span between the two readings it supplied. Bounding the
+    // span itself would only bound how fast the machine happened to be, and
+    // says nothing about whether the right send was found.
+    assert_eq!(
+        measured,
+        (echoed_nanos - sent_nanos) as f64 / 1_000_000.0,
+        "the round trip is not the span between the send and the echo"
     );
     assert!(round_trip.round_trip_ms().is_some());
     assert_eq!(round_trip.samples(), 1);
@@ -155,14 +161,36 @@ fn a_receiver_that_dawdles_is_not_charged_for_the_network() {
         .observe_echo(report.echo, started.elapsed().as_nanos() as u64)
         .unwrap();
 
+    // Without this the arithmetic below would balance just as well against a
+    // hold of zero, and the test would pass with the field lost somewhere
+    // between the responder and the decoder.
+    assert_eq!(
+        u128::from(report.hold_ms),
+        hold.as_millis(),
+        "the declared hold did not survive encode, the wire and decode"
+    );
+
+    // The only clock reading asserted on, and it is one-sided by design: the
+    // responder really does sleep, so a busy machine can lengthen the round
+    // trip but never shorten it below the hold. An upper bound here would be
+    // a bound on how fast the machine happened to be, which is not a property
+    // of anything under test.
     assert!(
         measured >= 55.0,
         "the round trip should include the hold: {measured} ms"
     );
+
+    // The property itself is arithmetic, so it is asserted as arithmetic: the
+    // whole round trip is the network twice over plus the receiver's own
+    // hold, leaving nothing of the hold charged to the link. Load moves
+    // `measured` and `network` together, so this holds exactly at any speed -
+    // and exactly is meant literally, since doubling a binary float undoes the
+    // halving inside one_way_ms with no rounding.
     let network = one_way_ms(measured, report.hold_ms);
-    assert!(
-        network < 20.0,
-        "the receiver's own {} ms was charged to the network: {network} ms one way",
+    assert_eq!(
+        2.0 * network,
+        measured - f64::from(report.hold_ms),
+        "the receiver's own {} ms was charged to the network: round trip {measured} ms, {network} ms one way",
         report.hold_ms
     );
 }
