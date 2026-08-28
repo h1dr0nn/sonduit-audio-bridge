@@ -69,33 +69,6 @@ pub trait PcmSource: Send {
     fn fill(&mut self, out: &mut [i16], frames: usize) -> usize;
 }
 
-/// What the audio callback actually holds.
-///
-/// Separate from [`PcmSource`] because the callback has shared access, not
-/// exclusive access: the receive thread is writing into the same buffer. The
-/// blanket implementation below supplies the only sound way to bridge the two,
-/// which is a lock the callback refuses to wait on.
-pub trait CallbackSource: Send + Sync {
-    /// Fill `out` with interleaved samples, returning the frames written.
-    ///
-    /// Must return promptly. Returning zero is always allowed and is heard as
-    /// a brief dropout, which is far better than the dropout caused by making
-    /// a realtime thread wait.
-    fn fill(&self, out: &mut [i16], frames: usize) -> usize;
-}
-
-impl<T: PcmSource> CallbackSource for std::sync::Mutex<T> {
-    fn fill(&self, out: &mut [i16], frames: usize) -> usize {
-        // try_lock, not lock. Blocking a realtime thread on a normal-priority
-        // thread's work is the priority inversion this whole design exists to
-        // avoid; a missed block is silence, an inverted one is a stall.
-        match self.try_lock() {
-            Ok(mut source) => source.fill(out, frames),
-            Err(_) => 0,
-        }
-    }
-}
-
 /// Counters the audio callback maintains, read by the UI thread.
 ///
 /// Atomics rather than a mutex: the UI reading telemetry must never be able to
@@ -104,7 +77,7 @@ impl<T: PcmSource> CallbackSource for std::sync::Mutex<T> {
 pub struct PlaybackCounters {
     /// Frames handed to the device.
     pub frames_played: AtomicU64,
-    /// Frames of silence written because the source had nothing.
+    /// Frames of silence written because the queue had nothing.
     pub frames_underrun: AtomicU64,
     /// Times the callback ran.
     pub callbacks: AtomicU64,
@@ -117,7 +90,7 @@ impl PlaybackCounters {
         self.frames_played.load(Ordering::Relaxed)
     }
 
-    /// Frames of silence emitted to cover an empty source.
+    /// Frames of silence emitted to cover an empty queue.
     #[must_use]
     pub fn frames_underrun(&self) -> u64 {
         self.frames_underrun.load(Ordering::Relaxed)
@@ -132,6 +105,25 @@ impl PlaybackCounters {
         }
         self.frames_underrun() as f64 * 100.0 / played as f64
     }
+}
+
+/// Pull one packet's worth out of a jitter buffer, ready to be queued.
+///
+/// Separate from [`PcmSource`] because this runs on the receive thread now,
+/// not in the callback: the callback reads a lock-free queue and never touches
+/// the jitter buffer at all.
+pub fn drain_packet(source: &mut JitterSource, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    let frames = source.frames_per_packet();
+    let mut samples = vec![0_i16; frames * source.format().channels as usize];
+    let written = source.fill(&mut samples, frames);
+    if written == 0 {
+        return false;
+    }
+    for sample in &samples[..written * source.format().channels as usize] {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    true
 }
 
 /// Drains a jitter buffer into the audio callback.
@@ -187,6 +179,22 @@ impl JitterSource {
     #[must_use]
     pub const fn buffer(&self) -> &JitterBuffer {
         &self.buffer
+    }
+
+    /// The format this source produces.
+    #[must_use]
+    pub const fn format(&self) -> Format {
+        self.format
+    }
+
+    /// Frames in one packet at this format.
+    #[must_use]
+    pub fn frames_per_packet(&self) -> usize {
+        let frame = self.format.bytes_per_frame();
+        if frame == 0 {
+            return 0;
+        }
+        sonduit_core::format::PCM_PAYLOAD_BYTES / frame
     }
 
     /// Frames of concealment emitted because a packet never arrived.

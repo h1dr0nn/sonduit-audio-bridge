@@ -24,6 +24,7 @@
 pub mod conceal;
 pub mod drift;
 pub mod format;
+pub mod handoff;
 pub mod jitter;
 pub mod metrics;
 pub mod packet;

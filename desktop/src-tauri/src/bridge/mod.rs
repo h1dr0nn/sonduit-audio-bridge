@@ -474,11 +474,6 @@ pub fn start(
     };
 
     let socket = UdpSocket::bind(bind).map_err(|error| BridgeError::Network(error.to_string()))?;
-    // The receiver answers on this same socket. Non-blocking, because the
-    // capture loop cannot afford to wait for a report that may never come.
-    socket
-        .set_nonblocking(true)
-        .map_err(|error| BridgeError::Network(error.to_string()))?;
     if target.ip().is_multicast() {
         socket
             .set_multicast_ttl_v4(1)
@@ -645,6 +640,15 @@ pub fn capture_to_socket(
     let mut round_trip = RoundTrip::new();
     let mut feedback_buffer = [0_u8; FEEDBACK_BYTES];
     let started = std::time::Instant::now();
+
+    // Set here rather than trusted from the caller. This loop reads the socket
+    // for the receiver's reports, and on a blocking socket that read waits
+    // forever the moment there is nothing to read. A caller that built the
+    // socket itself sent exactly one packet and then stopped, which looked
+    // from the far end like a sender that had crashed.
+    if let Err(error) = socket.set_nonblocking(true) {
+        counters.record_send_error(&format!("could not set the socket non-blocking: {error}"));
+    }
 
     while !stop.load(Ordering::Relaxed) {
         pcm.clear();

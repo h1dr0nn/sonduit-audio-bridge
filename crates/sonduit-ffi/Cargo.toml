@@ -22,6 +22,14 @@ thiserror.workspace = true
 # instead of two that can disagree, and the compiler checks it.
 uniffi = { version = "0.29", features = ["cli"] }
 
+# Logging, Android only. A receiver that fails on a device with nothing in
+# logcat cannot be diagnosed at all: the first real session on hardware showed
+# a buffer filling to its ceiling with no clue why, and there was nothing to
+# read.
+[target.'cfg(target_os = "android")'.dependencies]
+log = "0.4"
+android_logger = { version = "0.14", default-features = false }
+
 [build-dependencies]
 uniffi = { version = "0.29", features = ["build"] }
 

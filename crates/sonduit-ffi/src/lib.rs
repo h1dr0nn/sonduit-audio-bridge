@@ -26,13 +26,51 @@ use sonduit_core::jitter::{JitterBuffer, JitterConfig, Transport};
 use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
 use sonduit_core::resample::DriftResampler;
-use sonduit_playback_android::{CallbackSource, JitterSource};
+use sonduit_playback_android::{drain_packet, JitterSource};
 use sonduit_transport::feedback::{Feedback, FEEDBACK_BYTES, FEEDBACK_INTERVAL_MS};
 use sonduit_transport::invite::Invite;
 use sonduit_transport::pairing::PairingCode;
 use sonduit_transport::{classify, discovery, Wire, DEFAULT_PORT};
 
 uniffi::setup_scaffolding!();
+
+/// Send a line to logcat.
+///
+/// The first session on real hardware showed a jitter buffer filling to its
+/// 1536 ms ceiling with the correction pinned at its limit, and logcat had
+/// nothing in it at all. Without this there is no way to tell an audio device
+/// that refused to open from one that opened and never asked for a sample.
+#[cfg(target_os = "android")]
+macro_rules! note {
+    ($($arg:tt)*) => { log::info!($($arg)*) };
+}
+
+/// Off Android there is no logcat, and the desktop tests read state directly.
+#[cfg(not(target_os = "android"))]
+macro_rules! note {
+    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
+}
+
+/// Route Rust logging into logcat under one tag.
+///
+/// Called from the constructor rather than a separate init the caller could
+/// forget: a log that only works when someone remembered to switch it on is a
+/// log that is off during the failure worth reading.
+#[cfg(target_os = "android")]
+fn install_logging() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Info)
+                .with_tag("SonduitFfi"),
+        );
+    });
+}
+
+#[cfg(not(target_os = "android"))]
+fn install_logging() {}
 
 /// How long a receive blocks before checking whether it should stop.
 ///
@@ -47,6 +85,14 @@ const RECV_TIMEOUT: Duration = Duration::from_millis(250);
 /// devices and does not change from moment to moment, so correcting faster
 /// would only chase jitter.
 const PACKETS_PER_CORRECTION: u32 = 40;
+
+/// Packets moved from the jitter buffer to the audio queue per packet received.
+///
+/// Above one so a buffer that has fallen behind can catch up, and small enough
+/// that catching up cannot starve the socket. The loop it bounds cannot be
+/// written as "drain until empty": a jitter buffer conceals a gap rather than
+/// reporting one, so it will always produce another packet if asked.
+const DRAIN_PER_PACKET: usize = 3;
 
 /// Bridge lifecycle state, mirrored into the Android UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Enum)]
@@ -144,6 +190,12 @@ struct Shared {
     state: Mutex<BridgeState>,
     malformed: Mutex<u64>,
     format: Mutex<Option<Format>>,
+    /// The producer half of the handoff to the audio callback.
+    ///
+    /// Written only by the receive thread. The callback holds the other half
+    /// and takes no lock at all. A mutex shared with the callback is what
+    /// produced 1536 ms of latency with crackle on the first real device.
+    queue: Mutex<Option<sonduit_core::handoff::Producer>>,
     /// Opened by the receive thread once the format is known, and stopped by
     /// [`Bridge::stop`]. `None` on any platform without AAudio, and before the
     /// first packet arrives on Android.
@@ -197,6 +249,7 @@ impl Bridge {
     #[uniffi::constructor]
     #[must_use]
     pub fn new() -> Self {
+        install_logging();
         Self {
             inner: Mutex::new(None),
             shared: Mutex::new(None),
@@ -451,6 +504,7 @@ impl Bridge {
             state: Mutex::new(BridgeState::Discovering),
             malformed: Mutex::new(0),
             format: Mutex::new(None),
+            queue: Mutex::new(None),
             #[cfg(target_os = "android")]
             playback: Mutex::new(None),
             playback_error: Mutex::new(None),
@@ -548,15 +602,6 @@ impl Bridge {
     }
 }
 
-impl CallbackSource for Shared {
-    fn fill(&self, out: &mut [i16], frames: usize) -> usize {
-        // Delegates to the blanket implementation on the mutex, which does the
-        // non-blocking acquire. Nothing else in this type is touched from the
-        // audio thread.
-        self.source.fill(out, frames)
-    }
-}
-
 fn read_state(shared: &Shared) -> BridgeState {
     shared
         .state
@@ -604,6 +649,8 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     // because holding too much audio is recoverable and holding too little is
     // heard immediately.
     let mut transport = Transport::WiFi;
+    // Reused so draining allocates nothing per packet.
+    let mut staging: Vec<u8> = Vec::with_capacity(sonduit_core::format::PCM_PAYLOAD_BYTES);
     // Scream carries no sequence number, so one is synthesised on arrival.
     // Reordering cannot be repaired for that wire format, which is a property
     // of the protocol and not of this code.
@@ -732,6 +779,33 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                 );
             }
             source.buffer_mut().push(sequence, timestamp, arrival, pcm);
+
+            // Move what the buffer will release into the queue the callback
+            // reads. This is the only place the jitter buffer is touched now;
+            // the callback never sees it, which is the point.
+            //
+            // Bounded, and that bound is not a nicety. Draining "until the
+            // source is empty" never terminates: a jitter buffer with a gap
+            // conceals it and hands back audio, so it is always willing to
+            // produce more. The first version of this loop spun forever on the
+            // first packet and the receive thread never went back to the
+            // socket. One packet in, at most a few packets out, is the pacing
+            // that matches reality.
+            for _ in 0..DRAIN_PER_PACKET {
+                if !drain_packet(&mut source, &mut staging) {
+                    break;
+                }
+                let Ok(mut queue) = shared.queue.lock() else {
+                    break;
+                };
+                let Some(queue) = queue.as_mut() else { break };
+                if queue.push(&staging) < staging.len() {
+                    // The callback has stalled. Stop feeding rather than
+                    // spinning; the resync below deals with the backlog once
+                    // it is genuinely hopeless.
+                    break;
+                }
+            }
         }
 
         // Reports go back to whoever sent the audio, on the address the
@@ -768,6 +842,46 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             if let Ok(mut slot) = shared.drift.lock() {
                 *slot = (drift_ppm, controller.correction_ppm());
             }
+
+            // A buffer that keeps growing means nothing is draining it, which
+            // is what the audio callback is for. Reported here because it is
+            // the one symptom that distinguishes a device that never started
+            // from a link that is merely fast.
+            let target_ms = shared
+                .source
+                .lock()
+                .map_or(30.0, |source| source.buffer().target_ms());
+
+            // Resampling shifts parts per million. It cannot shed a backlog,
+            // and on the first real device it sat pinned at its 500 ppm limit
+            // against 1536 ms of queued audio, which would have taken fifty
+            // minutes to clear.
+            let mut dropped = 0;
+            let mut queued_ms = 0.0;
+            if let Ok(mut queue) = shared.queue.lock() {
+                if let Some(queue) = queue.as_mut() {
+                    queued_ms = queue.queued_ms();
+                    dropped = queue.resync_if_hopeless(target_ms);
+                }
+            }
+            if dropped > 0 {
+                note!("resynchronised: dropped {dropped} frames from {queued_ms:.0} ms queued");
+            }
+
+            // A stream that has gone cannot be restarted, and AAudio stops
+            // calling back without saying anything. Reopening is the only
+            // recovery, and it needs a fresh queue with it.
+            if playback_disconnected(shared) {
+                note!("playback stream disconnected; reopening");
+                open_playback(shared, format);
+            }
+
+            note!(
+                "queued {queued_ms:.0} ms, target {target_ms:.0} ms, drift {:?} ppm, correction {:.0} ppm, frames played {}",
+                drift_ppm.map(|ppm| ppm.round()),
+                controller.correction_ppm(),
+                playback_frames(shared)
+            );
         }
 
         if changed {
@@ -780,7 +894,18 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
 
         if !seen_audio {
             seen_audio = true;
-            set_state(shared, BridgeState::Streaming);
+            // Not if the device refused to open. Streaming set unconditionally
+            // here overwrote the Failed state open_playback had just set one
+            // line earlier, so a receiver that could not play anything
+            // reported itself as playing.
+            if read_state(shared) != BridgeState::Failed {
+                set_state(shared, BridgeState::Streaming);
+            }
+            note!(
+                "first packet accepted: {} Hz, {} ch",
+                format.sample_rate,
+                format.channels
+            );
         }
     }
 
@@ -795,7 +920,10 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
 /// tearing the session down, loses the diagnosis with it.
 #[cfg(target_os = "android")]
 fn open_playback(shared: &Arc<Shared>, format: Format) {
-    let source: Arc<dyn CallbackSource> = Arc::<Shared>::clone(shared) as Arc<dyn CallbackSource>;
+    // Room for well over the jitter buffer's own target, so an ordinary burst
+    // never reaches the ceiling, but bounded so a stalled callback cannot let
+    // the latency grow without limit.
+    let (producer, consumer) = sonduit_core::handoff::channel(format, 400);
 
     let Ok(mut slot) = shared.playback.lock() else {
         return;
@@ -803,15 +931,34 @@ fn open_playback(shared: &Arc<Shared>, format: Format) {
     if let Some(previous) = slot.take() {
         let _ = previous.stop();
     }
+    if let Ok(mut queue) = shared.queue.lock() {
+        *queue = Some(producer);
+    }
+    let source = consumer;
 
     match sonduit_playback_android::Playback::open(format, source) {
         Ok(playback) => {
+            // What the device granted, which is not what was asked for and is
+            // the single largest open question in docs/latency-budget.md.
+            // AAudio does not fail a request it cannot honour; it succeeds
+            // with something worse and says nothing.
+            let granted = playback.granted();
+            note!(
+                "playback open: {} Hz, {} ch, burst {} frames, exclusive {}, low latency {}, buffer {:.1} ms",
+                granted.format.sample_rate,
+                granted.format.channels,
+                granted.frames_per_burst,
+                granted.exclusive,
+                granted.low_latency,
+                playback.buffer_latency_ms()
+            );
             *slot = Some(playback);
             if let Ok(mut error) = shared.playback_error.lock() {
                 *error = None;
             }
         }
         Err(error) => {
+            note!("playback open failed: {error}");
             if let Ok(mut slot) = shared.playback_error.lock() {
                 *slot = Some(error.to_string());
             }
@@ -912,6 +1059,41 @@ fn send_report(
     if report.encode(buffer).is_ok() {
         let _ = socket.send_to(buffer, to);
     }
+}
+
+/// Frames the audio device has pulled so far.
+///
+/// Zero while packets keep arriving is the signature of a stream that opened
+/// and never ran, which is otherwise indistinguishable from a fast link.
+#[cfg(target_os = "android")]
+fn playback_frames(shared: &Arc<Shared>) -> u64 {
+    shared
+        .playback
+        .try_lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|p| p.counters().frames_played()))
+        .unwrap_or(0)
+}
+
+/// Off Android nothing plays, so nothing has been pulled.
+#[cfg(not(target_os = "android"))]
+fn playback_frames(_shared: &Arc<Shared>) -> u64 {
+    0
+}
+
+/// Whether AAudio has reported the output stream gone.
+#[cfg(target_os = "android")]
+fn playback_disconnected(shared: &Arc<Shared>) -> bool {
+    shared.playback.try_lock().ok().is_some_and(|slot| {
+        slot.as_ref()
+            .is_some_and(sonduit_playback_android::Playback::disconnected)
+    })
+}
+
+/// Off Android there is no stream to lose.
+#[cfg(not(target_os = "android"))]
+fn playback_disconnected(_shared: &Arc<Shared>) -> bool {
+    false
 }
 
 /// Guess the link from the address the audio is arriving from.

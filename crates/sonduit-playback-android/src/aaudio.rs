@@ -22,22 +22,31 @@
 //! source guarded by a mutex that no long operation ever holds, and does
 //! nothing else.
 
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ndk::audio::{
     AudioCallbackResult, AudioDirection, AudioFormat, AudioPerformanceMode, AudioSharingMode,
-    AudioStream, AudioStreamBuilder,
+    AudioStream, AudioStreamBuilder, AudioStreamState,
 };
 use sonduit_core::format::Format;
 
-use crate::{CallbackSource, GrantedStream, PlaybackCounters, PlaybackError};
+use sonduit_core::handoff::Consumer;
+
+use crate::{GrantedStream, PlaybackCounters, PlaybackError};
 
 /// A running AAudio output stream.
 pub struct Playback {
     stream: AudioStream,
     granted: GrantedStream,
     counters: Arc<PlaybackCounters>,
+    /// Set when AAudio reports the stream has gone.
+    ///
+    /// A disconnected stream stops calling back and cannot be restarted. With
+    /// no error callback registered that was completely silent: on the first
+    /// real device the frame counter simply stopped advancing while packets
+    /// kept arriving, and nothing anywhere said why.
+    disconnected: Arc<AtomicBool>,
 }
 
 impl Playback {
@@ -50,12 +59,18 @@ impl Playback {
     /// # Errors
     /// Returns [`PlaybackError::Platform`] when the stream cannot be opened or
     /// started.
-    pub fn open(format: Format, source: Arc<dyn CallbackSource>) -> Result<Self, PlaybackError> {
+    pub fn open(format: Format, source: Consumer) -> Result<Self, PlaybackError> {
         let counters = Arc::new(PlaybackCounters::default());
         let channels = i32::from(format.channels);
+        let disconnected = Arc::new(AtomicBool::new(false));
 
         let callback_counters = Arc::clone(&counters);
-        let callback_source = Arc::clone(&source);
+        // The consumer is owned outright by the callback. It is behind a
+        // mutex only because the closure must be Send and the callback is
+        // the sole thread that ever touches it, so the lock is never
+        // contended and never waits.
+        let callback_source = Mutex::new(source);
+        let callback_disconnected = Arc::clone(&disconnected);
 
         let stream = AudioStreamBuilder::new()
             .map_err(|error| PlaybackError::Platform(format!("builder: {error}")))?
@@ -79,7 +94,9 @@ impl Playback {
                 // duration of the callback.
                 let out = unsafe { std::slice::from_raw_parts_mut(data.cast::<i16>(), samples) };
 
-                let written = callback_source.fill(out, frames);
+                let written = callback_source
+                    .lock()
+                    .map_or(0, |mut source| source.fill(out, frames));
 
                 if written < frames {
                     out[written * channels as usize..].fill(0);
@@ -94,6 +111,13 @@ impl Playback {
                 callback_counters.callbacks.fetch_add(1, Ordering::Relaxed);
 
                 AudioCallbackResult::Continue
+            }))
+            .error_callback(Box::new(move |_stream, error| {
+                // Unplugging a headset, or the route changing, ends the stream
+                // for good. AAudio will not call the data callback again, so
+                // without this the session goes quiet with no explanation.
+                callback_disconnected.store(true, Ordering::Release);
+                let _ = error;
             }))
             .open_stream()
             .map_err(|error| PlaybackError::Platform(format!("open: {error}")))?;
@@ -129,7 +153,24 @@ impl Playback {
             stream,
             granted,
             counters,
+            disconnected,
         })
+    }
+
+    /// Whether AAudio has reported the stream gone.
+    ///
+    /// A disconnected stream cannot be restarted; the caller opens a new one.
+    #[must_use]
+    pub fn disconnected(&self) -> bool {
+        self.disconnected.load(Ordering::Acquire)
+            || self.stream.state() == AudioStreamState::Disconnected
+    }
+
+    /// The state AAudio reports, for logging a stream that stopped for some
+    /// other reason.
+    #[must_use]
+    pub fn state(&self) -> AudioStreamState {
+        self.stream.state()
     }
 
     /// What the device actually granted.

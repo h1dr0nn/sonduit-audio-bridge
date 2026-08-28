@@ -17,5 +17,15 @@ thiserror.workspace = true
 # every Android ABI for code that is never called is waste.
 rubato = { version = "0.16", default-features = false }
 
+# The handoff from the receive thread to the audio callback. A mutex there is
+# what produced a second and a half of latency with audible crackle on the
+# first real device: the callback took it with try_lock, lost the race against
+# a thread that writes every six milliseconds, and wrote silence instead.
+#
+# rtrb rather than a hand-rolled ring, because this crate forbids unsafe and a
+# lock-free queue cannot be written without it. It is the ring the Rust audio
+# crates use for exactly this handoff.
+rtrb = "0.4"
+
 [lints]
 workspace = true
