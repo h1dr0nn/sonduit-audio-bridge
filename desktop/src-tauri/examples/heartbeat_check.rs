@@ -60,7 +60,8 @@ fn main() {
     }
 
     fn run(target: SocketAddr, receiver: Option<UdpSocket>) -> BridgeSnapshot {
-        let mut capture = open(CaptureMode::EndpointLoopback, 10).expect("capture should open");
+        let mut capture =
+            open(CaptureMode::EndpointLoopback, 10, None).expect("capture should open");
         let format = capture.format();
 
         let sender = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();

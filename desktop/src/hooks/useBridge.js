@@ -164,12 +164,29 @@ export function useBridge() {
     await invoke('bridge_cancel_pairing');
   }, []);
 
+  /**
+   * The output devices a session can be started against.
+   *
+   * Not cached: a device list is only true at the moment it is read, and the
+   * one place that asks is a settings page the user has just opened, usually
+   * because they plugged something in.
+   */
+  const listEndpoints = useCallback(async () => {
+    if (!hasBackend()) return [];
+    return invoke('bridge_endpoints');
+  }, []);
+
   const start = useCallback(async (options = {}) => {
     const session = await invoke('bridge_start', {
       options: {
         target: options.target ?? null,
         bind: options.bind ?? null,
         screamCompatible: options.screamCompatible ?? false,
+        // Which output to tap. Null is the Windows default, and an id whose
+        // device has gone falls back to that same default rather than failing:
+        // the session reports back the endpoint it really opened, so what the
+        // panel shows is never the request, always the result.
+        captureDeviceId: options.captureDeviceId || null,
         // What the settings page calls "Preferred transport". The backend
         // watches the links for the whole session and moves between them on
         // its own; this only says whether a cable appearing is allowed to
@@ -198,6 +215,7 @@ export function useBridge() {
     session: snapshot.session ?? EMPTY_SESSION,
     telemetry: snapshot.telemetry ?? EMPTY_TELEMETRY,
     scan,
+    listEndpoints,
     invite,
     awaitPairing,
     cancelPairing,

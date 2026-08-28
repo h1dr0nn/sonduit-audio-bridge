@@ -29,7 +29,7 @@ fn main() {
     let target = receiver.local_addr().unwrap();
     println!("receiver listening on {target}");
 
-    let mut capture = match open(CaptureMode::EndpointLoopback, 10) {
+    let mut capture = match open(CaptureMode::EndpointLoopback, 10, None) {
         Ok(capture) => capture,
         Err(error) => {
             println!("capture failed: {error}");

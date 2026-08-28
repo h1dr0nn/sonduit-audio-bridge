@@ -30,7 +30,7 @@ fn main() {
         frames
     }
 
-    let mut capture = match open(CaptureMode::EndpointLoopback, 10) {
+    let mut capture = match open(CaptureMode::EndpointLoopback, 10, None) {
         Ok(capture) => capture,
         Err(error) => {
             println!("open failed: {error}");
@@ -42,7 +42,7 @@ fn main() {
 
     // Exactly what the recovery path does: open the replacement, then let the
     // assignment drop the old one.
-    let replacement = match open(CaptureMode::EndpointLoopback, 10) {
+    let replacement = match open(CaptureMode::EndpointLoopback, 10, None) {
         Ok(replacement) => replacement,
         Err(error) => {
             println!("RESULT: a second client could not be opened: {error}");

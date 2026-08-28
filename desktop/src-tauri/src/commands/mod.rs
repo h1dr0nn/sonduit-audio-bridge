@@ -1,7 +1,8 @@
 //! IPC commands exposed to the frontend layer.
 
 use crate::bridge::{
-    self, BridgeSnapshot, BridgeState, DiscoveredDevice, PairingInvite, SessionInfo, StartOptions,
+    self, AudioEndpoint, BridgeSnapshot, BridgeState, DiscoveredDevice, PairingInvite, SessionInfo,
+    StartOptions,
 };
 use crate::convert::{self, BackendResult, ConvertPayload};
 use crate::core::window::apply_backdrop;
@@ -128,6 +129,20 @@ pub async fn bridge_await_pairing(
 #[tauri::command]
 pub fn bridge_cancel_pairing(state: State<'_, BridgeState>) {
     state.cancel_pairing();
+}
+
+/// The output devices the user can choose to capture from.
+///
+/// Enumeration walks the audio endpoints and reads a property store per
+/// device, and it does it on a thread of its own for the apartment reasons in
+/// [`bridge::endpoints`]. Joining that thread is a blocking wait, so the
+/// command runs off the async runtime like the other blocking ones do.
+#[tauri::command]
+pub async fn bridge_endpoints() -> Result<Vec<AudioEndpoint>, String> {
+    tauri::async_runtime::spawn_blocking(bridge::endpoints)
+        .await
+        .map_err(|error| format!("background task failed: {error}"))?
+        .map_err(String::from)
 }
 
 /// Start capturing system audio and sending it.

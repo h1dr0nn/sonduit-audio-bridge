@@ -81,7 +81,14 @@ pub fn enumerate_endpoints() -> Result<Vec<Endpoint>, CaptureError> {
     }
 }
 
-/// Open a loopback capture stream on the default render endpoint.
+/// Open a loopback capture stream on a render endpoint.
+///
+/// `endpoint_id` is an [`Endpoint::id`] from [`enumerate_endpoints`]. `None`
+/// taps the console-role default, which is what Windows itself would hand a
+/// new stream. An id that no longer names an active device falls back to that
+/// same default rather than failing: the returned stream reports the endpoint
+/// it actually opened through [`LoopbackCapture::endpoint`], so the caller can
+/// say which one that was instead of guessing.
 ///
 /// `period_ms` is the engine period requested through the silent render stream.
 /// The returned stream reports the format it will actually deliver, which comes
@@ -93,9 +100,13 @@ pub fn enumerate_endpoints() -> Result<Vec<Endpoint>, CaptureError> {
 /// which is not implemented yet, and [`CaptureError::Platform`] when a WASAPI
 /// call fails.
 #[cfg(windows)]
-pub fn open(mode: CaptureMode, period_ms: u32) -> Result<LoopbackCapture, CaptureError> {
+pub fn open(
+    mode: CaptureMode,
+    period_ms: u32,
+    endpoint_id: Option<&str>,
+) -> Result<LoopbackCapture, CaptureError> {
     match mode {
-        CaptureMode::EndpointLoopback => LoopbackCapture::open(period_ms),
+        CaptureMode::EndpointLoopback => LoopbackCapture::open(period_ms, endpoint_id),
         // Process loopback needs ActivateAudioInterfaceAsync with a completion
         // handler, which is a different activation path rather than a flag.
         // Tracked in docs/roadmap.md.
@@ -108,7 +119,11 @@ pub fn open(mode: CaptureMode, period_ms: u32) -> Result<LoopbackCapture, Captur
 /// # Errors
 /// Always returns [`CaptureError::ModeUnavailable`].
 #[cfg(not(windows))]
-pub fn open(mode: CaptureMode, _period_ms: u32) -> Result<(), CaptureError> {
+pub fn open(
+    mode: CaptureMode,
+    _period_ms: u32,
+    _endpoint_id: Option<&str>,
+) -> Result<(), CaptureError> {
     Err(CaptureError::ModeUnavailable(mode))
 }
 
@@ -154,7 +169,7 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn opening_off_windows_reports_the_mode_as_unavailable() {
-        let error = open(CaptureMode::EndpointLoopback, 10).unwrap_err();
+        let error = open(CaptureMode::EndpointLoopback, 10, None).unwrap_err();
         assert!(matches!(error, CaptureError::ModeUnavailable(_)));
     }
 }

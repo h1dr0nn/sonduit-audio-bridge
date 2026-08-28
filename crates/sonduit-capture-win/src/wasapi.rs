@@ -143,15 +143,65 @@ fn device_name(device: &IMMDevice) -> String {
     name
 }
 
+/// The identifier of the endpoint Windows currently hands new streams.
+///
+/// `None` when the machine has no default render device, which is a machine
+/// with nothing to capture rather than an error worth failing enumeration on.
+fn default_render_id(enumerator: &IMMDeviceEnumerator) -> Option<String> {
+    // SAFETY: eRender with the console role is the device the user hears.
+    unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+        .ok()
+        .and_then(|device| device_id(&device).ok())
+}
+
+/// Find the endpoint to capture, falling back to the console-role default.
+///
+/// A chosen device that is unplugged, disabled or simply gone falls back
+/// rather than failing the session: silence with an explanation is worse than
+/// audio from the speakers the user can actually hear. The caller reports the
+/// endpoint that was opened, so the panel says which one that was.
+fn resolve_device(
+    enumerator: &IMMDeviceEnumerator,
+    requested: Option<&str>,
+) -> Result<IMMDevice, CaptureError> {
+    if let Some(id) = requested.filter(|id| !id.is_empty()) {
+        let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: GetDevice takes a null-terminated wide string, and `wide`
+        // stays alive for the duration of the call.
+        if let Ok(device) = unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) } {
+            // GetDevice still returns a device that has been unplugged or
+            // disabled. Activating one fails later and with a worse message,
+            // so the state is checked here instead.
+            // SAFETY: reading the state of a device we hold.
+            let active =
+                unsafe { device.GetState() }.is_ok_and(|state| state == DEVICE_STATE_ACTIVE);
+            if active {
+                return Ok(device);
+            }
+        }
+    }
+
+    // SAFETY: the console role is the endpoint the user actually hears.
+    unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+        .map_err(|_| CaptureError::NoEndpoint)
+}
+
+/// Describe a device we hold, marking it if it is the current default.
+fn describe(device: &IMMDevice, default_id: Option<&str>) -> Endpoint {
+    let id = device_id(device).unwrap_or_default();
+    Endpoint {
+        is_default: default_id == Some(id.as_str()),
+        name: device_name(device),
+        id,
+    }
+}
+
 /// List active render endpoints, marking the default one.
 pub fn enumerate() -> Result<Vec<Endpoint>, CaptureError> {
     let _com = ComGuard::new()?;
     let enumerator = device_enumerator()?;
 
-    // SAFETY: eRender with the console role is the device the user hears.
-    let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-        .ok()
-        .and_then(|device| device_id(&device).ok());
+    let default_id = default_render_id(&enumerator);
 
     // SAFETY: enumerating active render endpoints.
     let collection = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }
@@ -167,13 +217,7 @@ pub fn enumerate() -> Result<Vec<Endpoint>, CaptureError> {
         let Ok(device) = (unsafe { collection.Item(index) }) else {
             continue;
         };
-        let Ok(id) = device_id(&device) else { continue };
-        let is_default = default_id.as_deref() == Some(id.as_str());
-        endpoints.push(Endpoint {
-            name: device_name(&device),
-            id,
-            is_default,
-        });
+        endpoints.push(describe(&device, default_id.as_deref()));
     }
 
     if endpoints.is_empty() {
@@ -327,22 +371,33 @@ pub struct LoopbackCapture {
     format: Format,
     /// Channels the engine mixes, which drives the float-to-integer conversion.
     engine_channels: usize,
+    /// The endpoint this client is actually tapping.
+    endpoint: Endpoint,
+    /// The endpoint the caller asked for, which may not be the one above.
+    ///
+    /// Kept so a reopen goes back to the chosen device once it returns,
+    /// instead of settling permanently on whatever the fallback found.
+    requested: Option<String>,
     _keepalive: Option<Keepalive>,
     stopping: Arc<AtomicBool>,
 }
 
 impl LoopbackCapture {
-    /// Open loopback capture on the default render endpoint.
+    /// Open loopback capture on a render endpoint.
+    ///
+    /// `endpoint_id` is an identifier from [`enumerate`]. `None`, or an id
+    /// naming a device that is no longer active, opens the console-role
+    /// default instead; [`LoopbackCapture::endpoint`] reports which endpoint
+    /// that turned out to be.
     ///
     /// `period_ms` is the engine period to request through the keepalive
     /// stream. Smaller is lower latency and more likely to glitch.
-    pub fn open(period_ms: u32) -> Result<Self, CaptureError> {
+    pub fn open(period_ms: u32, endpoint_id: Option<&str>) -> Result<Self, CaptureError> {
         let com = ComGuard::new()?;
         let enumerator = device_enumerator()?;
 
-        // SAFETY: the console role is the endpoint the user actually hears.
-        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-            .map_err(|_| CaptureError::NoEndpoint)?;
+        let device = resolve_device(&enumerator, endpoint_id)?;
+        let endpoint = describe(&device, default_render_id(&enumerator).as_deref());
 
         let period_hns = i64::from(period_ms.max(1)) * HNS_PER_MS;
 
@@ -396,6 +451,8 @@ impl LoopbackCapture {
             event,
             format,
             engine_channels,
+            endpoint,
+            requested: endpoint_id.map(ToString::to_string),
             _keepalive: keepalive,
             stopping: Arc::new(AtomicBool::new(false)),
         })
@@ -405,6 +462,22 @@ impl LoopbackCapture {
     #[must_use]
     pub const fn format(&self) -> Format {
         self.format
+    }
+
+    /// The endpoint this client is tapping, which is what the user is told.
+    ///
+    /// Not the same as the one asked for when that device was unavailable, and
+    /// the difference is the whole point of reporting it rather than echoing
+    /// the request back.
+    #[must_use]
+    pub const fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
+    }
+
+    /// The endpoint the caller asked for, for a later reopen to ask again.
+    #[must_use]
+    pub fn requested_endpoint(&self) -> Option<&str> {
+        self.requested.as_deref()
     }
 
     /// A handle that stops the capture loop from another thread.

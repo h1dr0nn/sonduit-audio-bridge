@@ -9,6 +9,14 @@ export const DEFAULT_SETTINGS = {
   // Audio bridge
   targetBufferMs: 30,
   preferredTransport: 'auto',
+  // Which Windows output endpoint to tap. Empty means the system default,
+  // which is what the app did before there was a choice at all.
+  captureDeviceId: '',
+  // The name that went with that id when it was chosen. Kept because a device
+  // that has been unplugged is no longer in the list the settings page fetches,
+  // and a dropdown that goes blank looks like the setting was lost rather than
+  // like the headset is out.
+  captureDeviceName: '',
 
   // Appearance
   accentColor: '#7c93e8',

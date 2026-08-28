@@ -21,7 +21,7 @@ fn main() {
         Err(error) => println!("enumerate failed: {error}"),
     }
 
-    let mut capture = match open(CaptureMode::EndpointLoopback, 10) {
+    let mut capture = match open(CaptureMode::EndpointLoopback, 10, None) {
         Ok(capture) => capture,
         Err(error) => {
             println!("open failed: {error}");

@@ -73,6 +73,11 @@ impl SessionInfo {
         self.target = target.to_string();
         self.transport = link.label().to_string();
     }
+
+    /// Name the endpoint the session is now tapping, after a reopen.
+    pub fn captured_from(&mut self, endpoint: &str) {
+        self.endpoint = endpoint.to_string();
+    }
 }
 
 /// Numbers the UI displays.
@@ -220,6 +225,19 @@ impl BridgeSnapshot {
     pub fn note_link(&mut self, target: SocketAddr, link: LinkKind) {
         if let Some(session) = self.session.as_mut() {
             session.moved_to(target, link);
+        }
+    }
+
+    /// Record that capture has moved to a different output device.
+    ///
+    /// Reopening after an unplugged headset can land on a different endpoint
+    /// from the one the session started on, and a panel still naming the
+    /// device that has gone is telling the user the audio is somewhere it is
+    /// not. Same reasoning as [`BridgeSnapshot::note_link`]: what is displayed
+    /// comes from what actually happened, never from what was asked for.
+    pub fn note_endpoint(&mut self, endpoint: &str) {
+        if let Some(session) = self.session.as_mut() {
+            session.captured_from(endpoint);
         }
     }
 
@@ -661,6 +679,39 @@ mod tests {
             counters.last_error().is_none(),
             "the error that was recovered from is still being reported"
         );
+    }
+
+    #[test]
+    fn a_reopen_onto_another_device_renames_the_endpoint_on_screen() {
+        // The panel is the only place the user learns that the headset they
+        // chose has gone and the audio is now coming off the speakers. A name
+        // left pointing at the device that was unplugged says the opposite of
+        // what happened.
+        let mut snapshot = BridgeSnapshot::starting(SessionInfo::new(
+            "Headset Earphone (Motorola Headset)",
+            Format::stereo_48k(),
+            "192.168.1.5:4010".parse().unwrap(),
+            LinkKind::Wireless,
+            false,
+        ));
+
+        snapshot.note_endpoint("DELL U2419H (HD Audio Driver for Display Audio)");
+
+        assert_eq!(
+            snapshot
+                .session
+                .as_ref()
+                .map(|session| session.endpoint.as_str()),
+            Some("DELL U2419H (HD Audio Driver for Display Audio)")
+        );
+    }
+
+    #[test]
+    fn renaming_the_endpoint_of_a_stopped_session_does_nothing() {
+        // A reopen racing a stop must not resurrect a session that has ended.
+        let mut snapshot = BridgeSnapshot::default();
+        snapshot.note_endpoint("Speakers");
+        assert!(snapshot.session.is_none());
     }
 
     #[test]

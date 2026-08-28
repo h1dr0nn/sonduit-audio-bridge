@@ -158,6 +158,29 @@ pub struct StartOptions {
     /// Optional, and absent means `auto`. See [`migrate::Preference`], which
     /// is the only thing that reads it.
     pub preferred_transport: Option<String>,
+    /// Which output endpoint to tap, as an id from [`endpoints`].
+    ///
+    /// Absent means the console-role default, which is what Windows itself
+    /// would hand a new stream. An id naming a device that has since gone
+    /// falls back to that same default; the session reports the endpoint it
+    /// actually opened, so the panel is not left claiming the chosen one.
+    pub capture_device_id: Option<String>,
+}
+
+/// A render endpoint the user can pick from.
+///
+/// A separate type from `sonduit_capture_win::Endpoint` on purpose: the
+/// capture crate is not the place to learn what the webview's IPC serialises
+/// into, and this is the layer that owns that question.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioEndpoint {
+    /// Stable identifier, which is what a session is started against.
+    pub id: String,
+    /// Name to show.
+    pub name: String,
+    /// Whether Windows currently treats this as the default output.
+    pub is_default: bool,
 }
 
 /// Bridge failures, as the frontend sees them.
@@ -624,6 +647,57 @@ pub fn discover(code: &str) -> Result<Vec<DiscoveredDevice>, BridgeError> {
     Ok(found)
 }
 
+/// List the output devices a session can be started against.
+///
+/// # Why this gets a thread of its own
+///
+/// The same reason capture does, and it is not the same thread. WASAPI is COM,
+/// and the enumerator has to be created on a thread whose apartment it can
+/// live in. The thread a Tauri command runs on is the one hosting the webview,
+/// which is already in a single-threaded apartment; asking it for a
+/// multi-threaded one fails, and uninitialising it afterwards would take the
+/// webview's own apartment down with it. A thread spawned and joined here
+/// starts with no apartment at all, so the guard inside the capture crate is
+/// free to make and unmake one. Enumeration happens when a settings page
+/// opens, not per audio block, so a thread per call costs nothing that matters.
+///
+/// # Errors
+/// Returns [`BridgeError::Capture`] when the enumerator cannot be created or
+/// the machine has no active render device.
+#[cfg(windows)]
+pub fn endpoints() -> Result<Vec<AudioEndpoint>, BridgeError> {
+    let listing = std::thread::Builder::new()
+        .name("sonduit-endpoints".into())
+        .spawn(|| {
+            sonduit_capture_win::enumerate_endpoints().map(|found| {
+                found
+                    .into_iter()
+                    .map(|endpoint| AudioEndpoint {
+                        id: endpoint.id,
+                        name: endpoint.name,
+                        is_default: endpoint.is_default,
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .map_err(|error| BridgeError::Capture(error.to_string()))?
+        .join()
+        .map_err(|_| BridgeError::Capture("the device listing thread panicked".into()))?;
+
+    listing.map_err(|error| BridgeError::Capture(error.to_string()))
+}
+
+/// Off Windows there are no endpoints to choose between.
+///
+/// # Errors
+/// Always returns [`BridgeError::Capture`].
+#[cfg(not(windows))]
+pub fn endpoints() -> Result<Vec<AudioEndpoint>, BridgeError> {
+    Err(BridgeError::Capture(
+        "system audio capture is implemented for Windows only".into(),
+    ))
+}
+
 /// Start capturing and sending.
 ///
 /// # Errors
@@ -689,6 +763,8 @@ pub fn start(
     // than as a session that starts and then silently dies.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 
+    let chosen = options.capture_device_id.clone();
+
     let audio = {
         let stop = Arc::clone(&stop);
         let snapshot = Arc::clone(&snapshot);
@@ -696,7 +772,11 @@ pub fn start(
         std::thread::Builder::new()
             .name("sonduit-capture".into())
             .spawn(move || {
-                let mut capture = match open(CaptureMode::EndpointLoopback, CAPTURE_PERIOD_MS) {
+                let mut capture = match open(
+                    CaptureMode::EndpointLoopback,
+                    CAPTURE_PERIOD_MS,
+                    chosen.as_deref(),
+                ) {
                     Ok(capture) => capture,
                     Err(error) => {
                         let _ = ready_tx.send(Err(match error {
@@ -710,15 +790,11 @@ pub fn start(
                 };
 
                 let format = capture.format();
-                let endpoint = sonduit_capture_win::enumerate_endpoints()
-                    .ok()
-                    .and_then(|endpoints| {
-                        endpoints
-                            .into_iter()
-                            .find(|endpoint| endpoint.is_default)
-                            .map(|endpoint| endpoint.name)
-                    })
-                    .unwrap_or_else(|| "Default output".to_string());
+                // The endpoint that was opened, not the one that was asked
+                // for. They differ when the chosen device has gone, and the
+                // panel saying which speakers the audio is really coming from
+                // is the only way the user finds that out.
+                let endpoint = capture.endpoint().name.clone();
 
                 if ready_tx
                     .send(Ok((format, endpoint, capture.stopper())))
@@ -1236,6 +1312,10 @@ pub fn capture_and_follow(
                                 return;
                             }
                             if let Ok(mut current) = snapshot.lock() {
+                                // The reopen may have landed somewhere else:
+                                // the chosen device can still be gone, in
+                                // which case this is the fallback's name.
+                                current.note_endpoint(&capture.endpoint().name);
                                 current.clear_error();
                             }
                             continue;
@@ -1345,17 +1425,25 @@ pub fn capture_and_follow(
     }
 }
 
-/// Replace a dead capture client with a fresh one on the current default
-/// endpoint.
+/// Replace a dead capture client with a fresh one.
 ///
 /// Opened in place so the caller keeps its `&mut`, and so the old client is
 /// dropped, releasing the endpoint, before the new one asks for it.
+///
+/// It asks for the endpoint the session was started against, not the one it
+/// happens to be on. A headset that was chosen, unplugged and plugged back in
+/// is picked up again on the next attempt; settling on whatever the fallback
+/// found would quietly turn a choice into a one-off.
 #[cfg(windows)]
 fn reopen(capture: &mut sonduit_capture_win::LoopbackCapture) -> Result<(), String> {
     use sonduit_capture_win::{open, CaptureMode};
 
-    let replacement = open(CaptureMode::EndpointLoopback, CAPTURE_PERIOD_MS)
-        .map_err(|error| format!("could not reopen the playback device: {error}"))?;
+    let replacement = open(
+        CaptureMode::EndpointLoopback,
+        CAPTURE_PERIOD_MS,
+        capture.requested_endpoint(),
+    )
+    .map_err(|error| format!("could not reopen the playback device: {error}"))?;
     *capture = replacement;
     Ok(())
 }

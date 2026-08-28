@@ -26,7 +26,7 @@ fn main() {
     };
     let seconds: u64 = arguments.next().and_then(|s| s.parse().ok()).unwrap_or(10);
 
-    let mut capture = match open(CaptureMode::EndpointLoopback, 10) {
+    let mut capture = match open(CaptureMode::EndpointLoopback, 10, None) {
         Ok(capture) => capture,
         Err(error) => {
             println!("capture failed: {error}");

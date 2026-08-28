@@ -187,13 +187,17 @@ export function ConnectionPage() {
     setBusy(true);
     try {
       const address = target.kind === 'manual' ? typed.trim() : target.value;
-      await start({ target: address || null, preferredTransport: settings.preferredTransport });
+      await start({
+        target: address || null,
+        preferredTransport: settings.preferredTransport,
+        captureDeviceId: settings.captureDeviceId,
+      });
     } catch (reason) {
       showToast({ id: 'session', tone: 'error', titleKey: 'connection.startFailed', detail: String(reason) });
     } finally {
       setBusy(false);
     }
-  }, [settings.preferredTransport, start, target, typed]);
+  }, [settings.captureDeviceId, settings.preferredTransport, start, target, typed]);
 
   const handleStop = useCallback(async () => {
     setBusy(true);

@@ -81,6 +81,7 @@ pub fn run() {
             commands::bridge_invite,
             commands::bridge_await_pairing,
             commands::bridge_cancel_pairing,
+            commands::bridge_endpoints,
             commands::bridge_start,
             commands::bridge_stop
         ])

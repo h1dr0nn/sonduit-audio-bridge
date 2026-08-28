@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { NumberField } from '../components/ui/NumberField';
 import { Select } from '../components/ui/Select';
 import { SettingRow } from '../components/ui/SettingRow';
+import { showToast } from '../components/ui/Toast';
 import { useSettingsContext } from '../context/SettingsContext';
+import { useBridge } from '../hooks/useBridge';
 import { useTranslation, LANGUAGES } from '../i18n';
 import { cn } from '../utils/cn';
 
@@ -20,8 +22,69 @@ const TRANSPORT_LABEL_KEY = {
 };
 
 export function SettingsPage({ theme, onSetTheme }) {
-  const { settings, updateSetting, resetSettings } = useSettingsContext();
+  const { settings, updateSetting, updateSettings, resetSettings } = useSettingsContext();
+  const { listEndpoints } = useBridge();
   const { t } = useTranslation();
+  const [endpoints, setEndpoints] = useState([]);
+
+  // Read once, when the page opens. A device list is only true at the moment
+  // it is read, and this is the moment the user is looking at it; polling
+  // would walk every endpoint's property store on a timer for a page that is
+  // usually not open.
+  useEffect(() => {
+    let live = true;
+    listEndpoints()
+      .then((found) => {
+        if (live) setEndpoints(found);
+      })
+      .catch((reason) => {
+        // Said out loud rather than swallowed. Without this the dropdown would
+        // silently offer nothing but the system default, which looks like a
+        // machine with one output rather than like a failure.
+        showToast({
+          id: 'endpoints',
+          tone: 'error',
+          titleKey: 'settings.captureDeviceFailed',
+          detail: String(reason),
+        });
+      });
+    return () => {
+      live = false;
+    };
+  }, [listEndpoints]);
+
+  const deviceOptions = [
+    { value: '', label: t('settings.captureDeviceDefault') },
+    ...endpoints.map((endpoint) => ({
+      value: endpoint.id,
+      label: endpoint.isDefault
+        ? `${endpoint.name} (${t('settings.captureDeviceIsDefault')})`
+        : endpoint.name,
+    })),
+  ];
+
+  // The chosen device is not in the list when it has been unplugged or
+  // disabled. Keeping it as an option, labelled, is the difference between
+  // "your headset is out" and a control that has apparently forgotten what it
+  // was set to. A session started like this falls back to the default anyway,
+  // and the connection panel names the device it actually ended up on.
+  const chosenIsMissing =
+    settings.captureDeviceId &&
+    !endpoints.some((endpoint) => endpoint.id === settings.captureDeviceId);
+  if (chosenIsMissing) {
+    const remembered = settings.captureDeviceName || settings.captureDeviceId;
+    deviceOptions.push({
+      value: settings.captureDeviceId,
+      label: `${remembered} (${t('settings.captureDeviceMissing')})`,
+    });
+  }
+
+  // The name is stored beside the id, because the id is the only thing the
+  // backend can be given and the name is the only thing the user recognises.
+  const chooseDevice = (id) => {
+    const chosen = endpoints.find((endpoint) => endpoint.id === id);
+    updateSettings({ captureDeviceId: id, captureDeviceName: chosen?.name ?? '' });
+  };
 
   return (
     /* Fills the window: the heading is pinned and the rows scroll under it.
@@ -94,6 +157,19 @@ export function SettingsPage({ theme, onSetTheme }) {
         </Card>
 
         <Card className="shrink-0" title={t('settings.audio')}>
+          <SettingRow
+            label={t('settings.captureDevice')}
+            description={t('settings.captureDeviceDesc')}
+          >
+            <Select
+              className="w-64"
+              ariaLabel={t('settings.captureDevice')}
+              value={settings.captureDeviceId}
+              onChange={chooseDevice}
+              options={deviceOptions}
+            />
+          </SettingRow>
+
           <SettingRow label={t('settings.targetBuffer')} description={t('settings.targetBufferDesc')}>
             <NumberField
               ariaLabel={t('settings.targetBuffer')}
