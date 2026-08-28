@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use sonduit_core::drift::{DriftConfig, DriftEstimator};
 use sonduit_core::format::Format;
-use sonduit_core::jitter::{JitterBuffer, JitterConfig, Transport};
+use sonduit_core::jitter::{JitterBuffer, JitterConfig, LinkWatch, Transport};
 use sonduit_core::pacing::{drain_allowance, PacingConfig};
 use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
@@ -816,10 +816,12 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     // stopped calling back would otherwise produce a line every six
     // milliseconds about the one thing that is already obvious.
     let mut shed_packets = 0_u64;
-    // Decided from the first packet's source address. Wi-Fi until then,
+    // Which link the audio is arriving over, as the sender declares it in
+    // every packet header. Wi-Fi until the first packet says otherwise,
     // because holding too much audio is recoverable and holding too little is
-    // heard immediately.
-    let mut transport = Transport::WiFi;
+    // heard immediately. A change mid-session is confirmed over several
+    // packets before it is acted on; see `LinkWatch`.
+    let mut link = LinkWatch::new(Transport::WiFi);
     // Reused so draining allocates nothing per packet.
     let mut staging: Vec<u8> = Vec::with_capacity(sonduit_core::format::PCM_PAYLOAD_BYTES);
     // Scream carries no sequence number, so one is synthesised on arrival.
@@ -887,9 +889,12 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
         if changed {
             // Everything learned about the previous stream is about a
             // different clock pair and a different rate.
-            transport = link_of(from, wired_link);
+            // A new stream, so the link it declares is taken at once: there
+            // is no buffer state to protect and nothing yet to confirm it
+            // against.
+            link = LinkWatch::new(link_of(from, wired_link));
             if let Ok(mut slot) = shared.transport.lock() {
-                *slot = Some(transport);
+                *slot = Some(link.link());
             }
             estimator = Some(DriftEstimator::new(DriftConfig::for_rate(
                 format.sample_rate,
@@ -899,6 +904,62 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             sender_frames = 0;
             previous_timestamp = None;
             since_correction = 0;
+        }
+
+        // The link can change under a session that never stops. The desktop
+        // migrates one between Wi-Fi and a USB tether without interrupting the
+        // stream and re-declares the new link in every packet after it, so the
+        // format is unchanged and none of the block above runs. Until this
+        // existed nothing else did either: the buffer kept the policy it was
+        // built with. Coming off USB that meant holding the wired floor of
+        // 6 ms against a radio's jitter for the nine seconds the adaptation
+        // needed to grow out of it, which is a plausible underrun in exactly
+        // the seconds after the user pulled a cable and is listening for one.
+        //
+        // Confirmed over several packets rather than taken from one. Nothing
+        // authenticates this wire, and reacting thirty milliseconds late is
+        // free next to reacting to a single corrupted header.
+        if !changed {
+            if let Some(migrated) = link.observe(link_of(from, wired_link)) {
+                note!("link migrated to {migrated:?}; retuning in place");
+                if let Ok(mut slot) = shared.transport.lock() {
+                    *slot = Some(migrated);
+                }
+
+                // Swapped in place, and deliberately not a new JitterSource.
+                // A new one discards the audio the old one is holding, which
+                // is the gap the migration was built to avoid; `open_playback`
+                // is not called for the same reason, and stays gated on a
+                // format change alone, because reopening AAudio costs audible
+                // silence and the format has not changed.
+                if let Ok(mut source) = shared.source.lock() {
+                    source
+                        .buffer_mut()
+                        .retune(JitterConfig::for_transport(migrated));
+                }
+
+                // The arrival timeline genuinely stepped: the same audio now
+                // crosses a different path with a different transit time, and
+                // a line fitted across that step measures the step and calls
+                // it drift. This is the same trio the estimator's own gap
+                // reset drives below, for the same reason.
+                //
+                // Deliberately not `sender_frames` and not
+                // `previous_timestamp`. The sender's clock did not step and
+                // its packets are continuous; those two are the sender's side
+                // of the comparison, and resetting them would corrupt the very
+                // quantity drift is measured against.
+                if let Some(estimator) = estimator.as_mut() {
+                    estimator.reset();
+                }
+                controller.reset();
+                if let Some(resampler) = resampler.as_mut() {
+                    resampler.reset();
+                }
+                if let Ok(mut slot) = shared.drift.lock() {
+                    *slot = (None, 0.0);
+                }
+            }
         }
 
         // The sender's own frame count, which is the clock being compared
@@ -949,7 +1010,7 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
         if let Ok(mut source) = shared.source.lock() {
             if changed {
                 *source = JitterSource::new(
-                    JitterBuffer::new(format, JitterConfig::for_transport(transport)),
+                    JitterBuffer::new(format, JitterConfig::for_transport(link.link())),
                     format,
                 );
             }

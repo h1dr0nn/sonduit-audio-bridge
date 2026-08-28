@@ -143,6 +143,78 @@ pub enum Transport {
     Usb,
 }
 
+/// Packets in a row that must declare a different link before it is believed.
+///
+/// The sender re-declares the link in the header of every packet, so the
+/// information is not scarce and waiting for a few more of them is almost
+/// free: at six milliseconds a packet this is thirty milliseconds, set
+/// against the several seconds of wrongly sized buffer that reacting late
+/// costs.
+///
+/// What it buys is that one datagram cannot retune a live buffer. Nothing
+/// authenticates a packet on this wire, so a single spoofed or corrupted
+/// header with the flag flipped would otherwise move the target and throw
+/// away the drift history behind it. Sustaining the claim for five
+/// consecutive packets means holding the stream at the packet rate, and
+/// anyone who can do that can inject audio directly and has no need of this.
+pub const LINK_CONFIRMATIONS: u32 = 5;
+
+/// Follows the link the sender declares, and reports a change once it holds.
+///
+/// A run has to be unbroken. One packet agreeing with the link in force ends
+/// any argument for changing it, because a stray header among honest ones is
+/// exactly what this exists to reject, and a run interrupted by an honest
+/// packet is stray by definition. A real migration is not interrupted: the
+/// sender has already changed interface and every packet after it says so.
+#[derive(Debug, Clone, Copy)]
+pub struct LinkWatch {
+    link: Transport,
+    /// The link being argued for, and how many packets in a row have said so.
+    candidate: Option<(Transport, u32)>,
+}
+
+impl LinkWatch {
+    /// Start watching, with `link` taken as already in force.
+    #[must_use]
+    pub const fn new(link: Transport) -> Self {
+        Self {
+            link,
+            candidate: None,
+        }
+    }
+
+    /// The link currently in force.
+    #[must_use]
+    pub const fn link(&self) -> Transport {
+        self.link
+    }
+
+    /// Fold in what one packet declared.
+    ///
+    /// Returns the new link on the packet that confirms a change, and `None`
+    /// on every other packet, so a caller can act exactly once per migration.
+    pub fn observe(&mut self, declared: Transport) -> Option<Transport> {
+        if declared == self.link {
+            self.candidate = None;
+            return None;
+        }
+
+        let seen = match self.candidate {
+            Some((candidate, seen)) if candidate == declared => seen.saturating_add(1),
+            _ => 1,
+        };
+
+        if seen >= LINK_CONFIRMATIONS {
+            self.candidate = None;
+            self.link = declared;
+            return Some(declared);
+        }
+
+        self.candidate = Some((declared, seen));
+        None
+    }
+}
+
 impl Default for JitterConfig {
     fn default() -> Self {
         Self::for_transport(Transport::WiFi)
@@ -636,6 +708,58 @@ impl JitterBuffer {
         self.next = Some(next + 1);
         self.stats.lost += 1;
         PopOutcome::Lost
+    }
+
+    /// Adopt a different link's tuning without dropping what is held.
+    ///
+    /// A session can change link while it is playing: the desktop migrates one
+    /// between Wi-Fi and a USB tether and declares the new link in the header
+    /// of every packet after it. The format has not changed, so nothing about
+    /// the stream is new -- only the policy that was right for it.
+    ///
+    /// This is why that is not a new [`JitterBuffer`]. Constructing one throws
+    /// away the ten to thirty milliseconds this one is holding, and that hole
+    /// is precisely the gap a seamless migration exists to avoid. So the
+    /// packets stay, the sequence state stays, and `playing` stays: a buffer
+    /// that re-arms starves for a target's worth of audio, and re-arming is
+    /// audible.
+    ///
+    /// What does change:
+    ///
+    /// - **the target is recomputed from the new config, not clamped into
+    ///   it.** Clamping alone is the failure this replaces. USB's floor of
+    ///   6 ms is a legal depth on Wi-Fi, so a buffer arriving from USB would
+    ///   keep it and spend the nine seconds the adaptation needs to grow to
+    ///   Wi-Fi's 30 ms holding a wire's worth of audio against a radio's
+    ///   jitter -- nine seconds of plausible underrun, beginning the moment
+    ///   the user pulled the cable.
+    /// - **the jitter estimate is cleared.** It is the mean absolute change in
+    ///   transit time on the path that has just been left, and it describes
+    ///   nothing about the new one. Clearing it is also what puts the target
+    ///   on the new link's configured depth rather than the old link's
+    ///   measured one, in both directions.
+    /// - **the retarget cooldown is cleared,** so the first arrival over the
+    ///   new link may move the target immediately. A cooldown is a promise not
+    ///   to react to a link that no longer carries the audio.
+    /// - **the previous arrival is forgotten,** so the one packet that
+    ///   straddles the change is not differenced against the other path. That
+    ///   difference is a step and not jitter; read as jitter it inflates the
+    ///   estimate, and read by the wire-speed test it sheds audio on the
+    ///   strength of a single crossing.
+    ///
+    /// [`JitterStats`] and the cooldown clock keep running. The session did
+    /// not restart; its link changed.
+    pub fn retune(&mut self, config: JitterConfig) {
+        self.config = config;
+        // Same clamp as `new`: JitterConfig has no validation, and a target
+        // outside its own range would otherwise be honoured forever.
+        self.target_ms = f64::from(config.target_ms).clamp(
+            f64::from(config.min_ms.min(config.max_ms)),
+            f64::from(config.min_ms.max(config.max_ms)),
+        );
+        self.jitter_frames = 0.0;
+        self.previous_observation = None;
+        self.retarget_allowed_at = 0;
     }
 
     /// Drop everything and re-arm, for a format change or a new sender.
