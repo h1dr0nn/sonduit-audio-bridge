@@ -399,8 +399,9 @@ fn run(arrivals: &[usize], sealed: bool) -> Run {
 
         let outcome = buffer.push(sequence, timestamp, arrival, pcm);
         assert!(
-            !matches!(outcome, PushOutcome::Overflow),
-            "the buffer overflowed, which this pattern must not cause"
+            !matches!(outcome, PushOutcome::AcceptedShedding(_)),
+            "the buffer reached its packet ceiling, which this pattern must \
+             not cause"
         );
     }
 

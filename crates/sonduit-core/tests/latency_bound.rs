@@ -227,6 +227,18 @@ fn a_source_that_outruns_the_sink_stops_at_the_bound() {
         "nothing was shed against a sink the resampler cannot catch"
     );
 
+    // And the packet ceiling underneath the budget was never involved. It is
+    // the floor this bound exists to keep out of reach: a receiver that checks
+    // the budget on every arrival cannot get near 256 packets, so a session
+    // that reports one has a bound that did not run. See `hard_ceiling.rs` for
+    // what the buffer does when it happens anyway.
+    assert_eq!(
+        session.buffer.stats().overflows,
+        0,
+        "the packet ceiling fired underneath a bound that was applied on \
+         every arrival"
+    );
+
     // Each shed buys back the whole difference between the budget and the
     // target, so they are far apart. Shedding on a substantial fraction of
     // arrivals would be dropping audio routinely, which is the thing this must

@@ -7,18 +7,31 @@
 //! Nothing here reads a clock. Arrival times are passed in, which is what
 //! makes the whole module testable against a synthetic timeline.
 //!
-//! # It discards audio, in two cases
+//! # It discards audio, and always from the front
 //!
 //! Absorbing is the job, but only up to a point: audio held is latency, and a
 //! buffer with no way of giving depth back keeps whatever a bad moment put in
 //! it for the rest of the session. So the front of the buffer is discarded
 //! when it arrived faster than it was produced -- see [`JitterBuffer::push`],
-//! which is the socket backlog a slow device open leaves behind -- and when
-//! the receiver as a whole is holding past its configured ceiling, which is
-//! [`JitterBuffer::shed_over_budget`]. Neither is routine and neither is
-//! silent: both are counted in [`JitterStats::shed`], and both stop at the
-//! target rather than emptying the buffer, because a buffer shed below the
-//! depth it starts playing at re-arms, and re-arming is audible.
+//! which is the socket backlog a slow device open leaves behind -- when the
+//! receiver as a whole is holding past its configured ceiling, which is
+//! [`JitterBuffer::shed_over_budget`], and when the packet ceiling in
+//! [`JitterConfig::max_packets`] is reached, which is the floor underneath
+//! the other two and which a session inside its budget never touches.
+//!
+//! Always from the front, and never the packet that has just arrived. The
+//! oldest audio held is the audio furthest from being playable in time; the
+//! newest is the only part of the stream that is still current. A buffer that
+//! refused new audio in order to keep old would preserve exactly the wrong
+//! second of the stream, and would preserve it for the rest of the session,
+//! because nothing else here ever gives depth back. That is not hypothetical:
+//! it is what a real device was found doing, pinned at 1536 ms -- 256 packets
+//! of six -- with the drift controller at its 500 ppm limit behind it.
+//!
+//! None of the three is routine and none is silent: all are counted in
+//! [`JitterStats::shed`], and all stop at the target rather than emptying the
+//! buffer, because a buffer shed below the depth it starts playing at re-arms,
+//! and re-arming is audible.
 
 use std::collections::BTreeMap;
 
@@ -101,8 +114,21 @@ pub struct JitterConfig {
     /// mean absolute deviation rather than a true sigma, so this is a
     /// heuristic and not a probability bound.
     pub jitter_multiplier: f64,
-    /// Packets held before the buffer refuses more, protecting against a
-    /// sender that floods faster than the sink drains.
+    /// Packets held before the buffer sheds its oldest to make room,
+    /// protecting against a sender that floods faster than the sink drains.
+    ///
+    /// A bound on memory and a last resort, not the depth policy. [`max_ms`]
+    /// is what is meant to keep the depth sane, but that one is applied by the
+    /// caller on every arrival through [`JitterBuffer::shed_over_budget`], and
+    /// a caller that does not call it -- or calls it only on some arrivals --
+    /// leaves this as the one limit the buffer enforces on itself. Reaching it
+    /// means the bound above was not applied, or did not catch what put the
+    /// depth here.
+    ///
+    /// Honoured even when it sits below the adaptive target: the ceiling wins,
+    /// and the buffer holds less than it would like to.
+    ///
+    /// [`max_ms`]: JitterConfig::max_ms
     pub max_packets: usize,
 
     /// How much better conditions must look before the target is allowed to
@@ -277,9 +303,20 @@ pub enum PushOutcome {
     Duplicate,
     /// Older than the packet the buffer has already released. Unusable.
     TooLate,
-    /// The buffer is full; the packet was dropped rather than displacing audio
-    /// that is closer to being played.
-    Overflow,
+    /// Stored, and [`JitterConfig::max_packets`] forced the oldest audio out
+    /// to make room. Carries the packets discarded, which are counted in
+    /// [`JitterStats::shed`] and are neither lost nor concealed.
+    ///
+    /// The discard is always from the front, so the newest audio the buffer
+    /// holds always survives. A straggler the network reordered can arrive to
+    /// find the buffer at its ceiling, and is then judged with the rest of the
+    /// front and may go out with it; that is the same decision applied to it
+    /// as to its neighbours, and not a refusal.
+    ///
+    /// Nothing a healthy session does produces this. It says the ceiling in
+    /// [`JitterConfig::max_ms`] was not applied, or did not catch what put the
+    /// depth here, so it is worth a line in whatever the caller logs to.
+    AcceptedShedding(u64),
 }
 
 /// What [`JitterBuffer::pop`] produced.
@@ -313,7 +350,13 @@ pub struct JitterStats {
     /// A session where this keeps pace with `target_grew` is oscillating, and
     /// the user is hearing every cycle of it.
     pub target_shrank: u64,
-    /// Packets dropped because the buffer was full.
+    /// Times the buffer reached [`JitterConfig::max_packets`] and shed its
+    /// oldest audio to make room for what had just arrived.
+    ///
+    /// Not packets dropped and not packets refused: nothing is turned away
+    /// here, and the packets each shed discarded are in `shed`. This counts
+    /// the event, because the event means the millisecond budget above it did
+    /// not do its job.
     pub overflows: u64,
     /// Slots given up on and concealed.
     pub lost: u64,
@@ -321,14 +364,17 @@ pub struct JitterStats {
     pub starved: u64,
     /// Packets that arrived out of order but early enough to be reordered.
     pub reordered: u64,
-    /// Packets discarded from the front: either a backlog arrived at wire
-    /// speed, or the receiver was holding past what the link allows.
+    /// Packets discarded from the front: a backlog arrived at wire speed, the
+    /// receiver was holding past what the link allows, or the buffer reached
+    /// [`JitterConfig::max_packets`].
     ///
-    /// Not loss and not concealed: see [`JitterBuffer::push`] for the first
-    /// and [`JitterBuffer::shed_over_budget`] for the second. A handful once,
-    /// at the start of a session, is the case this exists for. A count that
-    /// keeps climbing means the sender is genuinely producing faster than the
-    /// device plays, which is drift and belongs to the resampler.
+    /// Not loss and not concealed, in any of the three cases: `next` moves
+    /// with the discard, so a shed slot is never given to the concealer. See
+    /// [`JitterBuffer::push`] for the first and third and
+    /// [`JitterBuffer::shed_over_budget`] for the second. A handful once, at
+    /// the start of a session, is the case this exists for. A count that keeps
+    /// climbing means the sender is genuinely producing faster than the device
+    /// plays, which is drift and belongs to the resampler.
     pub shed: u64,
 }
 
@@ -562,7 +608,22 @@ impl JitterBuffer {
     /// crackle has no way in.
     fn shed_to_target(&mut self) {
         let target = self.target_packets();
-        while self.entries.len() > target {
+        self.shed_down_to(target);
+    }
+
+    /// The same discard, to a depth the caller names.
+    ///
+    /// Split out for the hard ceiling, which has to be able to shed below the
+    /// adaptive target. A `max_packets` smaller than the depth `target_ms`
+    /// asks for is a legal configuration -- neither field validates against
+    /// the other -- and a shed that always stopped at the target would leave
+    /// nothing enforcing the ceiling in that case at all.
+    ///
+    /// Never below one packet, whatever it is given: a buffer shed empty
+    /// re-arms, and re-arming is audible.
+    fn shed_down_to(&mut self, floor: usize) {
+        let floor = floor.max(1);
+        while self.entries.len() > floor {
             let Some((oldest, _)) = self.entries.pop_first() else {
                 break;
             };
@@ -581,6 +642,23 @@ impl JitterBuffer {
     ///
     /// `arrival_nanos` is a receiver-side monotonic timestamp. It is only ever
     /// differenced, so its epoch does not matter.
+    ///
+    /// # It can discard audio, and never the packet it was given
+    ///
+    /// Two of the three discards in this module happen here, and both take
+    /// from the front. A packet that arrived faster than the sender could have
+    /// produced it is backlog rather than depth, and while the buffer is over
+    /// its target the oldest goes; and reaching
+    /// [`JitterConfig::max_packets`] discards down to the target and returns
+    /// [`PushOutcome::AcceptedShedding`], because at the ceiling the front of
+    /// the buffer is the audio that can no longer be played on time and the
+    /// arriving packet is the only part of the stream that is current.
+    ///
+    /// Both move `next` with them, so a discarded slot is never reported lost
+    /// and never reaches the concealer. Both are counted in
+    /// [`JitterStats::shed`], and the second is counted again as an event in
+    /// [`JitterStats::overflows`]. Neither happens on a session that is
+    /// behaving.
     pub fn push(
         &mut self,
         sequence: u16,
@@ -604,11 +682,6 @@ impl JitterBuffer {
         if self.entries.contains_key(&extended) {
             self.stats.duplicates += 1;
             return PushOutcome::Duplicate;
-        }
-
-        if self.entries.len() >= self.config.max_packets {
-            self.stats.overflows += 1;
-            return PushOutcome::Overflow;
         }
 
         // Only packets the buffer actually keeps may move the jitter estimate.
@@ -659,6 +732,34 @@ impl JitterBuffer {
         // session that starts cleanly this does nothing at all.
         if wire_speed {
             self.shed_to_target();
+        }
+
+        // The floor underneath both of the discards above, and the only limit
+        // this buffer applies without being asked. `max_ms` is what is meant
+        // to keep the depth sane, but it is policy the caller applies on every
+        // arrival by calling `shed_over_budget`, and a caller that does not --
+        // or one that skips it while there is no playback queue to measure
+        // against -- has nothing between a stalled sink and unbounded memory
+        // but this.
+        //
+        // What it must not do is what it used to do: refuse the packet that
+        // has just arrived. At the ceiling the packets at the front are the
+        // ones that can no longer be played on time and the new one is the
+        // only part of the stream that is current, so refusing it keeps the
+        // stale second and a half and throws away the live audio -- and keeps
+        // it permanently, because refusing is not a way back down.
+        //
+        // So the discard is from the front, down to the target the adaptation
+        // settled on, or to the ceiling itself when a caller has set one below
+        // that target. `next` moves with it, so none of what goes is reported
+        // lost or handed to the concealer.
+        let ceiling = self.config.max_packets.max(1);
+        if self.entries.len() > ceiling {
+            let before = self.stats.shed;
+            let floor = self.target_packets().min(ceiling);
+            self.shed_down_to(floor);
+            self.stats.overflows += 1;
+            return PushOutcome::AcceptedShedding(self.stats.shed - before);
         }
 
         PushOutcome::Accepted
@@ -1082,6 +1183,9 @@ mod tests {
 
     #[test]
     fn the_buffer_refuses_to_grow_without_bound() {
+        // A ceiling below the depth the target asks for, which is a legal
+        // configuration: neither field validates against the other. The
+        // ceiling has to win there, or nothing bounds this buffer at all.
         let mut buffer = JitterBuffer::new(
             Format::stereo_48k(),
             JitterConfig {
@@ -1092,8 +1196,117 @@ mod tests {
         for n in 0..4 {
             assert_eq!(push_on_time(&mut buffer, n), PushOutcome::Accepted);
         }
-        assert_eq!(push_on_time(&mut buffer, 4), PushOutcome::Overflow);
-        assert_eq!(buffer.stats().overflows, 1);
+
+        for n in 4..12 {
+            assert_eq!(
+                push_on_time(&mut buffer, n),
+                PushOutcome::AcceptedShedding(1),
+                "packet {n} was not stored at the ceiling"
+            );
+            assert_eq!(buffer.depth_packets(), 4, "grew past the ceiling at {n}");
+        }
+        assert_eq!(buffer.stats().overflows, 8);
+        assert_eq!(buffer.stats().shed, 8);
+    }
+
+    #[test]
+    fn at_the_ceiling_the_audio_kept_is_the_recent_audio() {
+        // The defect this exists for. At the ceiling the buffer used to refuse
+        // the packet that had just arrived, so what it held was the oldest
+        // audio it had and the current audio was thrown away -- and it stayed
+        // that way, because refusing is not a way back down.
+        let ceiling = 8;
+        let sent = 40_u16;
+        let mut buffer = JitterBuffer::new(
+            Format::stereo_48k(),
+            JitterConfig {
+                max_packets: ceiling,
+                ..JitterConfig::default()
+            },
+        );
+        for n in 0..sent {
+            push_on_time(&mut buffer, n);
+        }
+
+        let mut played = Vec::new();
+        while let PopOutcome::Packet(pcm) = buffer.pop() {
+            played.push(u16::from(pcm[0]));
+        }
+
+        assert!(!played.is_empty(), "the buffer played nothing");
+        assert!(
+            played.len() <= ceiling,
+            "held {} past the ceiling",
+            played.len()
+        );
+
+        // What came out is the end of what went in, not the beginning.
+        let expected: Vec<u16> = (sent - played.len() as u16..sent).collect();
+        assert_eq!(
+            played, expected,
+            "the buffer played the stale audio, not the recent audio"
+        );
+        assert_eq!(
+            played.last(),
+            Some(&(sent - 1)),
+            "the newest packet was lost"
+        );
+
+        // Everything sent is accounted for, and every packet that did not play
+        // was shed rather than refused or concealed.
+        let stats = buffer.stats();
+        assert_eq!(stats.accepted, u64::from(sent));
+        assert_eq!(stats.shed as usize + played.len(), usize::from(sent));
+        assert_eq!(stats.lost, 0);
+    }
+
+    #[test]
+    fn nothing_shed_at_the_ceiling_is_reported_lost() {
+        let mut buffer = JitterBuffer::new(
+            Format::stereo_48k(),
+            JitterConfig {
+                max_packets: 8,
+                ..JitterConfig::default()
+            },
+        );
+        // Playing first, so `next` is latched and a discard from the front has
+        // something it could get wrong.
+        for n in 0..8 {
+            push_on_time(&mut buffer, n);
+        }
+        assert!(matches!(buffer.pop(), PopOutcome::Packet(_)));
+
+        for n in 8..60 {
+            push_on_time(&mut buffer, n);
+        }
+        loop {
+            match buffer.pop() {
+                PopOutcome::Packet(_) => {}
+                PopOutcome::Lost => panic!("a shed slot was handed to the concealer"),
+                PopOutcome::Starved => break,
+            }
+        }
+
+        let stats = buffer.stats();
+        assert!(stats.shed > 0, "the ceiling was never reached");
+        assert_eq!(
+            stats.lost, 0,
+            "{} shed slots were reported lost",
+            stats.lost
+        );
+        assert_eq!(stats.too_late, 0);
+    }
+
+    #[test]
+    fn a_buffer_nowhere_near_the_ceiling_is_untouched() {
+        let mut buffer = buffer();
+        for n in 0..8 {
+            assert_eq!(push_on_time(&mut buffer, n), PushOutcome::Accepted);
+        }
+        let stats = buffer.stats();
+        assert_eq!(stats.overflows, 0);
+        assert_eq!(stats.shed, 0);
+        assert_eq!(buffer.depth_packets(), 8);
     }
 
     #[test]

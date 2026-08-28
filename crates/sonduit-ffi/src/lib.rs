@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use sonduit_core::drift::{DriftConfig, DriftEstimator};
 use sonduit_core::format::Format;
-use sonduit_core::jitter::{JitterBuffer, JitterConfig, LinkWatch, Transport};
+use sonduit_core::jitter::{JitterBuffer, JitterConfig, LinkWatch, PushOutcome, Transport};
 use sonduit_core::pacing::{drain_allowance, PacingConfig};
 use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
@@ -1099,6 +1099,14 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     // stopped calling back would otherwise produce a line every six
     // milliseconds about the one thing that is already obvious.
     let mut shed_packets = 0_u64;
+    // Packets shed at the jitter buffer's hard packet ceiling since the last
+    // report, which is a different fact from the line above and reported
+    // separately. The bound on the sum is what is supposed to keep the depth
+    // sane; the ceiling is the floor underneath it, and reaching it says the
+    // bound never ran -- there was no playback queue to measure against, or
+    // the lock guarding it was not available -- rather than that the link is
+    // holding too much.
+    let mut ceiling_packets = 0_u64;
     // Which link the audio is arriving over, as the sender declares it in
     // every packet header. Wi-Fi until the first packet says otherwise,
     // because holding too much audio is recoverable and holding too little is
@@ -1390,7 +1398,15 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                     format,
                 );
             }
-            source.buffer_mut().push(sequence, timestamp, arrival, pcm);
+            // Read rather than discarded. The buffer keeps the packet
+            // either way now, but at its packet ceiling it had to throw
+            // older audio out to do so, and that is worth saying out loud:
+            // nothing a healthy session does gets anywhere near it.
+            if let PushOutcome::AcceptedShedding(discarded) =
+                source.buffer_mut().push(sequence, timestamp, arrival, pcm)
+            {
+                ceiling_packets += discarded;
+            }
 
             // Move what the buffer will release into the queue the callback
             // reads. This is the only place the jitter buffer is touched now;
@@ -1567,6 +1583,18 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                     "shed {shed_packets} packets: the receiver was holding past what this link allows"
                 );
                 shed_packets = 0;
+            }
+
+            // And the floor underneath that one. The bound above is checked on
+            // every arrival, so this can only be reached when it was not: the
+            // buffer filled to its packet ceiling with nothing measuring it.
+            // A session that logs this is holding audio nobody bounded, and
+            // the line is here to say which of the two limits gave way.
+            if ceiling_packets > 0 {
+                note!(
+                    "shed {ceiling_packets} packets at the jitter buffer's packet ceiling: the bound on the total never ran"
+                );
+                ceiling_packets = 0;
             }
 
             // Worth a line, and worth being specific: on a healthy paired link
