@@ -86,13 +86,27 @@ const RECV_TIMEOUT: Duration = Duration::from_millis(250);
 /// would only chase jitter.
 const PACKETS_PER_CORRECTION: u32 = 40;
 
-/// Packets moved from the jitter buffer to the audio queue per packet received.
+/// Ceiling on packets moved from the jitter buffer to the audio queue per
+/// packet received.
 ///
-/// Above one so a buffer that has fallen behind can catch up, and small enough
+/// Above one so a queue that has fallen behind can catch up, and small enough
 /// that catching up cannot starve the socket. The loop it bounds cannot be
 /// written as "drain until empty": a jitter buffer conceals a gap rather than
 /// reporting one, so it will always produce another packet if asked.
 const DRAIN_PER_PACKET: usize = 3;
+
+/// Packets the audio queue should hold.
+///
+/// The queue exists to cover the gap between two independent clocks: this
+/// thread wakes when a datagram arrives, the callback wakes when the device
+/// asks. A device here reported a 96-frame burst and a 4 ms buffer, so two
+/// six-millisecond packets covers a callback and the jitter in getting to it,
+/// and costs twelve milliseconds of latency to do it.
+///
+/// Everything above this waits in the jitter buffer instead, which is the part
+/// that knows how to reorder, conceal and retarget. Audio held in the queue is
+/// latency and nothing else.
+const QUEUE_FLOOR_PACKETS: usize = 2;
 
 /// Bridge lifecycle state, mirrored into the Android UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Enum)]
@@ -670,8 +684,11 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                     packet.sequence,
                     packet.timestamp_frames,
                     packet.pcm.to_vec(),
+                    packet.wired_link(),
                 )
             }),
+            // Scream's header has no room to say, so it never claims a wired
+            // link and the address is all there is to go on.
             Some(Wire::Scream) => ScreamPacket::decode(bytes).ok().map(|packet| {
                 let sequence = scream_sequence;
                 scream_sequence = scream_sequence.wrapping_add(1);
@@ -681,12 +698,13 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                     sequence,
                     u32::from(sequence).wrapping_mul(frames),
                     packet.pcm.to_vec(),
+                    false,
                 )
             }),
             None => None,
         };
 
-        let Some((format, sequence, timestamp, pcm)) = decoded else {
+        let Some((format, sequence, timestamp, pcm, wired_link)) = decoded else {
             if let Ok(mut count) = shared.malformed.lock() {
                 *count += 1;
             }
@@ -712,7 +730,7 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
         if changed {
             // Everything learned about the previous stream is about a
             // different clock pair and a different rate.
-            transport = transport_of(from);
+            transport = link_of(from, wired_link);
             if let Ok(mut slot) = shared.transport.lock() {
                 *slot = Some(transport);
             }
@@ -784,26 +802,40 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             // reads. This is the only place the jitter buffer is touched now;
             // the callback never sees it, which is the point.
             //
-            // Bounded, and that bound is not a nicety. Draining "until the
-            // source is empty" never terminates: a jitter buffer with a gap
-            // conceals it and hands back audio, so it is always willing to
-            // produce more. The first version of this loop spun forever on the
-            // first packet and the receive thread never went back to the
-            // socket. One packet in, at most a few packets out, is the pacing
-            // that matches reality.
-            for _ in 0..DRAIN_PER_PACKET {
-                if !drain_packet(&mut source, &mut staging) {
-                    break;
-                }
-                let Ok(mut queue) = shared.queue.lock() else {
-                    break;
-                };
-                let Some(queue) = queue.as_mut() else { break };
-                if queue.push(&staging) < staging.len() {
-                    // The callback has stalled. Stop feeding rather than
-                    // spinning; the resync below deals with the backlog once
-                    // it is genuinely hopeless.
-                    break;
+            // One packet out per packet in, and more only to make up a queue
+            // that is genuinely short. Draining faster than that empties the
+            // jitter buffer, and an empty buffer stops playing, refills to its
+            // target and releases the lot in a burst -- so the latency swung
+            // between roughly nothing and the full target on a cycle, and the
+            // starve at the bottom of each cycle put concealment into audio
+            // that had arrived perfectly intact. That is the crackle, and it
+            // is why this is a rate and not a maximum.
+            //
+            // The ceiling stays because the loop cannot be written as "drain
+            // until empty": a jitter buffer with a gap conceals it and hands
+            // back audio, so it is always willing to produce another packet.
+            // The first version of this spun forever on the first packet and
+            // never went back to the socket.
+            let packet_ms =
+                1000.0 * source.frames_per_packet() as f64 / f64::from(format.sample_rate);
+
+            if let Ok(mut queue) = shared.queue.lock() {
+                if let Some(queue) = queue.as_mut() {
+                    let held = (queue.queued_ms() / packet_ms).floor() as usize;
+                    let allowance =
+                        (1 + QUEUE_FLOOR_PACKETS.saturating_sub(held)).min(DRAIN_PER_PACKET);
+
+                    for _ in 0..allowance {
+                        if !drain_packet(&mut source, &mut staging) {
+                            break;
+                        }
+                        if queue.push(&staging) < staging.len() {
+                            // The callback has stalled. Stop feeding rather
+                            // than spinning; the resync below deals with the
+                            // backlog once it is genuinely hopeless.
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1104,7 +1136,15 @@ fn playback_disconnected(_shared: &Arc<Shared>) -> bool {
 /// dropouts, not a broken session. The sender labels the link the same way;
 /// this is deliberately not taken from the packet, because a field an
 /// attacker controls should not decide how much audio is held.
-fn transport_of(from: SocketAddr) -> Transport {
+fn link_of(from: SocketAddr, declared_wired: bool) -> Transport {
+    if declared_wired {
+        return Transport::Usb;
+    }
+
+    // Nothing was declared, so fall back to the address. This is only ever
+    // right by luck -- USB tethering has no reserved range, and a phone here
+    // handed out 10.114.89.x -- but a sender too old to set the flag is still
+    // worth serving, and 192.168.42/24 is what stock Android uses.
     match from.ip() {
         std::net::IpAddr::V4(ip) => {
             let octets = ip.octets();
