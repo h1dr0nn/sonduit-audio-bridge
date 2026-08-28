@@ -16,7 +16,7 @@
 //! does not matter; a blocked capture thread is a glitch, which does.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -188,6 +188,25 @@ pub struct BridgeState {
     /// against the code and nonce that particular QR carried, and a new invite
     /// must invalidate the old one rather than adding a second key that works.
     invite: Mutex<Option<Invite>>,
+    /// The discovery-port listener, bound once and then reused.
+    ///
+    /// Binding a fresh socket per invite meant a second invite inside the
+    /// pairing window failed with "only one usage of each socket address": the
+    /// first wait still owned the port for the rest of its ninety seconds,
+    /// whether or not the user was still looking at the code. Nothing releases
+    /// a socket early on the strength of the caller having lost interest, so
+    /// the socket outlives the invites instead.
+    ///
+    /// Datagrams left over from an earlier window are harmless. Every one is
+    /// authenticated against the invite in hand, so an announcement keyed by a
+    /// code that has been replaced fails to verify like any other stranger.
+    listener: Mutex<Option<Arc<UdpSocket>>>,
+    /// Bumped whenever a wait is superseded or cancelled.
+    ///
+    /// A wait watches this and gives up as soon as it changes, so closing the
+    /// dialog stops the listen instead of leaving it running behind a window
+    /// nobody can see.
+    pairing_epoch: Arc<AtomicU64>,
 }
 
 impl BridgeState {
@@ -214,6 +233,79 @@ impl BridgeState {
     #[must_use]
     pub fn invite(&self) -> Option<Invite> {
         self.invite.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    /// Everything a wait needs, owned, plus the epoch it belongs to.
+    ///
+    /// Owned because the wait runs on a blocking task that outlives the
+    /// borrow a Tauri `State` gives out.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::NoInvite`] when no code is on screen, and
+    /// [`BridgeError::Network`] when the discovery port cannot be bound, which
+    /// on Windows is most often the firewall or a second copy of the app.
+    pub fn pairing_session(&self) -> Result<PairingSession, BridgeError> {
+        let invite = self.invite().ok_or(BridgeError::NoInvite)?;
+
+        let mut slot = self
+            .listener
+            .lock()
+            .map_err(|_| BridgeError::Network("pairing listener is poisoned".into()))?;
+        let socket = match slot.as_ref() {
+            Some(socket) => Arc::clone(socket),
+            None => {
+                let socket =
+                    UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, invite.port)))
+                        .map_err(|error| BridgeError::Network(error.to_string()))?;
+                // Short enough that cancelling is felt as immediate, long
+                // enough that waiting ninety seconds is not a spin.
+                socket
+                    .set_read_timeout(Some(Duration::from_millis(250)))
+                    .map_err(|error| BridgeError::Network(error.to_string()))?;
+                let socket = Arc::new(socket);
+                *slot = Some(Arc::clone(&socket));
+                socket
+            }
+        };
+
+        // Claiming an epoch is what supersedes the previous wait; two waits on
+        // one socket would otherwise race for the same datagram.
+        let epoch = self.pairing_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+
+        Ok(PairingSession {
+            invite,
+            socket,
+            epoch,
+            generation: Arc::clone(&self.pairing_epoch),
+        })
+    }
+
+    /// Stop whatever wait is in progress.
+    ///
+    /// Called when the user closes the pairing dialog. The code stops being
+    /// accepted at the same time, so a window that is no longer on screen
+    /// cannot pair a device the user is no longer expecting.
+    pub fn cancel_pairing(&self) {
+        self.pairing_epoch.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut current) = self.invite.lock() {
+            *current = None;
+        }
+    }
+}
+
+/// One attempt to catch the phone that scanned the code on screen.
+pub struct PairingSession {
+    invite: Invite,
+    socket: Arc<UdpSocket>,
+    /// The epoch this wait claimed. It runs until `generation` moves past it.
+    epoch: u64,
+    generation: Arc<AtomicU64>,
+}
+
+impl PairingSession {
+    /// Whether a newer invite, or a cancellation, has superseded this wait.
+    fn superseded(&self) -> bool {
+        self.generation.load(Ordering::SeqCst) != self.epoch
     }
 }
 
@@ -321,21 +413,19 @@ pub fn create_invite(state: &BridgeState) -> Result<PairingInvite, BridgeError> 
 /// Returns `Ok(None)` when nothing verified within [`PAIRING_TIMEOUT`], which
 /// is not an error. It usually means the user has not scanned yet.
 ///
+/// Returns `Ok(None)` just as readily when the dialog is closed, which is why
+/// the socket is not bound here: see [`BridgeState::pairing_session`].
+///
 /// # Errors
-/// Returns [`BridgeError::Network`] when the discovery port cannot be bound,
-/// which on Windows is most often the firewall or a second copy of the app.
-pub fn await_pairing(invite: &Invite) -> Result<Option<DiscoveredDevice>, BridgeError> {
-    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, invite.port)))
-        .map_err(|error| BridgeError::Network(error.to_string()))?;
-    socket
-        .set_read_timeout(Some(Duration::from_millis(250)))
-        .map_err(|error| BridgeError::Network(error.to_string()))?;
-
+/// Infallible today. The signature keeps the `Result` because the caller is a
+/// command and every other one of these can fail.
+pub fn await_pairing(session: &PairingSession) -> Result<Option<DiscoveredDevice>, BridgeError> {
+    let invite = &session.invite;
     let deadline = Instant::now() + PAIRING_TIMEOUT;
     let mut datagram = [0_u8; 256];
 
-    while Instant::now() < deadline {
-        let Ok((length, from)) = socket.recv_from(&mut datagram) else {
+    while Instant::now() < deadline && !session.superseded() {
+        let Ok((length, from)) = session.socket.recv_from(&mut datagram) else {
             continue;
         };
         // Anything that does not verify is dropped in silence, exactly as in
@@ -610,6 +700,43 @@ pub fn start(
     ))
 }
 
+/// Whether datagrams to `target` leave over a wired interface.
+///
+/// Asked of the routing table rather than of the address, because USB
+/// tethering has no reserved range: a phone here handed out 10.114.89.x, which
+/// looks like any other private network. Connecting a throwaway UDP socket
+/// sends nothing -- it only makes the kernel choose a source address -- and
+/// that address identifies the interface, which the adapter list can then
+/// name.
+///
+/// False on any doubt. Claiming a wired link that is not one would have the
+/// receiver hold ten milliseconds against Wi-Fi's jitter, which underruns; the
+/// reverse merely costs latency, which is what this already does.
+#[cfg(windows)]
+fn is_wired_route(target: SocketAddr) -> bool {
+    if target.ip().is_multicast() {
+        return false;
+    }
+
+    let Some(local) = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+        .ok()
+        .and_then(|probe| {
+            probe
+                .connect(target)
+                .ok()
+                .and_then(|()| probe.local_addr().ok())
+        })
+    else {
+        return false;
+    };
+
+    adapters::enumerate().is_ok_and(|tethers| {
+        tethers.iter().any(|adapter| {
+            adapter.local == local.ip() && adapters::looks_like_tether(&adapter.description)
+        })
+    })
+}
+
 /// The capture and send loop.
 ///
 /// Public so an example can drive it without a window: a bridge that can only
@@ -629,7 +756,9 @@ pub fn capture_to_socket(
     stop: &AtomicBool,
     snapshot: &Mutex<BridgeSnapshot>,
 ) {
-    let mut packetizer = Packetizer::new(format, wire);
+    // Declared once, at the top, because it cannot change mid-session: the
+    // route to the target was chosen when the socket was bound.
+    let mut packetizer = Packetizer::new(format, wire).on_wired_link(is_wired_route(target));
     let mut pcm = Vec::with_capacity(1 << 16);
     let mut counters = telemetry::Accumulator::new(format);
     let mut consecutive_failures = 0_u32;
@@ -938,13 +1067,93 @@ mod tests {
             }
         });
 
-        let found = await_pairing(&invite).expect("the listener must bind");
+        let state = BridgeState::default();
+        *state.invite.lock().expect("a fresh state is not poisoned") = Some(invite);
+
+        let session = state.pairing_session().expect("the listener must bind");
+        let found = await_pairing(&session).expect("the wait itself cannot fail");
         let _ = phone.join();
 
         let device = found.expect("an announcement keyed by the invite must be accepted");
         assert_eq!(device.name, "Pixel 7a");
         // The address comes from the datagram, the port from the announcement.
         assert_eq!(device.address, "127.0.0.1:4010");
+    }
+
+    #[test]
+    fn a_second_invite_does_not_collide_with_the_first() {
+        // Showing the code, closing the dialog and showing it again used to
+        // fail with "only one usage of each socket address": the first wait
+        // held the discovery port for the rest of its ninety-second window.
+        use sonduit_transport::invite::Invite;
+        use std::net::Ipv4Addr;
+
+        const PORT: u16 = 45_012;
+
+        let make = || {
+            let nonce = scan_nonce();
+            Invite::new(
+                &[Ipv4Addr::new(10, 10, 0, 61)],
+                PORT,
+                PairingCode::from_seed(seed_from(&nonce)),
+                nonce,
+            )
+            .expect("a routable address makes a valid invite")
+        };
+
+        let state = BridgeState::default();
+        *state.invite.lock().expect("not poisoned") = Some(make());
+        let first = state.pairing_session().expect("the first listener binds");
+
+        *state.invite.lock().expect("not poisoned") = Some(make());
+        let second = state
+            .pairing_session()
+            .expect("a second invite must not be refused the port");
+
+        assert!(
+            first.superseded(),
+            "the first wait must stand down once a second invite claims the port"
+        );
+        assert!(!second.superseded(), "the newest wait is the live one");
+
+        state.cancel_pairing();
+        assert!(
+            second.superseded(),
+            "closing the dialog must stop the wait rather than leave it listening"
+        );
+    }
+
+    #[test]
+    fn a_superseded_wait_returns_without_a_device() {
+        // And returns quickly: the whole point is that the port comes free
+        // long before the ninety seconds are up.
+        use sonduit_transport::invite::Invite;
+        use std::net::Ipv4Addr;
+
+        const PORT: u16 = 45_013;
+
+        let nonce = scan_nonce();
+        let invite = Invite::new(
+            &[Ipv4Addr::new(10, 10, 0, 61)],
+            PORT,
+            PairingCode::from_seed(seed_from(&nonce)),
+            nonce,
+        )
+        .expect("a routable address makes a valid invite");
+
+        let state = BridgeState::default();
+        *state.invite.lock().expect("not poisoned") = Some(invite);
+        let session = state.pairing_session().expect("the listener binds");
+
+        let started = Instant::now();
+        state.cancel_pairing();
+        let found = await_pairing(&session).expect("the wait itself cannot fail");
+
+        assert!(found.is_none(), "a cancelled wait pairs nothing");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancelling must be felt at once, not after the full window"
+        );
     }
 
     #[test]

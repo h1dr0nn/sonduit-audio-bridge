@@ -31,6 +31,8 @@ tauri-plugin-fs = "2"
 tauri-plugin-store = "2.4.1"
 tauri-plugin-log = "2.7.1"
 tauri-plugin-process = "2.3.1"
+tauri-plugin-window-state = "2"
+tauri-plugin-single-instance = "2"
 
 # Capture is Windows-only, so the dependency is too: the workspace still has to
 # build on the Linux runner that checks the core and the Android targets.
