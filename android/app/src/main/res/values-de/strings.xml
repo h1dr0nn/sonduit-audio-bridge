@@ -34,4 +34,21 @@
     <string name="scan_paired">An den Computer gesendet. Der Ton startet gleich.</string>
     <string name="scan_failed">Der Computer war nicht erreichbar. Prüfe, ob beide im selben Netz sind oder per USB verbunden.</string>
     <string name="scan_camera_error">Die Kamera konnte nicht geöffnet werden.</string>
+
+    <string name="settings_title">Einstellungen</string>
+    <string name="settings_back">Zurück</string>
+    <string name="settings_name_title">Gerätename</string>
+    <string name="settings_name_hint">Der Name, unter dem dieses Telefon am Computer erscheint. Leer lassen, um den Modellnamen zu verwenden.</string>
+    <string name="settings_autostart_title">Beim Öffnen zuhören</string>
+    <string name="settings_autostart_hint">Die App zu öffnen startet eine Sitzung, ohne auf Zuhören starten zu tippen.</string>
+    <string name="settings_appearance_title">Erscheinungsbild</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Hell</string>
+    <string name="settings_theme_dark">Dunkel</string>
+    <string name="settings_language_title">Sprache</string>
+    <string name="settings_language_system">Systemsprache</string>
+    <string name="settings_about_title">Über</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_author">Autor</string>
+    <string name="settings_repository">Repository</string>
 </resources>

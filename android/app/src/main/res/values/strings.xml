@@ -44,4 +44,24 @@
     <string name="scan_paired">Sent to the computer. Audio should start playing shortly.</string>
     <string name="scan_failed">The computer could not be reached. Check that both are on the same network or joined by USB.</string>
     <string name="scan_camera_error">The camera could not be opened.</string>
+
+    <!-- The settings screen. Every row here reaches something the app
+         really does: the announced name, the session, the colour scheme and
+         the language. -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_back">Back</string>
+    <string name="settings_name_title">Device name</string>
+    <string name="settings_name_hint">The name this phone appears under on the computer. Leave it empty to use the model name.</string>
+    <string name="settings_autostart_title">Start listening on launch</string>
+    <string name="settings_autostart_hint">Opening the app starts a session, without tapping Start listening.</string>
+    <string name="settings_appearance_title">Appearance</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_language_title">Language</string>
+    <string name="settings_language_system">System default</string>
+    <string name="settings_about_title">About</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_author">Author</string>
+    <string name="settings_repository">Repository</string>
 </resources>

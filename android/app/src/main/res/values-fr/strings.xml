@@ -34,4 +34,21 @@
     <string name="scan_paired">Envoyé à l’ordinateur. Le son devrait démarrer d’ici peu.</string>
     <string name="scan_failed">Impossible de joindre l’ordinateur. Vérifiez que les deux sont sur le même réseau ou reliés en USB.</string>
     <string name="scan_camera_error">Impossible d’ouvrir l’appareil photo.</string>
+
+    <string name="settings_title">Paramètres</string>
+    <string name="settings_back">Retour</string>
+    <string name="settings_name_title">Nom de l’appareil</string>
+    <string name="settings_name_hint">Le nom sous lequel ce téléphone apparaît sur l’ordinateur. Laissez vide pour utiliser le nom du modèle.</string>
+    <string name="settings_autostart_title">Écouter dès l’ouverture</string>
+    <string name="settings_autostart_hint">Ouvrir l’application démarre une session, sans toucher Commencer l’écoute.</string>
+    <string name="settings_appearance_title">Apparence</string>
+    <string name="settings_theme_system">Système</string>
+    <string name="settings_theme_light">Clair</string>
+    <string name="settings_theme_dark">Sombre</string>
+    <string name="settings_language_title">Langue</string>
+    <string name="settings_language_system">Langue du système</string>
+    <string name="settings_about_title">À propos</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_author">Auteur</string>
+    <string name="settings_repository">Dépôt</string>
 </resources>

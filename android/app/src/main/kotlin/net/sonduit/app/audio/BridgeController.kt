@@ -3,6 +3,7 @@ package net.sonduit.app.audio
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import net.sonduit.app.AppSettings
 import uniffi.sonduit_ffi.Bridge
 import uniffi.sonduit_ffi.BridgeState
 import uniffi.sonduit_ffi.FfiException
@@ -103,9 +104,9 @@ object BridgeController {
      * behind it, so calling this twice renames the same one.
      */
     @Synchronized
-    fun prepare() {
+    fun prepare(context: Context) {
         try {
-            bridge.setDeviceName(deviceName())
+            bridge.setDeviceName(announcedName(context))
         } catch (error: Exception) {
             Log.e(TAG, "the bridge could not be prepared", error)
         }
@@ -122,7 +123,7 @@ object BridgeController {
     fun start(context: Context, port: Int): Boolean {
         if (running) return true
 
-        bridge.setDeviceName(deviceName())
+        bridge.setDeviceName(announcedName(context))
         return try {
             bridge.start(port.toUShort())
             running = true
@@ -217,6 +218,23 @@ object BridgeController {
         }
     }
 
+    /**
+     * Adopt a name the user typed, and announce under it from now on.
+     *
+     * Takes effect without a restart: discovery answers read the name at the
+     * moment they are built, and the user renaming a phone is watching the
+     * computer's device list for it to change.
+     */
+    @Synchronized
+    fun applyDeviceName(context: Context, name: String) {
+        AppSettings.setDeviceName(context, name)
+        try {
+            bridge.setDeviceName(announcedName(context))
+        } catch (error: Exception) {
+            Log.e(TAG, "the device name could not be applied", error)
+        }
+    }
+
     /** Replace the pairing code. Any desktop paired with the old one stops working. */
     fun regeneratePairingCode() {
         try {
@@ -255,13 +273,23 @@ object BridgeController {
     }
 
     /**
-     * The name this device announces to the desktop.
+     * The name this device announces, which the user may have chosen.
+     *
+     * Falls back to the model whenever the stored name is blank, so clearing
+     * the field in settings is a way back to the default rather than a way to
+     * appear on the computer as nothing at all.
+     */
+    private fun announcedName(context: Context): String =
+        AppSettings.deviceName(context).ifBlank { defaultDeviceName() }
+
+    /**
+     * The name used when the user has not chosen one.
      *
      * `Build.MODEL` rather than the user's device name: reading the latter
      * needs a permission on newer releases, and the model is enough to tell
      * two phones apart in a list.
      */
-    private fun deviceName(): String {
+    fun defaultDeviceName(): String {
         val manufacturer = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
         val model = Build.MODEL
         return if (model.startsWith(manufacturer, ignoreCase = true)) model else "$manufacturer $model"

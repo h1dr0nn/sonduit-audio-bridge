@@ -34,4 +34,21 @@
     <string name="scan_paired">Đã gửi tới máy tính. Âm thanh sẽ phát ngay sau đó.</string>
     <string name="scan_failed">Không liên lạc được với máy tính. Kiểm tra hai máy cùng mạng hoặc đã nối USB.</string>
     <string name="scan_camera_error">Không mở được camera.</string>
+
+    <string name="settings_title">Cài đặt</string>
+    <string name="settings_back">Quay lại</string>
+    <string name="settings_name_title">Tên thiết bị</string>
+    <string name="settings_name_hint">Tên mà điện thoại này hiện lên trên máy tính. Để trống thì dùng tên model của máy.</string>
+    <string name="settings_autostart_title">Tự động nghe khi mở ứng dụng</string>
+    <string name="settings_autostart_hint">Mở ứng dụng là bắt đầu nghe luôn, không cần bấm Bắt đầu nghe.</string>
+    <string name="settings_appearance_title">Giao diện</string>
+    <string name="settings_theme_system">Theo hệ thống</string>
+    <string name="settings_theme_light">Sáng</string>
+    <string name="settings_theme_dark">Tối</string>
+    <string name="settings_language_title">Ngôn ngữ</string>
+    <string name="settings_language_system">Theo hệ thống</string>
+    <string name="settings_about_title">Giới thiệu</string>
+    <string name="settings_version">Phiên bản</string>
+    <string name="settings_author">Tác giả</string>
+    <string name="settings_repository">Kho mã nguồn</string>
 </resources>

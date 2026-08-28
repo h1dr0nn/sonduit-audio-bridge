@@ -34,4 +34,21 @@
     <string name="scan_paired">パソコンに送信しました。まもなく再生が始まります。</string>
     <string name="scan_failed">パソコンに届きませんでした。同じネットワークか USB 接続を確認してください。</string>
     <string name="scan_camera_error">カメラを開けませんでした。</string>
+
+    <string name="settings_title">設定</string>
+    <string name="settings_back">戻る</string>
+    <string name="settings_name_title">デバイス名</string>
+    <string name="settings_name_hint">このスマートフォンがパソコンに表示される名前です。空にすると機種名を使います。</string>
+    <string name="settings_autostart_title">起動時に受信を開始</string>
+    <string name="settings_autostart_hint">アプリを開くとすぐに受信を始めます。「受信を開始」を押す必要はありません。</string>
+    <string name="settings_appearance_title">外観</string>
+    <string name="settings_theme_system">システム</string>
+    <string name="settings_theme_light">ライト</string>
+    <string name="settings_theme_dark">ダーク</string>
+    <string name="settings_language_title">言語</string>
+    <string name="settings_language_system">システムの言語</string>
+    <string name="settings_about_title">このアプリについて</string>
+    <string name="settings_version">バージョン</string>
+    <string name="settings_author">作者</string>
+    <string name="settings_repository">リポジトリ</string>
 </resources>

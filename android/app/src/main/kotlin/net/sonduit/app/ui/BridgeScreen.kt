@@ -6,7 +6,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,8 +19,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,12 +40,12 @@ import net.sonduit.app.R
 import net.sonduit.app.audio.BridgeController
 
 /**
- * The whole app.
+ * The screen the app opens on.
  *
- * One screen on purpose. The phone is the receiving end: it has one decision
- * to make, which is whether to listen, and one thing to show, which is whether
- * audio is arriving and how well. Anything more would be settings nobody
- * changes, on the device with the smaller screen.
+ * One decision and one readout. The phone is the receiving end: it has to
+ * decide whether to listen, and it has to show whether audio is arriving and
+ * how well. Everything that is configured rather than watched is behind the
+ * button in the corner, so this screen stays the length it is.
  */
 @Composable
 fun BridgeScreen(
@@ -55,6 +58,7 @@ fun BridgeScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRegenerateCode: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val colors = LocalSonduitColors.current
 
@@ -72,11 +76,24 @@ fun BridgeScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(
-            text = stringResource(R.string.app_name),
-            style = MaterialTheme.typography.headlineLarge,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = stringResource(R.string.app_name),
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            IconButton(onClick = onSettings) {
+                Icon(
+                    imageVector = Icons.Outlined.Settings,
+                    contentDescription = stringResource(R.string.settings_title),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
 
         StatusCard(telemetry = telemetry, running = running)
 
@@ -85,7 +102,7 @@ fun BridgeScreen(
         PairingCard(code = pairingCode, onRegenerate = onRegenerateCode)
 
         if (error != null) {
-            Card {
+            SonduitCard {
                 Text(
                     text = error,
                     style = MaterialTheme.typography.bodyMedium,
@@ -144,7 +161,7 @@ fun BridgeScreen(
  */
 @Composable
 private fun ScanCard(status: String?, onScan: () -> Unit) {
-    Card {
+    SonduitCard {
         Button(
             onClick = onScan,
             modifier = Modifier
@@ -185,7 +202,7 @@ private fun ScanCard(status: String?, onScan: () -> Unit) {
 private fun PairingCard(code: String, onRegenerate: () -> Unit) {
     val spaced = if (code.length == 6) "${code.take(3)} ${code.drop(3)}" else code
 
-    Card {
+    SonduitCard {
         Text(
             text = stringResource(R.string.pairing_title).uppercase(),
             style = MaterialTheme.typography.labelSmall,
@@ -235,7 +252,7 @@ private fun StatusCard(telemetry: BridgeController.Snapshot, running: Boolean) {
     }
     val dot by animateColorAsState(tint, label = "status")
 
-    Card {
+    SonduitCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
@@ -368,22 +385,4 @@ private fun Stat(label: String, value: String, unit: String, modifier: Modifier 
             }
         }
     }
-}
-
-/** The soft card the desktop shell uses, in Compose. */
-@Composable
-private fun Card(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.card))
-            .background(MaterialTheme.colorScheme.surface)
-            .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outline,
-                shape = RoundedCornerShape(Radius.card),
-            )
-            .padding(18.dp),
-        content = content,
-    )
 }

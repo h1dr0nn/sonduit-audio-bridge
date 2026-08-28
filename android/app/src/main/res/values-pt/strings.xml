@@ -34,4 +34,21 @@
     <string name="scan_paired">Enviado para o computador. O áudio começa dentro de momentos.</string>
     <string name="scan_failed">Não foi possível contactar o computador. Verifique se ambos estão na mesma rede ou ligados por USB.</string>
     <string name="scan_camera_error">Não foi possível abrir a câmara.</string>
+
+    <string name="settings_title">Definições</string>
+    <string name="settings_back">Voltar</string>
+    <string name="settings_name_title">Nome do dispositivo</string>
+    <string name="settings_name_hint">O nome com que este telefone aparece no computador. Deixe vazio para usar o nome do modelo.</string>
+    <string name="settings_autostart_title">Ouvir ao abrir a aplicação</string>
+    <string name="settings_autostart_hint">Abrir a aplicação inicia uma sessão, sem tocar em Começar a ouvir.</string>
+    <string name="settings_appearance_title">Aparência</string>
+    <string name="settings_theme_system">Sistema</string>
+    <string name="settings_theme_light">Claro</string>
+    <string name="settings_theme_dark">Escuro</string>
+    <string name="settings_language_title">Idioma</string>
+    <string name="settings_language_system">Idioma do sistema</string>
+    <string name="settings_about_title">Sobre</string>
+    <string name="settings_version">Versão</string>
+    <string name="settings_author">Autor</string>
+    <string name="settings_repository">Repositório</string>
 </resources>

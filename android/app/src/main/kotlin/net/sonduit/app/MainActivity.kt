@@ -1,6 +1,7 @@
 package net.sonduit.app
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -8,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -15,11 +17,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.sonduit.app.audio.BridgeController
 import net.sonduit.app.ui.BridgeScreen
 import net.sonduit.app.ui.ScanScreen
+import net.sonduit.app.ui.SettingsScreen
 import net.sonduit.app.ui.SonduitTheme
 
 /**
@@ -49,6 +53,18 @@ class MainActivity : ComponentActivity() {
 
     private var pendingStart: (() -> Unit)? = null
 
+    /**
+     * Resources are resolved in the language the user chose.
+     *
+     * Below Android 13 this is the only hook that can do it: a context reads
+     * its configuration once, when it is built, so a locale applied later than
+     * this reaches nothing. From 13 onward the platform has already applied
+     * the per-app language and [AppLocale.wrap] steps aside.
+     */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -57,16 +73,45 @@ class MainActivity : ComponentActivity() {
         // This is what makes the phone answer the computer's discovery probe,
         // which the typed-code pairing flow needs and which has nothing to do
         // with whether a session is running.
-        BridgeController.prepare()
+        BridgeController.prepare(this)
+
+        // The user asked for the app to listen as soon as it is open, so the
+        // choice has to be acted on before anything is drawn rather than
+        // behind the button it replaces.
+        if (AppSettings.autoStart(this) && !BridgeController.isRunning()) {
+            startBridge()
+        }
 
         setContent {
-            SonduitTheme {
+            var theme by remember { mutableStateOf(AppSettings.theme(this)) }
+            val dark = when (theme) {
+                AppSettings.Theme.SYSTEM -> isSystemInDarkTheme()
+                AppSettings.Theme.LIGHT -> false
+                AppSettings.Theme.DARK -> true
+            }
+
+            // The clock and the gesture handle are drawn by the system,
+            // which picks their colour from the system's idea of dark mode.
+            // A user who forces the light scheme on a dark phone would
+            // otherwise get white icons on this app's pale background.
+            LaunchedEffect(dark) {
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
+            }
+
+            SonduitTheme(dark = dark) {
                 var telemetry by remember { mutableStateOf(BridgeController.Snapshot.EMPTY) }
                 var running by remember { mutableStateOf(BridgeController.isRunning()) }
                 var error by remember { mutableStateOf(BridgeController.lastError) }
                 var pairingCode by remember { mutableStateOf(BridgeController.pairingCode()) }
                 var scanning by remember { mutableStateOf(false) }
+                var settingsOpen by remember { mutableStateOf(false) }
                 var pairingStatus by remember { mutableStateOf<String?>(null) }
+                var deviceName by remember { mutableStateOf(AppSettings.deviceName(this)) }
+                var autoStart by remember { mutableStateOf(AppSettings.autoStart(this)) }
+                var language by remember { mutableStateOf(AppLocale.current(this)) }
                 val scope = rememberCoroutineScope()
 
                 LaunchedEffect(Unit) {
@@ -96,6 +141,38 @@ class MainActivity : ComponentActivity() {
                         },
                         onCancel = { scanning = false },
                     )
+                } else if (settingsOpen) {
+                    SettingsScreen(
+                        deviceName = deviceName,
+                        defaultDeviceName = BridgeController.defaultDeviceName(),
+                        autoStart = autoStart,
+                        theme = theme,
+                        language = language,
+                        onDeviceName = { chosen ->
+                            deviceName = chosen
+                            BridgeController.applyDeviceName(this@MainActivity, chosen)
+                        },
+                        onAutoStart = { enabled ->
+                            autoStart = enabled
+                            AppSettings.setAutoStart(this@MainActivity, enabled)
+                        },
+                        onTheme = { chosen ->
+                            theme = chosen
+                            AppSettings.setTheme(this@MainActivity, chosen)
+                        },
+                        onLanguage = { tag ->
+                            language = tag
+                            AppLocale.apply(this@MainActivity, tag)
+                            // Android 13 and up recreates the activity itself
+                            // when the per-app language changes. Below that
+                            // nothing does, and the strings already on screen
+                            // were resolved when this context was built.
+                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                                recreate()
+                            }
+                        },
+                        onBack = { settingsOpen = false },
+                    )
                 } else {
                     BridgeScreen(
                         telemetry = telemetry,
@@ -122,6 +199,7 @@ class MainActivity : ComponentActivity() {
                             BridgeController.regeneratePairingCode()
                             pairingCode = BridgeController.pairingCode()
                         },
+                        onSettings = { settingsOpen = true },
                     )
                 }
             }

@@ -34,4 +34,21 @@
     <string name="scan_paired">已发送到电脑，声音很快就会开始播放。</string>
     <string name="scan_failed">无法连上电脑。请确认两者处于同一网络或已通过 USB 连接。</string>
     <string name="scan_camera_error">无法打开摄像头。</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_back">返回</string>
+    <string name="settings_name_title">设备名称</string>
+    <string name="settings_name_hint">这台手机在电脑上显示的名称。留空则使用机型名称。</string>
+    <string name="settings_autostart_title">打开应用时自动接收</string>
+    <string name="settings_autostart_hint">打开应用即开始接收，无需点击“开始接收”。</string>
+    <string name="settings_appearance_title">外观</string>
+    <string name="settings_theme_system">系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_language_title">语言</string>
+    <string name="settings_language_system">跟随系统</string>
+    <string name="settings_about_title">关于</string>
+    <string name="settings_version">版本</string>
+    <string name="settings_author">作者</string>
+    <string name="settings_repository">代码仓库</string>
 </resources>

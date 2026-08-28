@@ -62,6 +62,10 @@ android {
 
     buildFeatures {
         compose = true
+        // The settings screen shows the version, and ADR-008 forbids typing it
+        // a second time. BuildConfig.VERSION_NAME carries the value that came
+        // from gradle.properties, which came from the root Cargo.toml.
+        buildConfig = true
     }
 
     sourceSets {

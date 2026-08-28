@@ -36,6 +36,18 @@ class BridgeService : LifecycleService() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var notifier: Job? = null
 
+    /**
+     * The notification is written in the language the app is read in.
+     *
+     * A service builds its own context, so without this the ongoing
+     * notification would follow the system language while the screen behind it
+     * followed the user's choice. A no-op from Android 13 up, where the
+     * platform applies the per-app language to both.
+     */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
+
     override fun onBind(intent: Intent): IBinder? {
         super.onBind(intent)
         return null
