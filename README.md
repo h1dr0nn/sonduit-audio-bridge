@@ -2,9 +2,19 @@
 
 Low latency system audio bridge from Windows to Android.
 
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-2.0.0-brightgreen)
+
 Sonduit sends what your PC is playing to a phone on the same network, over
 Wi-Fi or over a USB cable, and plays it there with as little delay as the two
 operating systems allow.
+
+![The connection screen](docs/screenshots/connection.png)
+
+The editor Harmonix SE was built around is still here, on its own screen.
+
+![The audio processing suite](docs/screenshots/editor.png)
 
 ## Status
 

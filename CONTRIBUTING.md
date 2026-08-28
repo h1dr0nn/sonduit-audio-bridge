@@ -1,5 +1,34 @@
 # Contributing to Sonduit
 
+## Start here
+
+Once, when you clone:
+
+```bash
+git config core.hooksPath tools/hooks
+```
+
+That makes `tools/hooks/commit-msg` reject a message the project's own linter
+would reject. It is not optional in practice: history here is the only archive
+there is, so a bad subject line cannot be fixed after the fact, and four of them
+reached `main` before the hook existed. They are listed in
+`tools/lint/commit-baseline`.
+
+Before every commit:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+node tools/lint/check-source-ascii.mjs
+node tools/version.mjs check
+```
+
+On Linux add `--exclude sonduit-desktop` to the clippy and test commands: it is
+a Tauri application and wants GTK and webkit headers there for no benefit.
+
+**Never commit while red. Never commit code that has not been run.**
+
 ## The layering rule
 
 ```text
@@ -98,38 +127,11 @@ Conventional Commits 1.0.0, enforced in CI on every commit in a pull request.
 Breaking changes are `feat(core)!: ...` or a `BREAKING CHANGE:` footer.
 
 **Every commit must build and pass tests on its own.** No `wip` or `fix typo`
-commits on `develop`; squash before merging. The linter rejects both.
+commits; squash before you push. The linter rejects both.
 
 ```bash
-node tools/lint/check-commits.mjs origin/develop..HEAD
+node tools/lint/check-commits.mjs origin/main..HEAD
 ```
-
-## Set this up once
-
-```bash
-git config core.hooksPath tools/hooks
-```
-
-That makes `tools/hooks/commit-msg` reject a commit message the project's own
-linter would reject. It is not optional in practice: history here is the only
-archive there is, so a bad subject line cannot be fixed after the fact, and
-four of them reached `main` before the hook existed. They are recorded in
-`tools/lint/commit-baseline`.
-
-## Before every commit
-
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-node tools/lint/check-source-ascii.mjs
-node tools/version.mjs check
-```
-
-On Linux, add `--exclude sonduit-desktop` to the clippy and test commands: it
-is a Tauri application and wants GTK and webkit headers there for no benefit.
-
-**Never commit while red. Never commit code that has not been run.**
 
 ## Placeholders
 
@@ -148,17 +150,27 @@ from capture to speaker.
 update that table.** Pushing the total past the target band requires a
 compensating reduction elsewhere or an explicit decision to move the target.
 
-## Branches and versions
+## Branch, tags and versions
 
-| Branch | Role |
+One branch: `main`. Short-lived `feat/*`, `fix/*` and `chore/*` branches open a
+pull request against it. There is no integration branch, and there is no
+release branch: a workflow used to open a release pull request from one, and
+the branch it left behind was noise nobody had asked for.
+
+Nothing is built by pushing. Builds are cut by a tag and by nothing else:
+
+| Tag | What it does |
 | --- | --- |
-| `main` | protected, releases only, every commit tagged |
-| `develop` | integration; everything lands here first |
-| `feat/*`, `fix/*`, `chore/*` | short-lived, pull request into `develop` |
+| `develop-vX.Y.Z` | builds a test artifact and overwrites the rolling `develop-build` prerelease |
+| `release-vX.Y.Z` | builds, generates the changelog for a minor or major, publishes the release |
+
+Both tags are checked against the version in the tree, so a tag cannot name a
+release that does not exist.
 
 The version lives in exactly one place, `[workspace.package] version` in the
-root `Cargo.toml`. `tauri.conf.json` and `android/gradle.properties` are
-derived by `tools/version.mjs sync`, and CI fails if they drift.
+root `Cargo.toml`. `tauri.conf.json`, `android/gradle.properties` and the
+README badge are derived by `tools/version.mjs sync`, and CI fails if they
+drift.
 
 **Never edit a version by hand in two files.** See
 [ADR-008](docs/adr/ADR-008-versioning.md).

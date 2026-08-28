@@ -24,6 +24,7 @@ import { pathToFileURL } from 'node:url';
 const CARGO_TOML = 'Cargo.toml';
 const TAURI_CONF = 'desktop/src-tauri/tauri.conf.json';
 const GRADLE_PROPERTIES = 'android/gradle.properties';
+const README = 'README.md';
 
 /**
  * ASCII record and unit separators, written as escapes so the raw control
@@ -253,6 +254,25 @@ function syncTauri(version) {
   return { path: TAURI_CONF, after: version };
 }
 
+/**
+ * Rewrite the version shown on the README badge.
+ *
+ * A number written by hand in a readme is wrong within a release or two, and
+ * this one is on the first screen anybody sees. Only the release version is
+ * shown: a develop build's version is not what a reader is being offered.
+ */
+function syncReadme(version) {
+  if (!existsSync(README)) return null;
+  const text = readFileSync(README, 'utf8');
+  const updated = text.replace(
+    /(!\[Version\]\(https:\/\/img\.shields\.io\/badge\/version-)[^-]+(-)/,
+    `$1${version}$2`,
+  );
+  if (updated === text) return null;
+  writeFileSync(README, updated);
+  return { path: README, after: version };
+}
+
 function syncGradle(version, code) {
   if (!existsSync(GRADLE_PROPERTIES)) return null;
   let text = readFileSync(GRADLE_PROPERTIES, 'utf8');
@@ -369,6 +389,8 @@ function main() {
       for (const result of [
         syncTauri(version),
         syncGradle(version, code),
+        // The release version, never a develop one: see syncReadme.
+        syncReadme(readWorkspaceVersion()),
         // Deliberately NOT `base`. Tauri and Gradle are stamped with whatever
         // version was asked for, including a develop one, but the workspace
         // dependency requirements have to match the crates in this tree, and
@@ -389,6 +411,13 @@ function main() {
         const config = JSON.parse(readFileSync(TAURI_CONF, 'utf8'));
         if (config.version !== version) {
           problems.push(`${TAURI_CONF} says ${config.version}, Cargo.toml says ${version}`);
+        }
+      }
+      if (existsSync(README)) {
+        const text = readFileSync(README, 'utf8');
+        const badge = /!\[Version\]\(https:\/\/img\.shields\.io\/badge\/version-([^-]+)-/.exec(text);
+        if (badge && badge[1] !== version) {
+          problems.push(`${README} badge says ${badge[1]}, Cargo.toml says ${version}`);
         }
       }
       if (existsSync(GRADLE_PROPERTIES)) {
