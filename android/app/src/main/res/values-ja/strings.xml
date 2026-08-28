@@ -16,6 +16,10 @@
     <string name="stat_malformed">不正なパケット</string>
     <string name="stat_drift">クロック誤差</string>
     <string name="stat_correction">補正</string>
+    <string name="stat_encryption">暗号化</string>
+    <string name="encryption_on">暗号化済み</string>
+    <string name="encryption_off">暗号化なし</string>
+    <string name="stat_refused">拒否</string>
     <string name="pairing_title">ペアリングコード</string>
     <string name="pairing_new">新しいコード</string>
     <string name="pairing_hint">検索する前にパソコンでこのコードを入力してください。入力しないとこの端末は表示されません。</string>
@@ -33,6 +37,7 @@
     <string name="scan_not_a_code">Sonduit のペアリングコードではありません。</string>
     <string name="scan_paired">パソコンに送信しました。まもなく再生が始まります。</string>
     <string name="scan_failed">パソコンに届きませんでした。同じネットワークか USB 接続を確認してください。</string>
+    <string name="scan_not_accepted">コンピューターとのペアリングが完了しませんでした。コードをもう一度表示してスキャンしてください。</string>
     <string name="scan_camera_error">カメラを開けませんでした。</string>
 
     <string name="settings_title">設定</string>

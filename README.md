@@ -174,11 +174,17 @@ reading is recorded in section 6 there, deliberately outside the budget table.
 - **Tethering has been tried on one phone.** Carrier entitlement can veto USB
   tethering, and OEM builds differ. That remains the largest risk to
   [ADR-004](docs/adr/ADR-004-transport.md).
-- **The audio is not encrypted.** Pairing stops an unpaired device being
-  chosen, so nobody receives the stream by accident. It does nothing about
-  anyone who can already see the traffic: the PCM is in the clear on the wire
-  and reconstructing it is trivial. Fine on a home network or a USB cable;
-  treat a shared or public network as if the audio were audible in the room.
+- **The encryption has not been heard on a phone.** The audio is
+  ChaCha20-Poly1305 keyed by an X25519 exchange the pairing code authenticates
+  ([ADR-009](docs/adr/ADR-009-audio-encryption.md)), and both ends refuse
+  anything else: a paired receiver will not play a cleartext packet and an
+  unpaired one will not play a sealed one. That is tested over real loopback
+  sockets on both sides and measured at about 2 us a packet, but it has not run
+  between this desktop and a real handset, because the phone has been unplugged
+  since it landed.
+- **A pairing lasts as long as the desktop is open.** Nothing writes the key
+  down, so closing the application means pairing again. See
+  [docs/roadmap.md](docs/roadmap.md) section 1.2.
 - **Windows does not see the phone as a selectable output device.** That
   requires a signed kernel driver, and the prebuilt driver this project
   intended to reuse turns out to be unusable. See

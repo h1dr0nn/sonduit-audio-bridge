@@ -16,6 +16,10 @@
     <string name="stat_malformed">格式错误</string>
     <string name="stat_drift">时钟漂移</string>
     <string name="stat_correction">校正</string>
+    <string name="stat_encryption">加密</string>
+    <string name="encryption_on">已加密</string>
+    <string name="encryption_off">未加密</string>
+    <string name="stat_refused">已拒绝</string>
     <string name="pairing_title">配对码</string>
     <string name="pairing_new">新代码</string>
     <string name="pairing_hint">搜索前请在电脑上输入此代码。否则这台手机不会出现在列表中。</string>
@@ -33,6 +37,7 @@
     <string name="scan_not_a_code">这不是 Sonduit 配对码。</string>
     <string name="scan_paired">已发送到电脑，声音很快就会开始播放。</string>
     <string name="scan_failed">无法连上电脑。请确认两者处于同一网络或已通过 USB 连接。</string>
+    <string name="scan_not_accepted">电脑尚未完成配对。请重新显示代码并再扫描一次。</string>
     <string name="scan_camera_error">无法打开摄像头。</string>
 
     <string name="settings_title">设置</string>

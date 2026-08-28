@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 
 use sonduit_transport::discovery::{self, Announcement};
 use sonduit_transport::pairing::{PairingCode, NONCE_BYTES};
+use sonduit_transport::session::SessionSecret;
 
 use super::link::{LinkKind, Route};
 
@@ -61,6 +62,15 @@ const READ_SLICE: Duration = Duration::from_millis(50);
 const PROBES: u32 = 3;
 
 /// A device this session has authenticated, and the credential that did it.
+///
+/// Both halves of one pairing live here because both come out of it and
+/// neither outlives it: the code proves, later and over another path, that a
+/// phone answering on a cable is this phone, and the secret is what the audio
+/// to that phone is keyed from. Keeping them in two lists indexed by address
+/// is two lists that can disagree about which pairing is current.
+///
+/// `Debug` is derived and safe to print: [`PairingCode`] and [`SessionSecret`]
+/// each redact themselves, and logs get copied into bug reports.
 #[derive(Debug, Clone)]
 pub struct Peer {
     /// Where it answered from when it was paired or scanned.
@@ -70,6 +80,13 @@ pub struct Peer {
     /// The pairing code that proved it. This is the credential every later
     /// check is made against.
     pub code: PairingCode,
+    /// The master secret agreed with it, which every stream to it is keyed
+    /// from. See ADR-009 and [`sonduit_transport::session`].
+    ///
+    /// Never serialised, never logged and never sent anywhere: the only thing
+    /// that reads it is [`super::start`], which turns it into a
+    /// [`sonduit_transport::sealed::Sealer`] on the capture thread.
+    pub secret: SessionSecret,
 }
 
 impl Peer {
@@ -251,6 +268,24 @@ where
     None
 }
 
+/// A master secret from a real handshake, for tests elsewhere in this crate.
+///
+/// The four datagrams rather than fabricated key material: a test that starts
+/// from a hand-made secret proves nothing about the path a session takes, and
+/// the seeds are fixed so the result is reproducible.
+#[cfg(test)]
+pub(crate) fn agreed_secret() -> SessionSecret {
+    use sonduit_transport::handshake::{answer, Offer};
+    use sonduit_transport::session::SEED_BYTES;
+
+    let nonce = [0x5A_u8; NONCE_BYTES];
+    let code = PairingCode::parse("482913").expect("a six digit code");
+    let offer = Offer::new([1; SEED_BYTES], nonce, code.clone());
+    let (accept, _) =
+        answer(&offer.datagram(), &nonce, &code, [2; SEED_BYTES]).expect("the offer verifies");
+    offer.accept(&accept).expect("the accept verifies")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +295,7 @@ mod tests {
             address: "192.168.1.42:4010".parse().unwrap(),
             name: "Pixel 7a".to_string(),
             code: PairingCode::parse("482913").unwrap(),
+            secret: agreed_secret(),
         }
     }
 
@@ -360,6 +396,7 @@ mod tests {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 4010)),
             name: "Pixel 7a".to_string(),
             code: PairingCode::parse("482913").unwrap(),
+            secret: agreed_secret(),
         };
 
         let responder = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
@@ -413,6 +450,7 @@ mod tests {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 4010)),
             name: "Pixel 7a".to_string(),
             code: PairingCode::parse("482913").unwrap(),
+            secret: agreed_secret(),
         };
 
         let responder = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))

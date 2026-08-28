@@ -45,6 +45,15 @@ pub struct SessionInfo {
     pub transport: String,
     /// Wire format in use.
     pub wire: String,
+    /// Whether every datagram of this session is encrypted.
+    ///
+    /// Not a guess and not a setting: it is whether the send loop was given a
+    /// sealer, which is the same thing as whether the packets going out carry
+    /// version 2 and a Poly1305 tag. The panel shows it because a session that
+    /// is not encrypted must never look like one that is, and the one way to
+    /// get an unencrypted session is Scream compatibility, which cannot be
+    /// encrypted at all. See ADR-009.
+    pub encrypted: bool,
 }
 
 impl SessionInfo {
@@ -56,6 +65,7 @@ impl SessionInfo {
         target: SocketAddr,
         link: LinkKind,
         scream: bool,
+        encrypted: bool,
     ) -> Self {
         Self {
             endpoint: endpoint.to_string(),
@@ -65,6 +75,7 @@ impl SessionInfo {
             target: target.to_string(),
             transport: link.label().to_string(),
             wire: if scream { "scream" } else { "sonduit" }.to_string(),
+            encrypted,
         }
     }
 
@@ -123,6 +134,14 @@ pub struct TelemetryView {
     pub packets_sent: Option<u64>,
     /// Audio actually captured, in seconds.
     pub audio_seconds: Option<f64>,
+    /// Reports that arrived and did not authenticate.
+    ///
+    /// `None` for a session with no key, where there is nothing to
+    /// authenticate against and a zero would be a claim there was. On a keyed
+    /// session on a healthy network this is zero, and anything else is either
+    /// a bug or somebody on the network sending forged status datagrams. It is
+    /// shown for that reason: it is the only evidence of the second.
+    pub refused_reports: Option<u64>,
 }
 
 /// A complete view of the bridge, as the webview receives it.
@@ -267,6 +286,11 @@ pub struct Accumulator {
     send_failures: u64,
     capture_failures: u64,
     reopens: u64,
+    /// Feedback datagrams refused because they did not authenticate.
+    ///
+    /// `None` on a session with no key: nothing is being checked, so there is
+    /// nothing to count. Zero would say a check is running and passing.
+    refused_reports: Option<u64>,
     last_error: Option<String>,
     /// The receiver's most recent report, and when it arrived.
     ///
@@ -291,6 +315,7 @@ impl Accumulator {
             send_failures: 0,
             capture_failures: 0,
             reopens: 0,
+            refused_reports: None,
             last_error: None,
             latest: None,
             round_trip_ms: None,
@@ -307,6 +332,26 @@ impl Accumulator {
     pub fn record_send_error(&mut self, message: &str) {
         self.send_failures += 1;
         self.last_error = Some(message.to_string());
+    }
+
+    /// Declare that this session's reports are authenticated.
+    ///
+    /// Turns the refused count from "not applicable" into a running total that
+    /// starts at zero, which is the number a healthy keyed session shows. The
+    /// distinction matters: a blank means nothing is being checked, and a zero
+    /// means something is and has never failed.
+    pub fn checking_reports(&mut self) {
+        self.refused_reports.get_or_insert(0);
+    }
+
+    /// Record a report that did not authenticate.
+    ///
+    /// Deliberately not `record_send_error`: a forged report is not a fault in
+    /// this machine or this link, and putting it on the status line would tell
+    /// the user their bridge is broken when what happened is that somebody
+    /// else's datagram was refused exactly as it should have been.
+    pub fn record_refused_report(&mut self) {
+        *self.refused_reports.get_or_insert(0) += 1;
     }
 
     /// Record a failed read from the capture device.
@@ -411,6 +456,7 @@ impl Accumulator {
             uptime_seconds: Some(now.duration_since(self.started).as_secs()),
             packets_sent: Some(self.packets),
             audio_seconds: Some(self.frames as f64 / f64::from(self.format.sample_rate)),
+            refused_reports: self.refused_reports,
         }
     }
 
@@ -557,6 +603,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         ));
         assert_eq!(snapshot.status, "connecting");
 
@@ -575,6 +622,7 @@ mod tests {
             "239.255.77.77:4010".parse().unwrap(),
             LinkKind::Multicast,
             false,
+            true,
         ));
 
         snapshot.apply(TelemetryView {
@@ -600,6 +648,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         ));
         snapshot.apply(answered());
         assert_eq!(snapshot.status, "connected");
@@ -619,6 +668,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         ));
         snapshot.apply(TelemetryView {
             packets_sent: Some(100),
@@ -643,6 +693,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         ));
         snapshot.apply(TelemetryView {
             packets_sent: Some(100),
@@ -693,6 +744,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         ));
 
         snapshot.note_endpoint("DELL U2419H (HD Audio Driver for Display Audio)");
@@ -724,6 +776,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         ));
         snapshot.apply(answered());
         snapshot.note_error(Some("network unreachable"));
@@ -758,6 +811,7 @@ mod tests {
             "10.114.89.244:4010".parse().unwrap(),
             LinkKind::Wired,
             false,
+            true,
         );
         assert_eq!(usb.transport, "usb");
         assert_eq!(usb.transport, LinkKind::Wired.label());
@@ -773,6 +827,7 @@ mod tests {
             "192.168.42.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         );
         assert_eq!(wifi.transport, "wifi");
     }
@@ -785,6 +840,7 @@ mod tests {
             "239.255.77.77:4010".parse().unwrap(),
             LinkKind::Multicast,
             false,
+            true,
         );
         assert_eq!(group.transport, "multicast");
     }
@@ -799,6 +855,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             false,
+            true,
         ));
 
         snapshot.note_link("10.114.89.244:4010".parse().unwrap(), LinkKind::Wired);
@@ -825,6 +882,7 @@ mod tests {
             "192.168.1.5:4010".parse().unwrap(),
             LinkKind::Wireless,
             true,
+            false,
         );
         assert_eq!(session.sample_rate, 48_000);
         assert_eq!(session.channels, 2);

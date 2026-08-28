@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  FiLock,
   FiMaximize,
   FiPlay,
   FiRefreshCw,
   FiSmartphone,
   FiSpeaker,
   FiSquare,
+  FiUnlock,
 } from 'react-icons/fi';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -65,6 +67,16 @@ export function ConnectionPage() {
   const [busy, setBusy] = useState(false);
 
   const running = status === 'connected' || status === 'connecting';
+
+  /*
+   * A session can only be started against a device this run has paired with.
+   *
+   * The backend refuses to send Sonduit audio it cannot encrypt, and every
+   * device in the list above agreed a key on its way into that list. A typed
+   * address and the multicast group have no key and never had one, so the
+   * button says why instead of failing after it is pressed. See ADR-009.
+   */
+  const canStart = target.kind === 'device';
 
   const targetLabel = useMemo(() => {
     if (target.kind === 'device') return target.value;
@@ -233,7 +245,7 @@ export function ConnectionPage() {
             <Button
               variant="accent"
               icon={FiPlay}
-              disabled={!available || busy}
+              disabled={!available || busy || !canStart}
               onClick={handleStart}
             >
               {busy ? t('connection.starting') : t('connection.start')}
@@ -331,6 +343,9 @@ export function ConnectionPage() {
                 setTarget(event.target.value.trim() ? { kind: 'manual', value: null } : NO_TARGET);
               }}
             />
+            {!running && !canStart && (
+              <p className="-mt-2 text-xs text-ink-faint">{t('connection.pairToStart')}</p>
+            )}
           </div>
         </Card>
 
@@ -354,6 +369,35 @@ export function ConnectionPage() {
             <p className="-mt-2 truncate font-mono text-sm opacity-80">
               {session.target ?? targetLabel}
             </p>
+
+            {/* Whether the audio going out is encrypted, from the backend and
+              * not from anything this page infers. A session that is not
+              * encrypted must never look like one that is, so the state is
+              * shown for a running session either way rather than only when
+              * it is the good news. */}
+            {session.encrypted !== null && session.encrypted !== undefined && (
+              <div className="flex items-center gap-2">
+                {session.encrypted ? (
+                  <FiLock className="h-4 w-4" strokeWidth={1.75} />
+                ) : (
+                  <FiUnlock className="h-4 w-4" strokeWidth={1.75} />
+                )}
+                <span className="text-sm opacity-90">
+                  {session.encrypted
+                    ? t('connection.encryptionOn')
+                    : t('connection.encryptionOff')}
+                </span>
+              </div>
+            )}
+
+            {/* Zero on a healthy link. Anything else is somebody on the network
+              * sending status datagrams this session refused, which is the one
+              * thing the user could not otherwise find out. */}
+            {telemetry.refusedReports > 0 && (
+              <p className="-mt-1 text-xs opacity-80">
+                {t('telemetry.refusedReports')}: {telemetry.refusedReports}
+              </p>
+            )}
 
             <dl className="mt-2 grid grid-cols-3 gap-2 border-t border-white/20 pt-3 text-xs">
               <div>

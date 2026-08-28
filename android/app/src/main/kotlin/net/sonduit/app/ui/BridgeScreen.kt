@@ -337,6 +337,33 @@ private fun TelemetryGrid(telemetry: BridgeController.Snapshot) {
                 modifier = Modifier.weight(1f),
             )
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Always shown while a session runs, not only when it is the good
+            // news. A session that is not encrypted must never look like one
+            // that is, and the only way to read it here is from what the
+            // receive loop actually did with the packets.
+            Stat(
+                label = stringResource(R.string.stat_encryption),
+                value = stringResource(
+                    if (telemetry.encrypted) R.string.encryption_on else R.string.encryption_off,
+                ),
+                unit = "",
+                modifier = Modifier.weight(1f),
+            )
+            if (telemetry.packetsRefused > 0uL) {
+                // Zero on a healthy paired link, so it appears only when there
+                // is something to say: a sender using the wrong key, a sender
+                // this phone never paired with, or somebody injecting audio.
+                Stat(
+                    label = stringResource(R.string.stat_refused),
+                    value = telemetry.packetsRefused.toString(),
+                    unit = "",
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+        }
         if (telemetry.packetsMalformed > 0uL) {
             // Only shown when it is non-zero. A permanent row of zeroes teaches
             // the user to stop reading the panel.

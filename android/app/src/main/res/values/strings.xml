@@ -19,6 +19,10 @@
     <string name="stat_malformed">Malformed</string>
     <string name="stat_drift">Clock drift</string>
     <string name="stat_correction">Correction</string>
+    <string name="stat_encryption">Encryption</string>
+    <string name="encryption_on">Encrypted</string>
+    <string name="encryption_off">Not encrypted</string>
+    <string name="stat_refused">Refused</string>
 
     <!-- Shown where a value has not been measured yet, which is not the same
          as a value that was measured as zero. -->
@@ -43,6 +47,7 @@
     <string name="scan_not_a_code">That is not a Sonduit pairing code.</string>
     <string name="scan_paired">Sent to the computer. Audio should start playing shortly.</string>
     <string name="scan_failed">The computer could not be reached. Check that both are on the same network or joined by USB.</string>
+    <string name="scan_not_accepted">The computer did not finish pairing. Show the code again and rescan.</string>
     <string name="scan_camera_error">The camera could not be opened.</string>
 
     <!-- The settings screen. Every row here reaches something the app

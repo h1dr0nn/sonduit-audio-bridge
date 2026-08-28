@@ -8,7 +8,9 @@
 #![forbid(unsafe_code)]
 
 pub mod discovery;
+pub mod entropy;
 pub mod feedback;
+pub mod handshake;
 pub mod invite;
 pub mod packetize;
 pub mod pairing;
@@ -104,6 +106,31 @@ pub fn sonduit_version(datagram: &[u8]) -> Option<u8> {
     Some(datagram[4])
 }
 
+/// The frame timestamp of a Sonduit datagram, whichever version it is.
+///
+/// Bytes 8..12 mean the same thing in both wire versions -- that is why the
+/// sealed header keeps the version 1 layout for its first twenty bytes -- so
+/// the sender's round-trip estimator can read the timestamp of a packet it has
+/// just handed to the socket without caring whether the payload behind it is
+/// PCM or ciphertext.
+///
+/// Reading an unauthenticated field is safe *here* because the value never
+/// leaves the sender: it is this end's own clock coming back out of this end's
+/// own buffer. A receiver reading the same field from the wire must take it
+/// from [`sealed::Opened`], where the tag has covered it.
+#[must_use]
+pub fn sonduit_timestamp(datagram: &[u8]) -> Option<u32> {
+    if !SonduitPacket::has_magic(datagram) || datagram.len() < 12 {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        datagram[8],
+        datagram[9],
+        datagram[10],
+        datagram[11],
+    ]))
+}
+
 /// Bind a UDP socket for sending.
 ///
 /// `local` selects the interface, which is the entire difference between the
@@ -189,6 +216,37 @@ mod tests {
         for length in [0_usize, 1, 20, 500, 1156, 1158] {
             assert_eq!(classify(&vec![0_u8; length]), None, "length {length}");
         }
+    }
+
+    #[test]
+    fn the_timestamp_reads_the_same_from_both_wire_versions() {
+        // The round-trip estimator reads this off a datagram it has just
+        // written, and it must not need to know which version that was.
+        use crate::sealed::Sealer;
+        use crate::session::SALT_BYTES;
+
+        let pcm = vec![0_u8; PCM_PAYLOAD_BYTES];
+        let format = Format::stereo_48k();
+
+        let mut plain = vec![0_u8; SonduitPacket::encoded_len(pcm.len())];
+        SonduitPacket {
+            format,
+            sequence: 3,
+            timestamp_frames: 864,
+            flags: 0,
+            pcm: &pcm,
+        }
+        .encode(&mut plain)
+        .unwrap();
+
+        let (secret, _) = crate::session::tests_support::pair();
+        let mut sealer = Sealer::new(&secret, [7; SALT_BYTES]);
+        let mut sealed = vec![0_u8; Sealer::sealed_len(pcm.len())];
+        sealer.seal(&format, 864, 0, &pcm, &mut sealed).unwrap();
+
+        assert_eq!(sonduit_timestamp(&plain), Some(864));
+        assert_eq!(sonduit_timestamp(&sealed), Some(864));
+        assert_eq!(sonduit_timestamp(b"not a datagram"), None);
     }
 
     #[test]

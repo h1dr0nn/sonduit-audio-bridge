@@ -12,9 +12,17 @@
 //!
 //! The phone shows a code, the user types it on the desktop, and the desktop
 //! rejects any announcement that cannot prove it knows the same code. That
-//! stops an unpaired device being selected. It does **not** encrypt the audio:
-//! anyone who can see the traffic can still reconstruct it. Encryption is a
-//! separate decision with its own cost, recorded in `docs/roadmap.md`.
+//! stops an unpaired device being selected. It does **not** encrypt the audio,
+//! and it cannot: six digits is a shade under twenty bits with an offline
+//! verifier already on the wire, so a key derived from it by any KDF would be
+//! recovered in under a second by anyone who captured one pairing.
+//!
+//! What the code does instead is **authenticate the exchange that makes a
+//! key**. Every audio datagram of a paired session is encrypted under a master
+//! secret from an ephemeral X25519 agreement the tags below bind; see
+//! [`crate::session`], [`crate::handshake`] and ADR-009. An eavesdropper who
+//! brute-forces the code afterwards still learns nothing about the audio,
+//! which is the property a code-derived key would not have.
 //!
 //! # Why HMAC and not a plain comparison
 //!

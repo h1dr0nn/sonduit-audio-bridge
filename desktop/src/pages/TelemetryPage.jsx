@@ -91,7 +91,7 @@ export function TelemetryPage() {
 
         <Card className="min-h-0" title={t('telemetry.format')}>
           {available ? (
-            <dl className="grid min-h-0 flex-1 grid-cols-3 gap-3">
+            <dl className="grid min-h-0 flex-1 grid-cols-4 gap-3">
               <div className={`card-sunken px-4 py-3 ${READOUT}`}>
                 <dt className="text-xs uppercase tracking-wide text-ink-faint">
                   {t('connection.sampleRate')}
@@ -109,6 +109,24 @@ export function TelemetryPage() {
                   {t('connection.bitDepth')}
                 </dt>
                 <dd className="mt-1 font-mono text-lg text-ink">{session.bitDepth}</dd>
+              </div>
+              {/* Beside the format because it is a fact about the same stream,
+                * and never inferred here: it is what the send loop actually
+                * did with the packets. */}
+              <div className={`card-sunken px-4 py-3 ${READOUT}`}>
+                <dt className="text-xs uppercase tracking-wide text-ink-faint">
+                  {t('connection.encryption')}
+                </dt>
+                <dd className="mt-1 text-lg text-ink">
+                  {session.encrypted === null || session.encrypted === undefined
+                    ? '—'
+                    : t(session.encrypted ? 'connection.encryptionOn' : 'connection.encryptionOff')}
+                </dd>
+                {telemetry.refusedReports > 0 && (
+                  <p className="mt-1 text-xs text-ink-faint">
+                    {t('telemetry.refusedReports')}: {telemetry.refusedReports}
+                  </p>
+                )}
               </div>
             </dl>
           ) : (

@@ -407,12 +407,44 @@ medium error correction. The modules stay large enough to read across a desk.
 
 The announcement the phone sends back is **byte for byte** the reply
 `discovery::encode_announce` already builds for a broadcast probe (section
-`discovery.rs`, magic `SDDS`, version 2), tagged with the same HMAC-SHA256
+`discovery.rs`, magic `SDDS`, version 3), tagged with the same HMAC-SHA256
 keyed by the same pairing code over the same body. The desktop verifies it with
 `discovery::decode_announce` against the nonce and code the QR carried.
 
 There is deliberately no second authentication path, and no new field is
 trusted.
+
+### 7.4.1 The two datagrams after it
+
+The announcement is not the end of the exchange. A verified announcement is
+followed by a **key offer** and a **key accept**, the same two datagrams on
+both pairing paths, each an `SDDS` message tagged with the same HMAC keyed by
+the same code and bound to the same nonce:
+
+```text
+  desktop                                             phone
+    |  probe carrying nonce N, or the same N in a QR    |
+    | ------------------------------------------------> |
+    |  announce: name, port, HMAC(code; N, body)         |
+    | <------------------------------------------------- |
+    |  key offer:  PA, HMAC(code; N, 3, PA)              |
+    | ------------------------------------------------> |
+    |  key accept: PB, HMAC(code; N, 4, PA, PB)          |
+    | <------------------------------------------------- |
+```
+
+`PA` and `PB` are ephemeral X25519 public keys, 32 bytes each. Both ends then
+hold `X25519(a, PB) == X25519(b, PA)` and derive one master secret from it,
+which is what every audio datagram of every later session is keyed from.
+
+The code authenticates this exchange; it is **not** the key, and it could not
+be: six digits is 19.93 bits with an offline verifier already on the wire.
+[ADR-009](adr/ADR-009-audio-encryption.md) is written around that distinction.
+
+Two extra datagrams rather than fields inside the probe and the announcement,
+because the QR path has no probe on the wire at all: a public key carried in a
+probe would never reach a phone that was given the invite optically. One
+handshake serves both paths, and it costs one round trip per pairing.
 
 ### 7.5 What the threat model gains and loses
 
@@ -430,5 +462,83 @@ Everything else is unchanged:
   authenticate today.
 - Showing a new invite replaces the old one. Two live codes would be two ways
   in.
-- Audio is still not encrypted. See `docs/roadmap.md`.
+- The audio that follows is encrypted, under a key from the exchange in section
+  7.4.1 and not from the code. Somebody who photographs the screen learns the
+  code; they do not learn the key, because X25519 is not weakened by knowing
+  the value that authenticated it. What the photograph buys is the chance to
+  impersonate the phone **during that one pairing window**, which is the same
+  thing it always bought.
+
+---
+
+## 8. Sonduit sealed audio (version 2)
+
+Not part of Scream either. Defined in
+`crates/sonduit-transport/src/sealed.rs`, decided in
+[ADR-009](adr/ADR-009-audio-encryption.md).
+
+Every audio datagram of a paired session is ChaCha20-Poly1305, keyed from the
+handshake in section 7.4.1. The header is authenticated and not encrypted,
+which is SRTP's arrangement and is deliberate: a receiver has to route a
+datagram, pick a key by salt and reject a replay before it can afford to
+authenticate anything.
+
+```text
+ 0..4   magic "SDT1"
+ 4      version, 2 for sealed
+ 5      flags, as version 1
+ 6..8   packet counter, low 16 bits -- the sequence number, unchanged
+ 8..12  timestamp: frames elapsed on the sender's sample clock
+12      sample rate marker
+13      bits per sample
+14      channel count
+15      reserved, must be zero
+16..18  channel mask
+18..20  plaintext length in bytes
+20..24  packet counter, high 32 bits
+24..32  stream salt
+32..    ciphertext, then the 16-byte Poly1305 tag
+```
+
+Bytes 0 to 20 keep the meaning they have in version 1, so anything reading a
+sequence number or a format for telemetry needs one reader and not two. The
+whole 32-byte header is the AEAD's associated data.
+
+| Question | Answer |
+| --- | --- |
+| Nonce | The 48-bit packet counter, little-endian in the low 8 bytes of the 12. Never random, never reused, and it does not wrap: 2^48 packets at 6 ms is 53 million years |
+| Why not the sequence number | 16 bits wraps every 393 seconds, which is an ordinary event in a real session, and a repeated nonce hands over the keystream and the authenticator's key together |
+| Counter restart | Answered by making the key fresh instead: 8 random bytes of stream salt per stream, in bytes 24..32, feeding `HKDF-SHA256(salt, master, "sonduit-audio-v1")` |
+| Replay | A 256-packet sliding window in `Opener`, RFC 4303 style, plus the last 8 retired salts, which a genuine salt never repeats |
+| Overhead | 48 bytes rather than 20, so 1200 on the wire against 1172. Still far below any MTU |
+
+### 8.1 Version 1 and version 2 do not mix
+
+The version byte is the whole compatibility story, and it is checked before a
+byte of payload is looked at.
+
+| Meeting | What happens |
+| --- | --- |
+| Sealed packet, receiver with the key | Opened and played |
+| Sealed packet, receiver with no key | Refused. Decoding ciphertext as PCM would be a full-scale noise burst |
+| Cleartext packet, receiver with the key | Refused. **This is the downgrade defence and it is not optional:** a keyed receiver that still accepted version 1 would let an attacker simply send version 1 |
+| Scream packet, receiver with the key | Refused, for the same reason. A wire with no version field is not a way around the check |
+| Anything at all, receiver with no key | The version 1 rules, unchanged |
+
+A receiver holds a key from the moment it pairs and until the user asks for a
+new pairing code, which discards it. That is the one way back to a receiver
+that will accept an unencrypted sender, and an unmodified Scream driver is
+exactly such a sender: its five-byte header has no version field and nowhere to
+put a tag, so there is no sealed Scream and there cannot be one.
+
+### 8.2 The feedback report is sealed too
+
+`SDFB` version 2: the magic, the version, a reserved byte, an 8-byte counter,
+the stream salt, then the sealed version 1 body and its tag -- 72 bytes against
+34. The key is derived with a different label (`"sonduit-feedback-v1"`), so a
+report can never be replayed into the audio path or the reverse. A keyed sender
+refuses a cleartext report for the same reason a keyed receiver refuses
+cleartext audio: the report drives the loss figure, the buffer depth and the
+round trip the user is shown, and `FEEDBACK_TIMEOUT_MS` means a forged one can
+keep a dead session looking alive.
 

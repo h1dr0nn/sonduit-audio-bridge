@@ -29,6 +29,9 @@ export const EMPTY_TELEMETRY = {
   uptimeSeconds: null,
   packetsSent: null,
   audioSeconds: null,
+  // Feedback reports that arrived and did not authenticate. Null on a session
+  // with no key, where nothing is being checked and a zero would claim it was.
+  refusedReports: null,
 };
 
 export const EMPTY_SESSION = {
@@ -39,6 +42,9 @@ export const EMPTY_SESSION = {
   target: null,
   transport: null,
   wire: null,
+  // Null until a session exists. Deliberately not false: 'no session' and
+  // 'a session that is not encrypted' are different things to show.
+  encrypted: null,
 };
 
 const EMPTY_SNAPSHOT = {

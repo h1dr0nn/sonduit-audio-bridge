@@ -22,12 +22,14 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sonduit_core::format::Format;
-use sonduit_transport::feedback::{Feedback, FEEDBACK_BYTES};
+use sonduit_transport::feedback::Feedback;
+use sonduit_transport::handshake::Offer;
 use sonduit_transport::invite::Invite;
 use sonduit_transport::packetize::Packetizer;
 use sonduit_transport::pairing::{PairingCode, NONCE_BYTES};
 use sonduit_transport::roundtrip::RoundTrip;
-use sonduit_transport::{discovery, TransportError, Wire, DEFAULT_PORT};
+use sonduit_transport::session::SessionSecret;
+use sonduit_transport::{discovery, entropy, TransportError, Wire, DEFAULT_PORT};
 use tauri::{AppHandle, Emitter};
 
 pub mod adapters;
@@ -40,6 +42,10 @@ pub use link::{Link, LinkKind, LinkSwitch, Route};
 pub use migrate::Preference;
 pub use peer::Peer;
 pub use telemetry::{Accumulator, BridgeSnapshot, SessionInfo, TelemetryView};
+
+// Only the send loop touches the cipher, and the send loop is Windows-only.
+#[cfg(windows)]
+use sonduit_transport::sealed::{FeedbackOpener, Sealer, SEALED_FEEDBACK_BYTES};
 
 /// Event name the webview subscribes to for telemetry.
 pub const TELEMETRY_EVENT: &str = "sonduit://telemetry";
@@ -104,6 +110,24 @@ const WATCH_TICK: Duration = Duration::from_millis(250);
 /// lease and costs three small datagrams.
 const WIRELESS_REFRESH_POLLS: u32 = 5;
 
+/// How long the desktop waits for a phone's half of the key agreement.
+///
+/// The offer goes out three times and this bounds the listen after it. Short,
+/// because both ends are already talking and the reply is one datagram: over a
+/// cable it is back in a millisecond, and over Wi-Fi a device that has not
+/// answered in six hundred milliseconds is not going to.
+///
+/// A device that does not complete this is not offered to the user at all. It
+/// cannot be sent audio -- the receiver refuses anything not sealed under a key
+/// it holds -- so listing it would be listing something that cannot work.
+const KEY_AGREEMENT_WINDOW: Duration = Duration::from_millis(600);
+
+/// Times the key offer is sent before the listen begins.
+///
+/// Same reasoning as the probe it follows: a single datagram after an idle
+/// period is regularly dropped on Wi-Fi, and three cost nothing.
+const KEY_OFFERS: u32 = 3;
+
 /// Consecutive capture blocks whose send failed before the session retreats.
 ///
 /// Five, so about fifty milliseconds at a ten millisecond capture period.
@@ -124,6 +148,22 @@ pub struct DiscoveredDevice {
     pub name: String,
     /// Same as `id`, kept separate because the UI shows it as a subtitle.
     pub address: String,
+}
+
+/// A device that answered, proved it holds the code, and agreed a key.
+///
+/// The two halves are separate types on purpose. [`DiscoveredDevice`] is
+/// `Serialize` and goes to the webview; the secret is not and cannot, because
+/// the field is private to this module and there is no accessor that hands it
+/// out. The only way key material reaches the rest of the application is
+/// through [`BridgeState::remember`], into a [`Peer`], and out again on the
+/// capture thread.
+#[derive(Debug)]
+pub struct PairedDevice {
+    /// What the user sees and picks from.
+    pub device: DiscoveredDevice,
+    /// What audio to this device is keyed from.
+    secret: SessionSecret,
 }
 
 /// A pairing invite, as the QR panel needs it.
@@ -213,6 +253,21 @@ pub enum BridgeError {
     /// Pairing was asked to wait with no invite on screen.
     #[error("no pairing code is on screen")]
     NoInvite,
+
+    /// A session was asked for against a device this process has not paired
+    /// with, so there is no key to encrypt the audio under.
+    ///
+    /// Refused rather than sent in the clear. See the module documentation on
+    /// [`start`] for why that is the honest answer and not an inconvenience.
+    #[error("pair with the phone before starting: audio is only sent encrypted")]
+    NotPaired,
+
+    /// The operating system's random source could not be read.
+    ///
+    /// Fatal to a session by design: the alternative is a key pair from a
+    /// predictable seed, which looks exactly like a working one.
+    #[error("no session key could be generated: {0}")]
+    NoEntropy(String),
 }
 
 impl From<BridgeError> for String {
@@ -224,6 +279,52 @@ impl From<BridgeError> for String {
 impl From<TransportError> for BridgeError {
     fn from(error: TransportError) -> Self {
         Self::Network(error.to_string())
+    }
+}
+
+/// The cipher state of one encrypted session, built before any thread is.
+///
+/// Both halves are made here rather than on the capture thread because both
+/// need a fresh random salt and reading the system's random source can fail.
+/// A failure has to reach the button the user pressed; on the capture thread
+/// there would be no caller left to fail to, and the only options would be a
+/// session that is silently in the clear or one that dies a moment after it
+/// started.
+///
+/// One per session and no `Clone`: the sealer owns the packet counter, and a
+/// counter that can be copied is a nonce that can be repeated.
+///
+/// Public only because [`capture_and_follow`] is, for the diagnostic examples.
+/// There is deliberately no public constructor: the only thing that can build
+/// one is [`start`], from a peer this process paired with, so an example
+/// cannot manufacture a session key and nor can anything else.
+#[cfg(windows)]
+pub struct Keying {
+    /// Seals the audio. Moved into the packetizer when the loop starts.
+    sealer: Sealer,
+    /// Opens the receiver's reports. A keyed sender refuses a cleartext one:
+    /// otherwise anybody on the network could drive the numbers the user is
+    /// shown and keep a dead session looking alive.
+    feedback: FeedbackOpener,
+}
+
+#[cfg(windows)]
+impl Keying {
+    /// Key a session from the master secret agreed with the peer.
+    ///
+    /// Two salts, one per direction, each fresh for this stream. The audio and
+    /// feedback keys are derived under different labels as well, so a report
+    /// can never be replayed into the audio path or the reverse.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::NoEntropy`] when the salts cannot be drawn.
+    pub(crate) fn for_peer(secret: &SessionSecret) -> Result<Self, BridgeError> {
+        let salt =
+            entropy::stream_salt().map_err(|error| BridgeError::NoEntropy(error.to_string()))?;
+        Ok(Self {
+            sealer: Sealer::new(secret, salt),
+            feedback: FeedbackOpener::new(secret.clone()),
+        })
     }
 }
 
@@ -305,24 +406,31 @@ impl BridgeState {
         self.invite.lock().ok().and_then(|guard| guard.clone())
     }
 
-    /// Record that `devices` proved they hold `code`.
+    /// Record that `devices` proved they hold `code` and agreed a key.
     ///
     /// Called after a scan and after a pairing, which are the only two ways a
     /// device is ever selected. Replacing rather than appending for the same
-    /// address, because the newest proof is the one that is still true.
-    pub fn remember(&self, devices: &[DiscoveredDevice], code: &PairingCode) {
+    /// address, because the newest proof is the one that is still true -- and
+    /// with encryption that matters more than it did: the old entry's key is
+    /// the key the phone has just replaced, so keeping it would key a session
+    /// from a pairing that is over.
+    ///
+    /// This is the only path key material takes into the application, and the
+    /// list it writes to never leaves this process.
+    pub fn remember(&self, devices: &[PairedDevice], code: &PairingCode) {
         let Ok(mut known) = self.peers.lock() else {
             return;
         };
-        for device in devices {
-            let Ok(address) = device.id.parse::<SocketAddr>() else {
+        for paired in devices {
+            let Ok(address) = paired.device.id.parse::<SocketAddr>() else {
                 continue;
             };
             known.retain(|peer| peer.address != address);
             known.push(Peer {
                 address,
-                name: device.name.clone(),
+                name: paired.device.name.clone(),
                 code: code.clone(),
+                secret: paired.secret.clone(),
             });
         }
     }
@@ -477,6 +585,65 @@ fn seed_from(nonce: &[u8; NONCE_BYTES]) -> u64 {
     seed
 }
 
+/// Run the key agreement with a device that has just proved it holds `code`.
+///
+/// Two datagrams on the socket the announcement arrived on: this end's public
+/// key, tagged with the code and bound to the same nonce, and the phone's
+/// reply. Both ends then hold a master secret an eavesdropper cannot recover
+/// even after brute-forcing the six digits, which is the whole reason the
+/// agreement exists rather than a KDF over the code. See ADR-009.
+///
+/// `Ok(None)` means the device did not answer, or answered with something that
+/// did not verify. Those are deliberately the same outcome: neither is a device
+/// this desktop can send audio to, and telling them apart would only invite a
+/// caller to treat one of them as recoverable.
+///
+/// # Errors
+/// Returns [`BridgeError::NoEntropy`] when the system's random source cannot be
+/// read. That is not a device problem and must not be reported as one: it
+/// affects every pairing, and continuing would mean an X25519 key pair from a
+/// seed somebody can guess.
+fn agree_key(
+    socket: &UdpSocket,
+    peer: SocketAddr,
+    nonce: &[u8; NONCE_BYTES],
+    code: &PairingCode,
+) -> Result<Option<SessionSecret>, BridgeError> {
+    let seed = entropy::key_seed().map_err(|error| BridgeError::NoEntropy(error.to_string()))?;
+    let offer = Offer::new(seed, *nonce, code.clone());
+    let datagram = offer.datagram();
+
+    let mut left = false;
+    for _ in 0..KEY_OFFERS {
+        left |= socket.send_to(&datagram, peer).is_ok();
+    }
+    if !left {
+        return Ok(None);
+    }
+
+    // The accept is looked for without spending the exchange on the first
+    // datagram that arrives: one forged reply from anyone on the network would
+    // otherwise be enough to make every pairing fail.
+    let deadline = Instant::now() + KEY_AGREEMENT_WINDOW;
+    let mut buffer = [0_u8; 256];
+    let mut found: Option<Vec<u8>> = None;
+    while Instant::now() < deadline && found.is_none() {
+        let Ok((length, from)) = socket.recv_from(&mut buffer) else {
+            continue;
+        };
+        // The tag is what decides; the address only saves the work of checking
+        // datagrams that plainly belong to another exchange.
+        if from.ip() != peer.ip() {
+            continue;
+        }
+        if offer.is_our_accept(&buffer[..length]) {
+            found = Some(buffer[..length].to_vec());
+        }
+    }
+
+    Ok(found.and_then(|accept| offer.accept(&accept)))
+}
+
 /// Build the invite the QR panel shows, replacing any previous one.
 ///
 /// The code is generated here rather than on the phone because the desktop is
@@ -533,7 +700,7 @@ pub fn create_invite(state: &BridgeState) -> Result<PairingInvite, BridgeError> 
 /// # Errors
 /// Infallible today. The signature keeps the `Result` because the caller is a
 /// command and every other one of these can fail.
-pub fn await_pairing(session: &PairingSession) -> Result<Option<DiscoveredDevice>, BridgeError> {
+pub fn await_pairing(session: &PairingSession) -> Result<Option<PairedDevice>, BridgeError> {
     let invite = &session.invite;
     let deadline = Instant::now() + PAIRING_TIMEOUT;
     let mut datagram = [0_u8; 256];
@@ -552,11 +719,24 @@ pub fn await_pairing(session: &PairingSession) -> Result<Option<DiscoveredDevice
             continue;
         };
 
+        // The key agreement runs here, on the same socket and against the same
+        // nonce, before the device is reported as paired. A phone that
+        // announces itself and then cannot agree a key is not a phone this
+        // desktop can stream to, so it is not offered: the receiver refuses
+        // anything not sealed under a key it holds, and a device in the list
+        // that cannot be sent audio is a device that looks broken later.
+        let Some(secret) = agree_key(&session.socket, from, &invite.nonce, &invite.code)? else {
+            continue;
+        };
+
         let id = discovery::audio_address(from, &announcement).to_string();
-        return Ok(Some(DiscoveredDevice {
-            name: announcement.name,
-            address: id.clone(),
-            id,
+        return Ok(Some(PairedDevice {
+            device: DiscoveredDevice {
+                name: announcement.name,
+                address: id.clone(),
+                id,
+            },
+            secret,
         }));
     }
 
@@ -571,11 +751,17 @@ pub fn await_pairing(session: &PairingSession) -> Result<Option<DiscoveredDevice
 /// either a typo in the code or a device that should not be offered, and
 /// naming it would make the second one look like the first.
 ///
+/// Every device that answers is then taken through the key agreement, and one
+/// that does not complete it is dropped from the list. That is not tidiness:
+/// a receiver that holds no key for this desktop refuses everything it sends,
+/// so a device listed without one is a device the user can select and then
+/// watch do nothing.
+///
 /// # Errors
 /// Returns [`BridgeError::BadPairingCode`] for a code that is not six digits,
-/// and [`BridgeError::Network`] when the socket cannot be bound or the
-/// broadcast is refused.
-pub fn discover(code: &str) -> Result<Vec<DiscoveredDevice>, BridgeError> {
+/// [`BridgeError::Network`] when the socket cannot be bound or the broadcast is
+/// refused, and [`BridgeError::NoEntropy`] when no key can be generated at all.
+pub fn discover(code: &str) -> Result<Vec<PairedDevice>, BridgeError> {
     let code = PairingCode::parse(code).ok_or(BridgeError::BadPairingCode)?;
     let nonce = scan_nonce();
 
@@ -618,7 +804,7 @@ pub fn discover(code: &str) -> Result<Vec<DiscoveredDevice>, BridgeError> {
         ));
     }
 
-    let mut found: Vec<DiscoveredDevice> = Vec::new();
+    let mut answered: Vec<(SocketAddr, DiscoveredDevice)> = Vec::new();
     let deadline = Instant::now() + DISCOVERY_TIMEOUT;
     let mut datagram = [0_u8; 256];
 
@@ -634,14 +820,33 @@ pub fn discover(code: &str) -> Result<Vec<DiscoveredDevice>, BridgeError> {
         let id = address.to_string();
         // The same device answers every probe, so replies are deduplicated by
         // address rather than shown three times.
-        if found.iter().any(|device| device.id == id) {
+        if answered.iter().any(|(_, device)| device.id == id) {
             continue;
         }
-        found.push(DiscoveredDevice {
-            name: announcement.name.clone(),
-            address: id.clone(),
-            id,
-        });
+        answered.push((
+            from,
+            DiscoveredDevice {
+                name: announcement.name.clone(),
+                address: id.clone(),
+                id,
+            },
+        ));
+    }
+
+    // The key agreement runs after the scan window rather than inside it. Each
+    // one is a round trip with a device that may not answer, and running them
+    // in the collection loop would spend the scan window waiting on the first
+    // phone instead of hearing the second.
+    let mut found = Vec::with_capacity(answered.len());
+    for (from, device) in answered {
+        match agree_key(&socket, from, &nonce, &code)? {
+            Some(secret) => found.push(PairedDevice { device, secret }),
+            // Dropped in silence, exactly as an announcement that does not
+            // verify is: it is either a device running an older build or one
+            // that is not what it claims, and naming the second would make it
+            // look like the first.
+            None => continue,
+        }
     }
 
     Ok(found)
@@ -743,6 +948,9 @@ pub fn start(
     // this phone. A target that was never authenticated -- typed by hand, or
     // the multicast group -- has nothing to prove it with, so that session
     // stays where the user put it. See the module docs in `peer`.
+    //
+    // The same record carries the master secret, so this one lookup answers
+    // both "may this session follow the link" and "what is it keyed from".
     let follow = (home.kind != LinkKind::Multicast)
         .then(|| state.peer_at(target))
         .flatten();
@@ -754,6 +962,28 @@ pub fn start(
     } else {
         Wire::Sonduit
     };
+
+    // Whether this session can be encrypted is settled here, before a thread
+    // exists, so the answer lands on the button the user pressed.
+    //
+    // A Sonduit session with no key is refused rather than sent in the clear.
+    // There is no pairing this refusal can strand: the list of paired devices
+    // lives in this process and nothing persists it, so every session that
+    // has ever worked was paired inside the run that started it. What is
+    // refused is a target that was never authenticated at all -- an address
+    // typed by hand, or the multicast group -- and audio to one of those was
+    // never going anywhere provable in the first place.
+    //
+    // Scream is the one exception and it is a property of that protocol, not
+    // a choice: its five-byte header has no version field and nowhere to put
+    // a tag, and the receiver it exists for is a third-party driver with no
+    // key. That session runs in the clear and says so; see `SessionInfo`.
+    let keying = match (wire, follow.as_ref()) {
+        (Wire::Scream, _) => None,
+        (Wire::Sonduit, Some(peer)) => Some(Keying::for_peer(&peer.secret)?),
+        (Wire::Sonduit, None) => return Err(BridgeError::NotPaired),
+    };
+    let encrypted = keying.is_some();
 
     // Capture is opened on the thread that will use it, not here. WASAPI is
     // COM: the interfaces are apartment-bound and the apartment is per-thread,
@@ -813,6 +1043,7 @@ pub fn start(
                     &stop,
                     &snapshot,
                     Some(&switch),
+                    keying,
                 );
             })
             .map_err(|error| BridgeError::Capture(error.to_string()))?
@@ -838,6 +1069,7 @@ pub fn start(
         target,
         home.kind,
         options.scream_compatible,
+        encrypted,
     );
 
     {
@@ -1108,6 +1340,12 @@ fn verified_cable(
 /// Errors are counted rather than propagated: a session that stops on the first
 /// dropped datagram would be useless on WiFi, where transient send failures are
 /// normal when an interface reconfigures.
+///
+/// **This path sends in the clear.** It exists for the diagnostic examples in
+/// `examples/`, each of which brings its own listener in the same process and
+/// has no pairing to key from. It is not reachable from the application: a
+/// session the user starts goes through [`start`], which refuses a Sonduit
+/// stream it cannot encrypt.
 #[cfg(windows)]
 pub fn capture_to_socket(
     capture: &mut sonduit_capture_win::LoopbackCapture,
@@ -1127,6 +1365,7 @@ pub fn capture_to_socket(
             wire,
             stop,
             snapshot,
+            None,
             None,
         ),
         Err(error) => {
@@ -1166,11 +1405,21 @@ struct Sending {
 
 #[cfg(windows)]
 impl Sending {
-    fn new(link: Link, format: Format, wire: Wire) -> Self {
+    /// Start sending, encrypted when a sealer was built for this session.
+    ///
+    /// The sealer is moved into the packetizer because it owns the packet
+    /// counter, and the counter is what makes every nonce unique. There is
+    /// deliberately no way to attach one later: a stream that started in the
+    /// clear cannot become encrypted, it can only be a second stream.
+    fn new(link: Link, format: Format, wire: Wire, sealer: Option<Sealer>) -> Self {
         let wired = link.route.kind.is_wired();
+        let packetizer = match sealer {
+            Some(sealer) => Packetizer::sealed(format, sealer),
+            None => Packetizer::new(format, wire),
+        };
         Self {
             link,
-            packetizer: Packetizer::new(format, wire).on_wired_link(wired),
+            packetizer: packetizer.on_wired_link(wired),
             round_trip: RoundTrip::new(),
             format,
             wire,
@@ -1192,6 +1441,11 @@ impl Sending {
     /// path that no longer exists. Its one-pole filter would take about four
     /// seconds to unlearn the old link, and in the meantime the latency figure
     /// would be an average of two different networks.
+    /// The sealer travels with the packetizer, which is what keeps the stream
+    /// one stream: the same salt, the same key and a counter that carries on
+    /// rather than restarting at zero. Restarting it under the same key is
+    /// exactly the nonce reuse the salt exists to prevent, so a migration must
+    /// never build a fresh packetizer for a session that has one.
     fn adopt(&mut self, next: Link) {
         self.link = next;
         let placeholder = Packetizer::new(self.format, self.wire);
@@ -1221,7 +1475,13 @@ fn route_is_down(error: &TransportError) -> bool {
 /// `switch` is where the link watcher leaves a bound socket. `None` is a
 /// session that stays where it started, which is what an example driving this
 /// by hand wants and what a session with no provable peer gets.
+/// `keying` is the session's cipher state, or `None` for a stream that is not
+/// encrypted -- which is Scream compatibility and the diagnostic examples, and
+/// nothing else. When it is present every datagram is sealed and every report
+/// coming back must authenticate; when it is absent neither is, and there is
+/// deliberately no path between the two states inside one session.
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)] // one session's worth of state, all of it needed
 pub fn capture_and_follow(
     capture: &mut sonduit_capture_win::LoopbackCapture,
     link: Link,
@@ -1230,10 +1490,20 @@ pub fn capture_and_follow(
     stop: &AtomicBool,
     snapshot: &Mutex<BridgeSnapshot>,
     switch: Option<&LinkSwitch>,
+    keying: Option<Keying>,
 ) {
-    let mut sending = Sending::new(link, format, wire);
+    let (sealer, mut feedback_opener) = match keying {
+        Some(Keying { sealer, feedback }) => (Some(sealer), Some(feedback)),
+        None => (None, None),
+    };
+    let mut sending = Sending::new(link, format, wire, sealer);
     let mut pcm = Vec::with_capacity(1 << 16);
     let mut counters = telemetry::Accumulator::new(format);
+    if feedback_opener.is_some() {
+        // From zero rather than from blank, so a keyed session that has never
+        // seen a forged report says so instead of saying nothing.
+        counters.checking_reports();
+    }
     let mut consecutive_failures = 0_u32;
     // Consecutive capture blocks whose send failed for a reason that means the
     // interface has gone. Separate from the capture failure count above: one
@@ -1241,7 +1511,10 @@ pub fn capture_and_follow(
     // completely different ways.
     let mut route_failures = 0_u32;
 
-    let mut feedback_buffer = [0_u8; FEEDBACK_BYTES];
+    // Sized for the sealed report, which is the larger of the two. A buffer
+    // sized for the cleartext one would truncate every sealed report and every
+    // one of them would then fail to authenticate, which reads as an attack.
+    let mut feedback_buffer = [0_u8; SEALED_FEEDBACK_BYTES];
     let started = std::time::Instant::now();
 
     // Set here rather than trusted from the caller. This loop reads the socket
@@ -1349,9 +1622,14 @@ pub fn capture_and_follow(
             let result = packetizer.push(&pcm, |datagram| {
                 // Noted before the send rather than after, so a slow send is
                 // charged to the round trip it actually delayed.
-                if let Ok(packet) = sonduit_core::packet::SonduitPacket::decode(datagram) {
-                    round_trip
-                        .record_send(packet.timestamp_frames, started.elapsed().as_nanos() as u64);
+                //
+                // Read out of the header rather than by decoding, because a
+                // sealed datagram does not decode as a version 1 packet and
+                // the timestamp field means the same thing in both. This end
+                // wrote the value a moment ago; nothing here is trusting the
+                // wire. See `sonduit_transport::sonduit_timestamp`.
+                if let Some(timestamp) = sonduit_transport::sonduit_timestamp(datagram) {
+                    round_trip.record_send(timestamp, started.elapsed().as_nanos() as u64);
                 }
                 link.socket
                     .send_to(datagram, link.route.target)
@@ -1397,7 +1675,23 @@ pub fn capture_and_follow(
         // absent receiver costs one failed read per capture block and nothing
         // else.
         while let Ok((length, _from)) = sending.link.socket.recv_from(&mut feedback_buffer) {
-            let Some(report) = Feedback::decode(&feedback_buffer[..length]) else {
+            // A keyed session opens the report and refuses a cleartext one.
+            // That refusal is the same downgrade defence the audio path has,
+            // pointing the other way: a sender that still accepted version 1
+            // reports would let anybody on the network drive the loss figure,
+            // the buffer depth and the round trip the user is shown, and keep
+            // a session that has died looking alive.
+            let report = match feedback_opener.as_mut() {
+                Some(opener) => match opener.open(&feedback_buffer[..length]) {
+                    Ok(report) => Some(report),
+                    Err(_) => {
+                        counters.record_refused_report();
+                        None
+                    }
+                },
+                None => Feedback::decode(&feedback_buffer[..length]),
+            };
+            let Some(report) = report else {
                 continue;
             };
             let measured = sending
@@ -1589,21 +1883,45 @@ mod tests {
 
         let payload = invite.to_payload();
         let phone = std::thread::spawn(move || {
+            use sonduit_transport::handshake;
+            use sonduit_transport::session::SEED_BYTES;
+
             let scanned = Invite::parse(&payload).expect("the phone must be able to read it");
             let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .expect("an ephemeral loopback socket");
+            socket
+                .set_read_timeout(Some(Duration::from_millis(25)))
+                .expect("a fresh socket takes a timeout");
             let datagram =
                 discovery::encode_announce("Pixel 7a", 4010, &scanned.nonce, &scanned.code);
+            let mut buffer = [0_u8; 256];
 
             // Repeated because the listener may not be bound yet, and a single
             // datagram lost to that race would make this test flaky rather
-            // than failing.
-            for _ in 0..40 {
+            // than failing. The announcement stops as soon as the desktop's
+            // key offer arrives, which is the phone's own confirmation that it
+            // was heard.
+            for _ in 0..80 {
                 let _ = socket.send_to(
                     &datagram,
                     SocketAddr::from((Ipv4Addr::LOCALHOST, scanned.port)),
                 );
-                std::thread::sleep(Duration::from_millis(25));
+                let Ok((length, from)) = socket.recv_from(&mut buffer) else {
+                    continue;
+                };
+                // The other half of what the FFI does: answer the offer with
+                // this end's public key and keep the secret. A stand-in that
+                // only announced would be testing a pairing that cannot carry
+                // audio.
+                if let Some((accept, _secret)) = handshake::answer(
+                    &buffer[..length],
+                    &scanned.nonce,
+                    &scanned.code,
+                    [0x2C; SEED_BYTES],
+                ) {
+                    let _ = socket.send_to(&accept, from);
+                    return;
+                }
             }
         });
 
@@ -1614,10 +1932,16 @@ mod tests {
         let found = await_pairing(&session).expect("the wait itself cannot fail");
         let _ = phone.join();
 
-        let device = found.expect("an announcement keyed by the invite must be accepted");
-        assert_eq!(device.name, "Pixel 7a");
+        let paired = found.expect("an announcement keyed by the invite must be accepted");
+        assert_eq!(paired.device.name, "Pixel 7a");
         // The address comes from the datagram, the port from the announcement.
-        assert_eq!(device.address, "127.0.0.1:4010");
+        assert_eq!(paired.device.address, "127.0.0.1:4010");
+        // And the pairing carries a key, because a pairing that did not would
+        // produce a device the session could not encrypt to and would refuse.
+        assert!(
+            format!("{:?}", paired.secret).contains('*'),
+            "the secret must redact itself wherever it is printed"
+        );
     }
 
     #[test]
@@ -1771,6 +2095,21 @@ mod tests {
         assert!(!route_is_down(&error));
     }
 
+    /// A device as a completed pairing would leave it.
+    ///
+    /// The secret comes from a real handshake with fixed seeds, so what is
+    /// stored is the shape a session is actually keyed from.
+    fn paired_at(id: &str, name: &str) -> PairedDevice {
+        PairedDevice {
+            device: DiscoveredDevice {
+                id: id.to_string(),
+                name: name.to_string(),
+                address: id.to_string(),
+            },
+            secret: peer::agreed_secret(),
+        }
+    }
+
     #[test]
     fn a_device_that_was_never_authenticated_has_no_credential_to_migrate_on() {
         // Which is the whole safety property: with nothing to prove the phone
@@ -1785,14 +2124,7 @@ mod tests {
     fn a_scanned_device_is_remembered_with_the_code_that_proved_it() {
         let state = BridgeState::default();
         let code = PairingCode::parse("482913").unwrap();
-        state.remember(
-            &[DiscoveredDevice {
-                id: "192.168.1.42:4010".to_string(),
-                name: "Pixel 7a".to_string(),
-                address: "192.168.1.42:4010".to_string(),
-            }],
-            &code,
-        );
+        state.remember(&[paired_at("192.168.1.42:4010", "Pixel 7a")], &code);
 
         let peer = state
             .peer_at("192.168.1.42:4010".parse().unwrap())
@@ -1812,17 +2144,12 @@ mod tests {
         // The newest proof is the one that is still true, and two entries for
         // one address would leave which of them wins to iteration order.
         let state = BridgeState::default();
-        let device = DiscoveredDevice {
-            id: "192.168.1.42:4010".to_string(),
-            name: "Pixel 7a".to_string(),
-            address: "192.168.1.42:4010".to_string(),
-        };
         state.remember(
-            std::slice::from_ref(&device),
+            &[paired_at("192.168.1.42:4010", "Pixel 7a")],
             &PairingCode::parse("111111").unwrap(),
         );
         state.remember(
-            std::slice::from_ref(&device),
+            &[paired_at("192.168.1.42:4010", "Pixel 7a")],
             &PairingCode::parse("222222").unwrap(),
         );
 
@@ -1844,11 +2171,7 @@ mod tests {
         // silently never matches, which is worse than not having it.
         let state = BridgeState::default();
         state.remember(
-            &[DiscoveredDevice {
-                id: "not-an-address".to_string(),
-                name: "Pixel 7a".to_string(),
-                address: "not-an-address".to_string(),
-            }],
+            &[paired_at("not-an-address", "Pixel 7a")],
             &PairingCode::parse("482913").unwrap(),
         );
         assert!(state.peers.lock().unwrap().is_empty());

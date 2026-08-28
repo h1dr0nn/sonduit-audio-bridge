@@ -471,6 +471,52 @@ mod tests {
     }
 
     #[test]
+    fn the_counter_carries_across_a_link_change_rather_than_restarting() {
+        // What a link migration does to the packetizer, and the reason it must
+        // move the sealer rather than build a new one: the desktop swaps the
+        // socket underneath a running session and carries the packetizer
+        // through this builder. A counter that went back to zero here would
+        // repeat every nonce of the stream so far, under the key it already
+        // used, which is the one failure ChaCha20-Poly1305 does not degrade
+        // gracefully from.
+        use crate::sealed::{Opener, Sealer};
+
+        let (secret, opener_secret) = crate::session::tests_support::pair();
+        let format = Format::stereo_48k();
+        let mut packetizer = Packetizer::sealed(
+            format,
+            Sealer::new(&secret, [0x0E; crate::session::SALT_BYTES]),
+        );
+
+        let mut opener = Opener::new(opener_secret);
+        let mut out = vec![0_u8; PCM_PAYLOAD_BYTES];
+        let mut counters = Vec::new();
+
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES * 2], |datagram| {
+                counters.push(opener.open(datagram, &mut out).expect("must open").counter);
+                Ok(())
+            })
+            .unwrap();
+
+        // The migration: through the builder, exactly as  does.
+        let mut packetizer = packetizer.on_wired_link(true);
+        assert!(packetizer.is_sealed(), "the migration dropped the sealer");
+
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES * 2], |datagram| {
+                let opened = opener.open(datagram, &mut out).expect("must still open");
+                assert!(opened.wired_link());
+                counters.push(opened.counter);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(counters, vec![0, 1, 2, 3]);
+        assert_eq!(opener.rejected(), 0, "a replayed counter would show here");
+    }
+
+    #[test]
     fn saying_nothing_is_the_default() {
         // A receiver reads an unset flag as "not stated" and falls back to its
         // own guess, so the default must not claim a link it does not know.

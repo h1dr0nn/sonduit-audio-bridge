@@ -244,6 +244,7 @@ class MainActivity : ComponentActivity() {
             BridgeController.PairResult.NOT_A_CODE -> R.string.scan_not_a_code
             BridgeController.PairResult.UNREACHABLE -> R.string.scan_failed
             BridgeController.PairResult.NOT_RUNNING -> R.string.scan_failed
+            BridgeController.PairResult.NOT_ACCEPTED -> R.string.scan_not_accepted
         }
     }
 

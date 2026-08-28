@@ -16,6 +16,10 @@
     <string name="stat_malformed">Malformados</string>
     <string name="stat_drift">Desvio de relógio</string>
     <string name="stat_correction">Correção</string>
+    <string name="stat_encryption">Criptografia</string>
+    <string name="encryption_on">Criptografado</string>
+    <string name="encryption_off">Sem criptografia</string>
+    <string name="stat_refused">Recusados</string>
     <string name="pairing_title">Código de emparelhamento</string>
     <string name="pairing_new">Novo código</string>
     <string name="pairing_hint">Digite este código no computador antes de procurar. Sem ele, este telefone não aparecerá.</string>
@@ -33,6 +37,7 @@
     <string name="scan_not_a_code">Isto não é um código de emparelhamento do Sonduit.</string>
     <string name="scan_paired">Enviado para o computador. O áudio começa dentro de momentos.</string>
     <string name="scan_failed">Não foi possível contactar o computador. Verifique se ambos estão na mesma rede ou ligados por USB.</string>
+    <string name="scan_not_accepted">O computador não concluiu o emparelhamento. Mostre o código novamente e leia outra vez.</string>
     <string name="scan_camera_error">Não foi possível abrir a câmara.</string>
 
     <string name="settings_title">Definições</string>

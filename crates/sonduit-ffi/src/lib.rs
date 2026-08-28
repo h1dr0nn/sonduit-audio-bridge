@@ -19,7 +19,7 @@
 #![forbid(unsafe_code)]
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,10 +31,12 @@ use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
 use sonduit_core::resample::DriftResampler;
 use sonduit_playback_android::{drain_packet, JitterSource};
-use sonduit_transport::feedback::{Feedback, FEEDBACK_BYTES, FEEDBACK_INTERVAL_MS};
+use sonduit_transport::feedback::{Feedback, FEEDBACK_INTERVAL_MS};
 use sonduit_transport::invite::Invite;
-use sonduit_transport::pairing::PairingCode;
-use sonduit_transport::{classify, discovery, Wire, DEFAULT_PORT};
+use sonduit_transport::pairing::{PairingCode, NONCE_BYTES};
+use sonduit_transport::sealed::{FeedbackSealer, Opener, SEALED_FEEDBACK_BYTES};
+use sonduit_transport::session::SessionSecret;
+use sonduit_transport::{classify, discovery, entropy, handshake, Wire, DEFAULT_PORT};
 
 uniffi::setup_scaffolding!();
 
@@ -82,6 +84,38 @@ fn install_logging() {}
 /// session is not spinning.
 const RECV_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// How long [`Bridge::accept_invite`] waits for the desktop's key offer.
+///
+/// The announcement has just been delivered and the desktop answers it
+/// immediately, so this is a round trip and a little slack, not a user's
+/// thinking time. It is bounded because it runs on the caller's thread: the
+/// user has pointed a camera at a screen and is waiting for the app to say
+/// something.
+const KEY_OFFER_WAIT: Duration = Duration::from_secs(3);
+
+/// How often the announcement is repeated while waiting for the key offer.
+///
+/// The announcement is one unicast datagram and losing it used to cost a
+/// session that never started. Repeating it while nothing has come back costs a
+/// system call per address per second and removes the flake; the desktop
+/// authenticates every copy against the same nonce and code, so a repeat
+/// pairs once.
+const ANNOUNCE_REPEAT: Duration = Duration::from_millis(900);
+
+/// Refusals between log lines, once the first has been reported.
+///
+/// About three seconds of a fully refused stream at 6 ms a packet.
+const REFUSALS_PER_LINE: u64 = 500;
+
+/// Nonces the discovery responder remembers, so it can answer a key offer.
+///
+/// The offer is tagged against the nonce of the probe it follows, and this
+/// device does not know which of the probes it has just answered the offer
+/// belongs to. Four is enough for the three probes one scan sends plus one
+/// overlapping scan, and remembering a nonce is not remembering a secret:
+/// every probe put its nonce on the wire in the clear.
+const REMEMBERED_NONCES: usize = 4;
+
 /// Packets between drift corrections.
 ///
 /// At 6 ms packets this is four times a second, matching the rate the UI
@@ -121,6 +155,69 @@ const PACING: PacingConfig = PacingConfig {
     floor_packets: QUEUE_FLOOR_PACKETS,
     max_per_packet: DRAIN_PER_PACKET,
 };
+
+/// The master secret this device holds, and a counter that says when it moved.
+///
+/// One secret, because Sonduit has one sender at a time. It arrives from
+/// whichever pairing path the user took -- the discovery responder answering a
+/// key offer, or [`Bridge::accept_invite`] answering the one that follows a
+/// scanned QR -- and it is read by the receive thread, which is on neither of
+/// those paths.
+///
+/// The epoch is what lets the receive thread notice a pairing that happened
+/// while it was already running without taking a lock on every datagram: it
+/// reads one atomic per packet and touches the mutex only when the number has
+/// changed. A pairing during a session is ordinary, because a session has to be
+/// running before the QR path can announce a port at all.
+struct Keys {
+    /// Bumped on every change, including a clear.
+    epoch: AtomicU64,
+    /// `None` until this device has paired, and again after the user asks for
+    /// a new code.
+    secret: Mutex<Option<SessionSecret>>,
+}
+
+impl Keys {
+    fn new() -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            secret: Mutex::new(None),
+        }
+    }
+
+    /// Adopt the secret from a completed pairing, replacing any before it.
+    ///
+    /// Replacing rather than adding: the pairing that just happened is the one
+    /// that is current, and a receiver holding two keys would accept audio
+    /// from a desktop the user has since re-paired away from.
+    fn adopt(&self, secret: SessionSecret) {
+        if let Ok(mut held) = self.secret.lock() {
+            *held = Some(secret);
+            // Released after the store below, so a reader that sees the new
+            // epoch cannot then read the old secret.
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Forget the pairing, returning this device to refusing sealed audio and
+    /// accepting cleartext.
+    fn clear(&self) {
+        if let Ok(mut held) = self.secret.lock() {
+            *held = None;
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// The current epoch, for a reader deciding whether to look further.
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    /// The secret as it stands, cloned so the lock is not held across use.
+    fn secret(&self) -> Option<SessionSecret> {
+        self.secret.lock().ok().and_then(|held| held.clone())
+    }
+}
 
 /// Bridge lifecycle state, mirrored into the Android UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Enum)]
@@ -164,6 +261,24 @@ pub enum FfiError {
     /// The scanned text was not a Sonduit pairing invite.
     #[error("that is not a Sonduit pairing code")]
     BadInvite,
+
+    /// The announcement was delivered but the computer never agreed a key.
+    ///
+    /// Raised rather than swallowed because it is now a knowable outcome. The
+    /// desktop answers a verified announcement with its half of the key
+    /// agreement, so silence means the announcement did not arrive, arrived
+    /// after the code expired, or was refused. Without a key this device
+    /// cannot be sent audio at all, so reporting success here would be
+    /// reporting a pairing that is not one.
+    #[error("the computer did not finish pairing")]
+    PairingIncomplete,
+
+    /// No session key could be generated on this device.
+    #[error("no session key could be generated: {reason}")]
+    NoEntropy {
+        /// What the platform's random source reported.
+        reason: String,
+    },
 }
 
 /// What the Android UI displays.
@@ -207,6 +322,26 @@ pub struct BridgeTelemetry {
     pub drift_ppm: Option<f64>,
     /// Correction currently being applied, in parts per million.
     pub correction_ppm: f64,
+    /// Datagrams refused by the cipher layer.
+    ///
+    /// Sealed audio that did not authenticate, sealed audio arriving with no
+    /// key to open it, and -- the case that matters most -- cleartext audio
+    /// arriving at a receiver that holds a key. That last one is the downgrade
+    /// defence: a keyed receiver that still played version 1 packets would let
+    /// an attacker simply send version 1, and the encryption would be
+    /// decoration. Every one of them is counted here and none of them is
+    /// played.
+    ///
+    /// Separate from `packets_malformed`, which is a datagram that is not a
+    /// packet at all. A refusal is a well-formed packet this receiver is not
+    /// allowed to accept, which is a different thing to see on a screen.
+    pub packets_refused: u64,
+    /// Whether the audio being played is encrypted.
+    ///
+    /// True once this device holds a master secret, which is exactly when it
+    /// will accept sealed audio and refuse anything else. Shown because a
+    /// session that is not encrypted must never look like one that is.
+    pub encrypted: bool,
     /// Which link the audio is arriving over. Empty before the first packet.
     ///
     /// Taken from the wired-link flag the sender sets in the packet header,
@@ -222,6 +357,11 @@ struct Shared {
     source: Mutex<JitterSource>,
     state: Mutex<BridgeState>,
     malformed: Mutex<u64>,
+    /// Datagrams the cipher layer refused. See [`BridgeTelemetry::packets_refused`].
+    refused: Mutex<u64>,
+    /// The pairing this session is keyed from, shared with the pairing paths
+    /// so that a pairing completed mid-session takes effect on the next packet.
+    keys: Arc<Keys>,
     format: Mutex<Option<Format>>,
     /// The producer half of the handoff to the audio callback.
     ///
@@ -270,6 +410,13 @@ pub struct Bridge {
     /// would go stale the moment the code changed, and the phone would then
     /// show one code on screen while proving it knew another.
     pairing: Arc<Mutex<PairingCode>>,
+    /// The master secret, shared with everything that agrees or uses one.
+    ///
+    /// On the [`Bridge`] rather than on a session, for the same reason the
+    /// pairing code is: pairing happens while the app is open, sessions come
+    /// and go underneath it, and a secret captured into a session would be
+    /// lost the first time the user stopped and started one.
+    keys: Arc<Keys>,
     /// The port an announcement advertises, which is where the desktop will
     /// send audio.
     ///
@@ -329,6 +476,7 @@ impl Responder {
         name: Arc<Mutex<String>>,
         audio_port: Arc<AtomicU16>,
         code: Arc<Mutex<PairingCode>>,
+        keys: Arc<Keys>,
     ) -> std::io::Result<Self> {
         let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, discovery_port)))?;
         let _ = socket.set_broadcast(true);
@@ -339,7 +487,7 @@ impl Responder {
             let stop = Arc::clone(&stop);
             std::thread::Builder::new()
                 .name("sonduit-announce".into())
-                .spawn(move || announce_loop(&socket, &stop, &name, &audio_port, &code))?
+                .spawn(move || announce_loop(&socket, &stop, &name, &audio_port, &code, &keys))?
         };
 
         Ok(Self {
@@ -381,18 +529,73 @@ impl Bridge {
     /// There is no caller to raise it to, this being a constructor the UI runs
     /// before it has anywhere to show an error, and a bridge that cannot be
     /// discovered can still be paired by QR and can still play audio.
+    /// Wait for the desktop's key offer on `socket` and answer it.
+    ///
+    /// Bounded by [`KEY_OFFER_WAIT`]. Anything that does not verify against
+    /// the invite's own nonce and code is ignored rather than refused out
+    /// loud: this socket is on an open network and a stray datagram from
+    /// somebody else must not be able to end the pairing.
+    fn answer_key_offer(
+        &self,
+        socket: &UdpSocket,
+        invite: &Invite,
+        mut announce: impl FnMut(),
+    ) -> Result<SessionSecret, FfiError> {
+        let seed = entropy::key_seed().map_err(|error| FfiError::NoEntropy {
+            reason: error.to_string(),
+        })?;
+
+        socket
+            .set_read_timeout(Some(RECV_TIMEOUT))
+            .map_err(|error| FfiError::Transport {
+                reason: error.to_string(),
+            })?;
+
+        let deadline = std::time::Instant::now() + KEY_OFFER_WAIT;
+        let mut datagram = [0_u8; 256];
+        let mut sent_at = std::time::Instant::now();
+
+        while std::time::Instant::now() < deadline {
+            // The announcement goes again while nothing has come back. One
+            // unicast datagram lost on a radio used to cost the user a session
+            // that never started for no visible reason; now it would cost them
+            // a refused pairing, which is better and is still avoidable. The
+            // desktop authenticates every copy against the same nonce and code,
+            // so a repeat is not a second pairing.
+            if sent_at.elapsed() >= ANNOUNCE_REPEAT {
+                sent_at = std::time::Instant::now();
+                announce();
+            }
+
+            let Ok((length, from)) = socket.recv_from(&mut datagram) else {
+                continue;
+            };
+            let Some((accept, secret)) =
+                handshake::answer(&datagram[..length], &invite.nonce, &invite.code, seed)
+            else {
+                continue;
+            };
+            let _ = socket.send_to(&accept, from);
+            return Ok(secret);
+        }
+
+        Err(FfiError::PairingIncomplete)
+    }
+
     fn with_discovery_port(discovery_port: u16) -> Self {
         install_logging();
 
         let device_name = Arc::new(Mutex::new("Sonduit".to_string()));
         let pairing = Arc::new(Mutex::new(PairingCode::from_seed(random_seed())));
         let advertised_port = Arc::new(AtomicU16::new(DEFAULT_PORT));
+        let keys = Arc::new(Keys::new());
 
         let responder = match Responder::spawn(
             discovery_port,
             Arc::clone(&device_name),
             Arc::clone(&advertised_port),
             Arc::clone(&pairing),
+            Arc::clone(&keys),
         ) {
             Ok(responder) => Some(responder),
             Err(error) => {
@@ -406,6 +609,7 @@ impl Bridge {
             shared: Mutex::new(None),
             device_name,
             pairing,
+            keys,
             advertised_port,
             responder,
         }
@@ -438,15 +642,37 @@ impl Bridge {
             .unwrap_or_default()
     }
 
-    /// Generate a new pairing code.
+    /// Generate a new pairing code, and forget the key that went with it.
     ///
     /// For a user who believes the old one has been seen by someone else. Any
     /// desktop paired with the previous code stops being able to find this
     /// device, which is the point.
+    ///
+    /// The master secret goes with it, and that is the larger change: it was
+    /// agreed under the code being replaced, so keeping it would leave this
+    /// device able to play audio from a pairing the user has just revoked.
+    ///
+    /// This is also the one way back to an unkeyed receiver, which is what a
+    /// user needs to receive from an unmodified Scream sender: that sender has
+    /// no key and cannot have one, and a keyed receiver refuses it. The trade
+    /// is stated rather than hidden -- ADR-009 makes a pairing worth keeping,
+    /// and this is the button that throws one away.
     pub fn regenerate_pairing_code(&self) {
         if let Ok(mut code) = self.pairing.lock() {
             *code = PairingCode::from_seed(random_seed());
         }
+        self.keys.clear();
+        note!("pairing code regenerated; the previous session key is discarded");
+    }
+
+    /// Whether this device holds a pairing key, and so plays encrypted audio.
+    ///
+    /// Read by the UI before a session exists, which is why it is not only a
+    /// telemetry field: the screen showing the pairing code is the screen that
+    /// should say whether this device is paired.
+    #[must_use]
+    pub fn is_paired(&self) -> bool {
+        self.keys.secret().is_some()
     }
 
     /// Pair from a QR code the desktop displayed.
@@ -474,14 +700,24 @@ impl Bridge {
     /// audio will arrive on, and until the socket is bound there is no such
     /// port to advertise.
     ///
-    /// Returning `Ok` means the announcement left this device, not that the
-    /// desktop accepted it. The confirmation the user sees is audio arriving.
+    /// # What happens after the announcement
+    ///
+    /// The desktop answers a verified announcement with its half of an
+    /// ephemeral Diffie-Hellman, and this device answers that with its own and
+    /// keeps the master secret. Until that has happened the pairing is not
+    /// finished and no audio can flow: the desktop will not send to a device
+    /// it holds no key for, and this device would refuse cleartext anyway.
+    ///
+    /// So returning `Ok` now means the pairing completed, which is more than
+    /// it used to mean. Silence is [`FfiError::PairingIncomplete`] rather than
+    /// a success the user only discovers was not one when no sound arrives.
     ///
     /// # Errors
     /// Returns [`FfiError::BadInvite`] when the scanned text is not a Sonduit
-    /// invite, [`FfiError::NotRunning`] when no session is listening, and
+    /// invite, [`FfiError::NotRunning`] when no session is listening,
     /// [`FfiError::Transport`] when no address in the invite could be reached
-    /// at all.
+    /// at all, [`FfiError::NoEntropy`] when no key pair can be generated, and
+    /// [`FfiError::PairingIncomplete`] when the computer never answered.
     pub fn accept_invite(&self, payload: String) -> Result<(), FfiError> {
         let invite = Invite::parse(&payload).ok_or(FfiError::BadInvite)?;
 
@@ -515,23 +751,36 @@ impl Bridge {
         // Every address is tried, not just the first. The desktop cannot tell
         // which of its interfaces this phone shares, so it offers all of them;
         // the ones on other links fail here and cost a system call each.
-        let mut delivered = false;
-        for address in &invite.addresses {
-            if socket
-                .send_to(&datagram, SocketAddr::from((*address, invite.port)))
-                .is_ok()
-            {
-                delivered = true;
+        let announce = |socket: &UdpSocket| {
+            let mut delivered = false;
+            for address in &invite.addresses {
+                if socket
+                    .send_to(&datagram, SocketAddr::from((*address, invite.port)))
+                    .is_ok()
+                {
+                    delivered = true;
+                }
             }
+            delivered
+        };
+
+        if !announce(&socket) {
+            return Err(FfiError::Transport {
+                reason: "no address in the pairing code could be reached".to_string(),
+            });
         }
 
-        if delivered {
-            Ok(())
-        } else {
-            Err(FfiError::Transport {
-                reason: "no address in the pairing code could be reached".to_string(),
-            })
-        }
+        // The desktop's key offer comes back to the source address of the
+        // announcement, so it arrives on this same socket. Waiting for it here
+        // rather than on a background thread keeps the whole pairing inside
+        // the one call the UI made, and lets the failure be reported as a
+        // failure.
+        let secret = self.answer_key_offer(&socket, &invite, || {
+            announce(&socket);
+        })?;
+        self.keys.adopt(secret);
+        note!("paired by QR; audio from this computer will be encrypted");
+        Ok(())
     }
 
     /// Set the name announced in reply to discovery probes.
@@ -563,6 +812,8 @@ impl Bridge {
 
         let state = read_state(shared);
         let malformed = shared.malformed.lock().map(|count| *count).unwrap_or(0);
+        let refused = shared.refused.lock().map(|count| *count).unwrap_or(0);
+        let encrypted = shared.keys.secret().is_some();
         let format = shared.format.lock().ok().and_then(|value| *value);
         let playback_error = shared
             .playback_error
@@ -592,6 +843,8 @@ impl Bridge {
             return BridgeTelemetry {
                 state,
                 packets_malformed: malformed,
+                packets_refused: refused,
+                encrypted,
                 sample_rate: format.map_or(0, |f| f.sample_rate),
                 channels: format.map_or(0, |f| f.channels),
                 playback_error,
@@ -609,6 +862,8 @@ impl Bridge {
             packets_late: stats.too_late,
             packets_lost: stats.lost,
             packets_malformed: malformed,
+            packets_refused: refused,
+            encrypted,
             buffer_depth_ms: source.buffer().depth_ms(),
             buffer_target_ms: source.buffer().target_ms(),
             jitter_ms: source.buffer().jitter_ms(),
@@ -675,6 +930,8 @@ impl Bridge {
             )),
             state: Mutex::new(BridgeState::Discovering),
             malformed: Mutex::new(0),
+            refused: Mutex::new(0),
+            keys: Arc::clone(&self.keys),
             format: Mutex::new(None),
             queue: Mutex::new(None),
             #[cfg(target_os = "android")]
@@ -776,6 +1033,32 @@ fn read_state(shared: &Shared) -> BridgeState {
         .unwrap_or(BridgeState::Failed)
 }
 
+/// Count a datagram the cipher layer would not accept.
+///
+/// Separate from the malformed count on purpose. Malformed is "that was not a
+/// packet"; this is "that was a packet and this receiver is not allowed to
+/// play it", which is what the user needs to see when a sender is using the
+/// wrong key or somebody is injecting audio.
+fn refuse(shared: &Shared, since_report: &mut u64) {
+    *since_report += 1;
+    if let Ok(mut count) = shared.refused.lock() {
+        *count += 1;
+    }
+
+    // Logged here rather than only on the periodic tick, because that tick
+    // runs on the packets that were accepted: a receiver refusing every
+    // datagram -- a sender using the wrong key, which is the case somebody
+    // would actually need to diagnose -- would never reach it and logcat
+    // would say nothing at all.
+    //
+    // The first one and then rarely, so a stream that is entirely refused
+    // costs one line and then a line every few seconds instead of one every
+    // six milliseconds.
+    if *since_report == 1 || *since_report % REFUSALS_PER_LINE == 0 {
+        note!("refused a datagram the session key does not accept ({since_report} so far)");
+    }
+}
+
 fn set_state(shared: &Shared, state: BridgeState) {
     if let Ok(mut current) = shared.state.lock() {
         *current = state;
@@ -794,7 +1077,7 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     // The sender has no other way to learn anything. Without these reports it
     // can only describe its own socket, and it showed a working session with
     // no device on the network at all.
-    let mut report_buffer = [0_u8; FEEDBACK_BYTES];
+    let mut report_buffer = [0_u8; SEALED_FEEDBACK_BYTES];
     let mut last_report = std::time::Instant::now();
     let mut last_accepted: Option<(u32, std::time::Instant)> = None;
     let mut seen_audio = false;
@@ -829,6 +1112,22 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     // of the protocol and not of this code.
     let mut scream_sequence = 0_u16;
 
+    // The cipher state, rebuilt whenever the pairing changes underneath this
+    // thread. `u64::MAX` rather than zero so the first packet always syncs:
+    // a device that paired before the session started must not spend its first
+    // packets refusing audio it holds the key for.
+    let mut key_epoch = u64::MAX;
+    let mut opener: Option<Opener> = None;
+    let mut feedback_sealer: Option<FeedbackSealer> = None;
+    // Reused, so opening allocates nothing per packet. Sized for the largest
+    // datagram this transport will accept, which bounds the plaintext inside
+    // one.
+    let mut opened = vec![0_u8; sonduit_transport::MAX_DATAGRAM_BYTES];
+    // Refusals since the last log line. Counted rather than logged where they
+    // happen: a sender pointed at this device with the wrong key would produce
+    // a line every six milliseconds about one fact.
+    let mut refused_since_report = 0_u64;
+
     while !stop.load(Ordering::Relaxed) {
         let Ok((length, from)) = socket.recv_from(&mut datagram) else {
             continue;
@@ -836,31 +1135,108 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
         let arrival = start.elapsed().as_nanos() as u64;
         let bytes = &datagram[..length];
 
-        let decoded = match classify(bytes) {
-            Some(Wire::Sonduit) => SonduitPacket::decode(bytes).ok().map(|packet| {
-                (
+        // One relaxed atomic read per datagram, and the mutex only when a
+        // pairing has actually happened. Pairing during a session is the
+        // ordinary case on the QR path, where a session has to be running
+        // before there is a port to announce.
+        let epoch = shared.keys.epoch();
+        if epoch != key_epoch {
+            key_epoch = epoch;
+            let secret = shared.keys.secret();
+            opener = secret.clone().map(Opener::new);
+            feedback_sealer = secret.as_ref().and_then(|secret| {
+                match entropy::stream_salt() {
+                    Ok(salt) => Some(FeedbackSealer::new(secret, salt)),
+                    // No salt means no sealed reports. The sender then sees a
+                    // receiver that never answers, which is honest: what it
+                    // must not see is a report it cannot authenticate, and
+                    // what it must never get is a cleartext one from a keyed
+                    // session.
+                    Err(error) => {
+                        note!("no random salt for the feedback key, reports are off: {error}");
+                        None
+                    }
+                }
+            });
+            note!(
+                "session key {}",
+                if opener.is_some() {
+                    "adopted: audio must be sealed"
+                } else {
+                    "cleared: this device is unpaired"
+                }
+            );
+        }
+
+        // Which wire this datagram is, and whether this receiver is allowed to
+        // accept it at all. There is deliberately no arm that plays a packet
+        // the key says no to: a receiver that fell back to cleartext when
+        // opening failed would turn the encryption into a suggestion, and a
+        // receiver that played ciphertext as PCM would put a full-scale noise
+        // burst into somebody's headphones.
+        let version = sonduit_transport::sonduit_version(bytes);
+        let sealed_version = Some(sonduit_core::packet::SONDUIT_VERSION_SEALED);
+
+        let decoded = if opener.is_some() && version != sealed_version {
+            // The downgrade defence, and it is not optional. Cleartext Sonduit,
+            // Scream and anything else all land here: a keyed receiver that
+            // still accepted any of them would let an attacker pick the format
+            // with no key in it.
+            refuse(shared, &mut refused_since_report);
+            continue;
+        } else if version == sealed_version {
+            let Some(opener) = opener.as_mut() else {
+                // Sealed audio and no key. Nothing to try: the packet is not
+                // for this pairing and cannot be made into audio.
+                refuse(shared, &mut refused_since_report);
+                continue;
+            };
+            match opener.open(bytes, &mut opened) {
+                Ok(packet) => Some((
                     packet.format,
                     packet.sequence,
                     packet.timestamp_frames,
+                    // The one copy the cleartext path makes as well: the
+                    // buffer below owns its audio. Opening itself wrote into
+                    // the reused buffer above and allocated nothing.
                     packet.pcm.to_vec(),
                     packet.wired_link(),
-                )
-            }),
-            // Scream's header has no room to say, so it never claims a wired
-            // link and the address is all there is to go on.
-            Some(Wire::Scream) => ScreamPacket::decode(bytes).ok().map(|packet| {
-                let sequence = scream_sequence;
-                scream_sequence = scream_sequence.wrapping_add(1);
-                let frames = (packet.pcm.len() / packet.format.bytes_per_frame()) as u32;
-                (
-                    packet.format,
-                    sequence,
-                    u32::from(sequence).wrapping_mul(frames),
-                    packet.pcm.to_vec(),
-                    false,
-                )
-            }),
-            None => None,
+                )),
+                // Forged, corrupted, replayed or sent under another key. The
+                // four are not told apart because none of them is audio this
+                // receiver may play.
+                Err(_) => {
+                    refuse(shared, &mut refused_since_report);
+                    continue;
+                }
+            }
+        } else {
+            match classify(bytes) {
+                Some(Wire::Sonduit) => SonduitPacket::decode(bytes).ok().map(|packet| {
+                    (
+                        packet.format,
+                        packet.sequence,
+                        packet.timestamp_frames,
+                        packet.pcm.to_vec(),
+                        packet.wired_link(),
+                    )
+                }),
+                // Scream's header has no room to say, so it never claims a wired
+                // link and the address is all there is to go on.
+                Some(Wire::Scream) => ScreamPacket::decode(bytes).ok().map(|packet| {
+                    let sequence = scream_sequence;
+                    scream_sequence = scream_sequence.wrapping_add(1);
+                    let frames = (packet.pcm.len() / packet.format.bytes_per_frame()) as u32;
+                    (
+                        packet.format,
+                        sequence,
+                        u32::from(sequence).wrapping_mul(frames),
+                        packet.pcm.to_vec(),
+                        false,
+                    )
+                }),
+                None => None,
+            }
         };
 
         let Some((format, sequence, timestamp, pcm, wired_link)) = decoded else {
@@ -1083,7 +1459,14 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
         // being handled, and the hold time it reports is real.
         if last_report.elapsed() >= Duration::from_millis(FEEDBACK_INTERVAL_MS) {
             last_report = std::time::Instant::now();
-            send_report(socket, from, shared, last_accepted, &mut report_buffer);
+            send_report(
+                socket,
+                from,
+                shared,
+                last_accepted,
+                feedback_sealer.as_mut(),
+                &mut report_buffer,
+            );
         }
 
         // Echoed back so the sender can measure a round trip against its own
@@ -1184,6 +1567,15 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                     "shed {shed_packets} packets: the receiver was holding past what this link allows"
                 );
                 shed_packets = 0;
+            }
+
+            // Worth a line, and worth being specific: on a healthy paired link
+            // this is zero, and anything else is a sender using the wrong key,
+            // a sender that has not been paired with, or somebody injecting
+            // datagrams. None of the three is a fault in this device.
+            if refused_since_report > 0 {
+                note!("refused {refused_since_report} datagrams the session key does not accept");
+                refused_since_report = 0;
             }
 
             // A stream that has gone cannot be restarted, and AAudio stops
@@ -1313,19 +1705,45 @@ fn announce_loop(
     name: &Mutex<String>,
     audio_port: &AtomicU16,
     code: &Mutex<PairingCode>,
+    keys: &Keys,
 ) {
     let mut datagram = [0_u8; 256];
+    // Nonces of the probes recently answered, newest last. The key offer that
+    // follows a scan is tagged against the nonce of the probe it belongs to,
+    // and this device cannot tell from the offer alone which probe that was.
+    // A nonce is not a secret: every probe carried its own in the clear.
+    let mut recent: Vec<[u8; NONCE_BYTES]> = Vec::with_capacity(REMEMBERED_NONCES);
 
     while !stop.load(Ordering::Relaxed) {
         let Ok((length, from)) = socket.recv_from(&mut datagram) else {
             continue;
         };
+
+        // The second half of the typed-code pairing path: the desktop follows
+        // a verified announcement with its half of the key agreement, and this
+        // answers it. Without this a scan would find a device it then could
+        // not send audio to, because the desktop refuses to stream to a peer
+        // it holds no key for.
+        if handshake::is_key_offer(&datagram[..length]) {
+            answer_offer(socket, from, &datagram[..length], code, keys, &recent);
+            continue;
+        }
+
         // A probe with no readable nonce is either malformed or an older
         // protocol version, and there is nothing to authenticate against
         // either way.
         let Some(nonce) = discovery::probe_nonce(&datagram[..length]) else {
             continue;
         };
+
+        // Remembered before the reply goes out, so an offer that arrives
+        // immediately after it has something to verify against.
+        if !recent.contains(&nonce) {
+            if recent.len() == REMEMBERED_NONCES {
+                recent.remove(0);
+            }
+            recent.push(nonce);
+        }
 
         // All three are read per probe rather than captured once. Scanning a
         // desktop's QR replaces the code, starting a session replaces the
@@ -1355,6 +1773,56 @@ fn announce_loop(
     }
 }
 
+/// Answer a key offer against whichever recent probe it belongs to.
+///
+/// Tried against every nonce this responder has answered lately, because the
+/// offer names none of them and the tag is what decides. An offer that
+/// verifies against none of them is dropped in silence, exactly as an
+/// announcement that does not verify is: it is either a device that does not
+/// hold this code or a stray datagram, and saying which would tell an attacker
+/// which of its guesses was closer.
+///
+/// A failure to read the system's random source is logged and the offer is
+/// left unanswered. The desktop then reports that the device did not pair,
+/// which is true, rather than this device pairing under a key pair generated
+/// from something guessable.
+fn answer_offer(
+    socket: &UdpSocket,
+    from: SocketAddr,
+    offer: &[u8],
+    code: &Mutex<PairingCode>,
+    keys: &Keys,
+    recent: &[[u8; NONCE_BYTES]],
+) {
+    // Cloned and the lock released at once: the announce thread must not hold
+    // the code while it does a key agreement, and the UI reads the same mutex
+    // to put the digits on screen.
+    let code = {
+        let Ok(guard) = code.lock() else {
+            return;
+        };
+        guard.clone()
+    };
+
+    let seed = match entropy::key_seed() {
+        Ok(seed) => seed,
+        Err(error) => {
+            note!("no random seed for the key agreement, pairing refused: {error}");
+            return;
+        }
+    };
+
+    for nonce in recent.iter().rev() {
+        let Some((accept, secret)) = handshake::answer(offer, nonce, &code, seed) else {
+            continue;
+        };
+        let _ = socket.send_to(&accept, from);
+        keys.adopt(secret);
+        note!("paired by scan; audio from this computer will be encrypted");
+        return;
+    }
+}
+
 /// Milliseconds as the tenths the feedback report is encoded in.
 ///
 /// Clamped rather than wrapped, for the same reason the hold time is: a figure
@@ -1381,12 +1849,18 @@ fn packet_duration_ms(format: Format) -> f64 {
 /// sender one missed sample of a figure it redraws four times a second, and
 /// the alternative, tearing down a session that is playing audio correctly
 /// because a status datagram was refused, is plainly worse.
+/// `sealer` is present exactly when this device holds a pairing key. A keyed
+/// session's reports are sealed under a key derived with its own label, so a
+/// report can never be replayed into the audio path or the reverse, and the
+/// sender refuses a cleartext one. An unkeyed session sends the version 1
+/// encoding, which is the only thing an unkeyed sender can read.
 fn send_report(
     socket: &UdpSocket,
     to: SocketAddr,
     shared: &Arc<Shared>,
     last_accepted: Option<(u32, std::time::Instant)>,
-    buffer: &mut [u8; FEEDBACK_BYTES],
+    sealer: Option<&mut FeedbackSealer>,
+    buffer: &mut [u8; SEALED_FEEDBACK_BYTES],
 ) {
     let Some((echo, accepted_at)) = last_accepted else {
         return;
@@ -1427,8 +1901,17 @@ fn send_report(
         playing: read_state(shared) == BridgeState::Streaming,
     };
 
-    if report.encode(buffer).is_ok() {
-        let _ = socket.send_to(buffer, to);
+    match sealer {
+        Some(sealer) => {
+            if let Ok(length) = sealer.seal(&report, buffer) {
+                let _ = socket.send_to(&buffer[..length], to);
+            }
+        }
+        None => {
+            if let Ok(length) = report.encode(buffer) {
+                let _ = socket.send_to(&buffer[..length], to);
+            }
+        }
     }
 }
 
@@ -1658,6 +2141,236 @@ mod tests {
         assert!(
             probe(discovery_port, &code).is_some(),
             "the port was still held by the dropped bridge"
+        );
+    }
+
+    /// Pair with a bridge over loopback exactly as the desktop's typed-code
+    /// scan does: probe, verify the announcement, offer a key, take the
+    /// accept.
+    ///
+    /// The real four datagrams over real sockets. A test that reached inside
+    /// and installed a secret would prove the cipher works and nothing about
+    /// the path a pairing actually takes, which is the half of this that the
+    /// two ends have to agree on.
+    #[cfg(not(target_os = "android"))]
+    fn pair_over_loopback(discovery_port: u16, code: &PairingCode) -> SessionSecret {
+        use sonduit_transport::handshake::Offer;
+        use sonduit_transport::session::SEED_BYTES;
+
+        let nonce = [0xA7_u8; NONCE_BYTES];
+        let desktop = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("an ephemeral loopback socket");
+        desktop
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("a fresh socket takes a timeout");
+        let target = SocketAddr::from((Ipv4Addr::LOCALHOST, discovery_port));
+        let mut datagram = [0_u8; 256];
+
+        // Step one: find it, which is the exchange that already existed.
+        let mut responder = None;
+        for _ in 0..20 {
+            if desktop
+                .send_to(&discovery::encode_probe(&nonce), target)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok((length, from)) = desktop.recv_from(&mut datagram) else {
+                continue;
+            };
+            if discovery::decode_announce(&datagram[..length], &nonce, code).is_some() {
+                responder = Some(from);
+                break;
+            }
+        }
+        let responder = responder.expect("the bridge must answer a probe for its own code");
+
+        // Step two: agree a key with it, which is what this change adds.
+        let offer = Offer::new([0x5D; SEED_BYTES], nonce, code.clone());
+        let mut accepted = None;
+        for _ in 0..20 {
+            if desktop.send_to(&offer.datagram(), responder).is_err() {
+                continue;
+            }
+            let Ok((length, _)) = desktop.recv_from(&mut datagram) else {
+                continue;
+            };
+            if offer.is_our_accept(&datagram[..length]) {
+                accepted = Some(datagram[..length].to_vec());
+                break;
+            }
+        }
+
+        offer
+            .accept(&accepted.expect("the bridge must answer a key offer"))
+            .expect("the accept must complete the agreement")
+    }
+
+    /// A cleartext Sonduit datagram, as an old sender or an attacker sends it.
+    #[cfg(not(target_os = "android"))]
+    fn cleartext(sequence: u16, pcm: &[u8]) -> Vec<u8> {
+        let mut datagram = vec![0_u8; SonduitPacket::encoded_len(pcm.len())];
+        SonduitPacket {
+            format: Format::stereo_48k(),
+            sequence,
+            timestamp_frames: u32::from(sequence) * (pcm.len() / 4) as u32,
+            flags: 0,
+            pcm,
+        }
+        .encode(&mut datagram)
+        .expect("a packet of the right size encodes");
+        datagram
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_paired_receiver_plays_sealed_audio_and_refuses_the_same_audio_in_the_clear() {
+        // Both halves of the downgrade defence in one session, because they
+        // are one property: audio is played only when the key says so, and the
+        // key saying no is never a reason to play it anyway.
+        use sonduit_core::format::PCM_PAYLOAD_BYTES;
+        use sonduit_transport::sealed::Sealer;
+        use sonduit_transport::session::SALT_BYTES;
+
+        let bridge = Bridge::with_discovery_port(41_040);
+        let port = 41_041;
+        if bridge.start(port).is_err() {
+            return;
+        }
+
+        let code = PairingCode::parse(&bridge.pairing_code()).expect("the code is six digits");
+        let secret = pair_over_loopback(41_040, &code);
+        assert!(
+            bridge.is_paired(),
+            "the bridge did not keep the key it agreed"
+        );
+
+        let sender = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let target = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let pcm = vec![7_u8; PCM_PAYLOAD_BYTES];
+
+        let mut sealer = Sealer::new(&secret, [0x4E; SALT_BYTES]);
+        let mut sealed = vec![0_u8; Sealer::sealed_len(pcm.len())];
+        for _ in 0..8 {
+            sealer
+                .seal(&Format::stereo_48k(), 0, 0, &pcm, &mut sealed)
+                .expect("sealing cannot fail for a well sized buffer");
+            // The bytes on the wire are not the audio. Asserted here as well
+            // as in the transport tests, because this is the datagram the
+            // application actually sends.
+            assert!(
+                !sealed.windows(pcm.len()).any(|window| window == pcm),
+                "the PCM went out in the clear"
+            );
+            sender.send_to(&sealed, target).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+
+        let playing = bridge.telemetry();
+        assert_eq!(playing.packets_accepted, 8, "sealed audio was not played");
+        assert_eq!(playing.packets_refused, 0);
+        assert!(
+            playing.encrypted,
+            "a keyed session must report itself keyed"
+        );
+
+        // The same audio, in the clear, from the same address. A receiver that
+        // accepted this would make the encryption a suggestion: an attacker
+        // would simply send version 1.
+        for sequence in 0..4_u16 {
+            sender.send_to(&cleartext(sequence, &pcm), target).unwrap();
+        }
+        // And the other wire, which has no version field and no key at all.
+        let mut scream = vec![0_u8; sonduit_core::packet::SCREAM_PACKET_BYTES];
+        ScreamPacket::encode(&Format::stereo_48k(), &pcm, &mut scream).unwrap();
+        sender.send_to(&scream, target).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+
+        let after = bridge.telemetry();
+        bridge.stop().unwrap();
+
+        assert_eq!(
+            after.packets_accepted, 8,
+            "cleartext audio reached a keyed receiver"
+        );
+        assert_eq!(
+            after.packets_refused, 5,
+            "the refusals were not counted, so nobody would ever see them"
+        );
+        assert_eq!(
+            after.packets_malformed, 0,
+            "a refused packet is not a malformed one and must not be filed as one"
+        );
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn an_unpaired_receiver_refuses_sealed_audio_rather_than_playing_it() {
+        // The other direction, and the one that would be a noise burst: a
+        // receiver with no key that treated ciphertext as PCM would play it at
+        // full scale into somebody's headphones.
+        use sonduit_core::format::PCM_PAYLOAD_BYTES;
+        use sonduit_transport::handshake::{answer, Offer};
+        use sonduit_transport::sealed::Sealer;
+        use sonduit_transport::session::{SALT_BYTES, SEED_BYTES};
+
+        let bridge = Bridge::with_discovery_port(41_042);
+        let port = 41_043;
+        if bridge.start(port).is_err() {
+            return;
+        }
+        assert!(!bridge.is_paired());
+
+        // A key agreed between two ends that are not this device.
+        let nonce = [0x11_u8; NONCE_BYTES];
+        let code = PairingCode::parse("482913").unwrap();
+        let offer = Offer::new([1; SEED_BYTES], nonce, code.clone());
+        let (accept, _) =
+            answer(&offer.datagram(), &nonce, &code, [2; SEED_BYTES]).expect("well formed");
+        let stranger = offer.accept(&accept).expect("a complete agreement");
+
+        let sender = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let target = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let pcm = vec![7_u8; PCM_PAYLOAD_BYTES];
+        let mut sealer = Sealer::new(&stranger, [0x77; SALT_BYTES]);
+        let mut sealed = vec![0_u8; Sealer::sealed_len(pcm.len())];
+        for _ in 0..6 {
+            sealer
+                .seal(&Format::stereo_48k(), 0, 0, &pcm, &mut sealed)
+                .unwrap();
+            sender.send_to(&sealed, target).unwrap();
+        }
+
+        std::thread::sleep(Duration::from_millis(300));
+        let telemetry = bridge.telemetry();
+        bridge.stop().unwrap();
+
+        assert_eq!(
+            telemetry.packets_accepted, 0,
+            "ciphertext was decoded as audio"
+        );
+        assert_eq!(
+            telemetry.packets_refused, 6,
+            "the refusals were not counted"
+        );
+        assert!(!telemetry.encrypted);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_new_pairing_code_throws_the_key_away_with_it() {
+        // The one way back to an unkeyed receiver, and the only reason a user
+        // who wants an unmodified Scream sender is not stuck. It has to
+        // actually clear the key, or the device would keep refusing.
+        let bridge = Bridge::with_discovery_port(41_044);
+        let code = PairingCode::parse(&bridge.pairing_code()).expect("the code is six digits");
+        let _ = pair_over_loopback(41_044, &code);
+        assert!(bridge.is_paired());
+
+        bridge.regenerate_pairing_code();
+        assert!(
+            !bridge.is_paired(),
+            "the key outlived the code it was agreed under"
         );
     }
 

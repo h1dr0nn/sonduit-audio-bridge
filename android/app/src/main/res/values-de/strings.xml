@@ -16,6 +16,10 @@
     <string name="stat_malformed">Fehlerhaft</string>
     <string name="stat_drift">Taktabweichung</string>
     <string name="stat_correction">Korrektur</string>
+    <string name="stat_encryption">Verschlüsselung</string>
+    <string name="encryption_on">Verschlüsselt</string>
+    <string name="encryption_off">Nicht verschlüsselt</string>
+    <string name="stat_refused">Abgelehnt</string>
     <string name="pairing_title">Kopplungscode</string>
     <string name="pairing_new">Neuer Code</string>
     <string name="pairing_hint">Diesen Code am Computer eingeben, bevor gesucht wird. Ohne ihn erscheint dieses Telefon nicht.</string>
@@ -33,6 +37,7 @@
     <string name="scan_not_a_code">Das ist kein Sonduit-Kopplungscode.</string>
     <string name="scan_paired">An den Computer gesendet. Der Ton startet gleich.</string>
     <string name="scan_failed">Der Computer war nicht erreichbar. Prüfe, ob beide im selben Netz sind oder per USB verbunden.</string>
+    <string name="scan_not_accepted">Der Computer hat die Kopplung nicht abgeschlossen. Zeigen Sie den Code erneut an und scannen Sie noch einmal.</string>
     <string name="scan_camera_error">Die Kamera konnte nicht geöffnet werden.</string>
 
     <string name="settings_title">Einstellungen</string>

@@ -16,6 +16,10 @@
     <string name="stat_malformed">Повреждённые</string>
     <string name="stat_drift">Расхождение часов</string>
     <string name="stat_correction">Коррекция</string>
+    <string name="stat_encryption">Шифрование</string>
+    <string name="encryption_on">Зашифровано</string>
+    <string name="encryption_off">Без шифрования</string>
+    <string name="stat_refused">Отклонено</string>
     <string name="pairing_title">Код сопряжения</string>
     <string name="pairing_new">Новый код</string>
     <string name="pairing_hint">Введите этот код на компьютере перед поиском. Без него телефон не появится в списке.</string>
@@ -33,6 +37,7 @@
     <string name="scan_not_a_code">Это не код сопряжения Sonduit.</string>
     <string name="scan_paired">Отправлено на компьютер. Звук начнётся через несколько секунд.</string>
     <string name="scan_failed">Компьютер недоступен. Проверьте, что оба в одной сети или соединены по USB.</string>
+    <string name="scan_not_accepted">Компьютер не завершил сопряжение. Покажите код снова и отсканируйте ещё раз.</string>
     <string name="scan_camera_error">Не удалось открыть камеру.</string>
 
     <string name="settings_title">Настройки</string>

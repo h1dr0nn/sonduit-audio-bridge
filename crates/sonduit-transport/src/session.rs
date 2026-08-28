@@ -49,9 +49,11 @@
 //! trip that happens once per pairing.
 //!
 //! Nothing here does I/O. The caller supplies the random seed, exactly as
-//! [`crate::pairing::PairingCode::from_seed`] requires, because this crate has
-//! no entropy source of its own and a key pair from a predictable seed would
-//! be no protection at all.
+//! [`crate::pairing::PairingCode::from_seed`] requires, so that the exchange
+//! can be driven from a fixed seed and asserted against known values. Outside
+//! a test that seed must come from [`crate::entropy::key_seed`] and from
+//! nowhere else: a key pair from a predictable seed is no protection at all,
+//! and it looks exactly like one that is.
 
 use hkdf::Hkdf;
 use sha2::Sha256;

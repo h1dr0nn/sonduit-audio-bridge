@@ -29,23 +29,24 @@ These cannot be done from a development machine and are not code problems.
 
 ## 1. Open work that is not blocked
 
-### 1.1 The audio itself is not encrypted
-
-Pairing stops an unpaired device being *selected*, which was the eavesdropping
-bug, and `crates/sonduit-transport/src/pairing.rs` says so in as many words. It
-does nothing about anyone who can already see the traffic: the PCM is in the
-clear and reconstructing it is trivial.
-
-There is no cipher anywhere in `crates/`. The README states the exposure
-plainly, which is the minimum. A cipher keyed from the pairing exchange is the
-real answer and is not written.
-
-### 1.2 Process loopback is not implemented
+### 1.1 Process loopback is not implemented
 
 `sonduit-capture-win` returns `CaptureError::ModeUnavailable` for
 `CaptureMode::ProcessLoopback`. Endpoint loopback works and is what the product
 uses today. This is a declared error, not a silent no-op, so it fails loudly
 if anything selects it.
+
+### 1.2 A pairing does not survive the desktop being closed
+
+The list of paired devices lives in the desktop process and nothing writes it
+down, so quitting the application discards every key with it and the user pairs
+again next time. That was free before ADR-009 and is not free now: a pairing is
+what a session is keyed from.
+
+Persisting it is not simply a file. A master secret on disk needs somewhere to
+live that is not a plain text file in the user's profile, which on Windows
+means DPAPI, and it needs a way for the user to see and revoke what is stored.
+Neither is written.
 
 ---
 
@@ -59,6 +60,7 @@ not as everything there ever was.
 | Nothing had ever been heard | Audio played on a real phone over USB tethering |
 | A dead capture device ended the session | The client is replaced in place; verified against a live endpoint |
 | Discovery had no authentication | Pairing code, HMAC over a per-probe nonce, verified over real sockets |
+| The audio went out in the clear | ChaCha20-Poly1305 per packet, keyed by an X25519 exchange the pairing code authenticates. A keyed receiver refuses cleartext and an unkeyed one refuses sealed; see ADR-009 |
 | One buffer depth for every link | `JitterConfig::for_transport`, and the sender now declares the link in the packet header rather than leaving the receiver to guess from the address |
 | The tethered phone had to be typed in | Adapter enumeration reads the gateway from the routing table; probes go to it directly |
 | Tether detection matched no real device | "Remote NDIS" is two words and `UsbNcm` is one; the tokens now match both |
@@ -77,8 +79,8 @@ Honest list of things that exist but are not finished.
 
 | Gap | Where |
 | --- | --- |
-| Process loopback returns `ModeUnavailable`; only endpoint loopback works | `sonduit-capture-win`, see section 1.2 |
-| Discovery is authenticated but the audio stream is not encrypted | ADR-006, see section 1.1 |
+| Process loopback returns `ModeUnavailable`; only endpoint loopback works | `sonduit-capture-win`, see section 1.1 |
+| A pairing lasts only as long as the desktop process, so every run pairs again | see section 1.2 |
 | The bundled FFmpeg is 110 MB installed, about 35 MB inside the LZMA installer; no smaller LGPL build is published | `tools/fetch-ffmpeg.mjs` |
 | `driver/` does not exist in the tree at all | ADR-002 |
 | The About screen names FFmpeg and points at `FFMPEG-LICENSE.txt` only; `THIRD-PARTY-LICENSES.txt` is installed but not signposted | `docs/licensing.md` section 5.1 |

@@ -59,6 +59,10 @@ object BridgeController {
         val packetsLost: ULong,
         val packetsLate: ULong,
         val packetsMalformed: ULong,
+        /** Packets the session key refused. See BridgeTelemetry.packetsRefused. */
+        val packetsRefused: ULong,
+        /** Whether the audio being played is encrypted. */
+        val encrypted: Boolean,
         val bufferDepthMs: Double,
         val bufferTargetMs: Double,
         val jitterMs: Double,
@@ -77,6 +81,8 @@ object BridgeController {
                 packetsLost = 0uL,
                 packetsLate = 0uL,
                 packetsMalformed = 0uL,
+                packetsRefused = 0uL,
+                encrypted = false,
                 bufferDepthMs = 0.0,
                 bufferTargetMs = 0.0,
                 jitterMs = 0.0,
@@ -184,6 +190,15 @@ object BridgeController {
 
         /** There is no session listening, so there is no port to announce. */
         NOT_RUNNING,
+
+        /**
+         * The announcement was delivered and the computer never agreed a key.
+         *
+         * A distinct outcome from UNREACHABLE, because the two need different
+         * things from the user: nothing arrived, or something arrived and the
+         * pairing window had already closed on it.
+         */
+        NOT_ACCEPTED,
     }
 
     /**
@@ -193,9 +208,12 @@ object BridgeController {
      * port audio will arrive on, and there is no such port until the socket is
      * bound.
      *
-     * [PairResult.SENT] means the datagram left this device, not that the
-     * computer accepted it. Nothing here can know that; what tells the user is
-     * audio starting to play.
+     * [PairResult.SENT] now means the pairing completed, not merely that the
+     * datagram left. The computer answers a verified announcement with its
+     * half of the key agreement and this device answers that, so silence is a
+     * knowable failure rather than an outcome nothing could observe. Without a
+     * key no audio can flow in either direction, so reporting success on the
+     * send alone would report a pairing that is not one.
      */
     @Synchronized
     fun acceptInvite(payload: String): PairResult {
@@ -209,6 +227,8 @@ object BridgeController {
             PairResult.NOT_A_CODE
         } catch (error: FfiException.NotRunning) {
             PairResult.NOT_RUNNING
+        } catch (error: FfiException.PairingIncomplete) {
+            PairResult.NOT_ACCEPTED
         } catch (error: Exception) {
             // Usually every address in the code is on a network this phone is
             // not on, which is what happens when the user scans a code shown
@@ -235,7 +255,26 @@ object BridgeController {
         }
     }
 
-    /** Replace the pairing code. Any desktop paired with the old one stops working. */
+    /**
+     * Whether this device holds a pairing key, and so plays encrypted audio.
+     *
+     * Readable with no session running, which is when the user is looking at
+     * the pairing card and wants to know whether the phone is paired at all.
+     */
+    fun isPaired(): Boolean = try {
+        bridge.isPaired()
+    } catch (error: Exception) {
+        Log.e(TAG, "could not read the pairing state", error)
+        false
+    }
+
+    /**
+     * Replace the pairing code, discarding the key agreed under it.
+     *
+     * Any desktop paired with the old one stops working, which is the point,
+     * and this is also the only way back to a device that will accept an
+     * unencrypted sender.
+     */
     fun regeneratePairingCode() {
         try {
             bridge.regeneratePairingCode()
@@ -256,6 +295,8 @@ object BridgeController {
                 packetsLost = native.packetsLost,
                 packetsLate = native.packetsLate,
                 packetsMalformed = native.packetsMalformed,
+                packetsRefused = native.packetsRefused,
+                encrypted = native.encrypted,
                 bufferDepthMs = native.bufferDepthMs,
                 bufferTargetMs = native.bufferTargetMs,
                 jitterMs = native.jitterMs,

@@ -16,6 +16,10 @@
     <string name="stat_malformed">손상된 패킷</string>
     <string name="stat_drift">클럭 드리프트</string>
     <string name="stat_correction">보정</string>
+    <string name="stat_encryption">암호화</string>
+    <string name="encryption_on">암호화됨</string>
+    <string name="encryption_off">암호화 안 됨</string>
+    <string name="stat_refused">거부됨</string>
     <string name="pairing_title">페어링 코드</string>
     <string name="pairing_new">새 코드</string>
     <string name="pairing_hint">검색하기 전에 컴퓨터에 이 코드를 입력하세요. 입력하지 않으면 이 휴대폰은 표시되지 않습니다.</string>
@@ -33,6 +37,7 @@
     <string name="scan_not_a_code">Sonduit 페어링 코드가 아닙니다.</string>
     <string name="scan_paired">컴퓨터로 보냈습니다. 곧 소리가 재생됩니다.</string>
     <string name="scan_failed">컴퓨터에 닿지 못했습니다. 같은 네트워크인지 또는 USB로 연결되었는지 확인하세요.</string>
+    <string name="scan_not_accepted">컴퓨터가 페어링을 끝내지 못했습니다. 코드를 다시 표시하고 재스캔하세요.</string>
     <string name="scan_camera_error">카메라를 열 수 없습니다.</string>
 
     <string name="settings_title">설정</string>

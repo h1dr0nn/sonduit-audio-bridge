@@ -44,6 +44,18 @@ x25519-dalek = { version = "2", default-features = false, features = [
 # the tree under chacha20poly1305; naming it directly is what lets the session
 # types derive ZeroizeOnDrop.
 zeroize = { version = "1", default-features = false, features = ["derive"] }
+# The platform's cryptographic random source, and the only one this project
+# uses for key material. The two ad-hoc generators already in the tree seed
+# six-digit pairing codes, whose strength is bounded at twenty bits whatever
+# they are seeded from; an X25519 private key's whole strength is its seed, so
+# it comes from the kernel or the session does not start. See src/entropy.rs.
+#
+# This is the one dependency that puts libc back on the Android build of this
+# crate, which ADR-009's note about chacha20poly1305's default features had
+# taken off. Reading the system entropy source is what libc is for, and the
+# alternative -- two hand-written copies in the two application crates -- is
+# how a fallback to a clock reading gets added later.
+getrandom = "0.3"
 
 sonduit-core.workspace = true
 thiserror.workspace = true

@@ -79,8 +79,15 @@ pub async fn bridge_scan(
         .map_err(|error| format!("background task failed: {error}"))?
         .map_err(String::from)?;
 
+    // The key each device agreed stays behind, in the bridge's own list. What
+    // crosses to the webview is the name and the address and nothing else:
+    // `PairedDevice` holds the secret in a private field with no accessor, so
+    // there is no way for one to be serialised into an IPC reply by accident.
     state.remember(&found, &credential);
-    Ok(found)
+    Ok(found
+        .into_iter()
+        .map(|paired| paired.device)
+        .collect::<Vec<_>>())
 }
 
 /// Generate the pairing invite the connection page renders as a QR code.
@@ -114,11 +121,13 @@ pub async fn bridge_await_pairing(
 
     // The code that proved this device, kept for the same reason the scan
     // keeps its own: it is the only thing that can later prove the phone on a
-    // newly appeared cable is the phone the session is streaming to.
-    if let Some(device) = &found {
-        state.remember(std::slice::from_ref(device), &credential);
+    // newly appeared cable is the phone the session is streaming to. The
+    // master secret agreed with it is kept in the same record and by the same
+    // call, because both came out of this one pairing and neither outlives it.
+    if let Some(paired) = &found {
+        state.remember(std::slice::from_ref(paired), &credential);
     }
-    Ok(found)
+    Ok(found.map(|paired| paired.device))
 }
 
 /// Stop waiting, and retire the code that was on screen.

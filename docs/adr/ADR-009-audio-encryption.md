@@ -11,7 +11,8 @@
 ## Context
 
 Pairing landed and stopped an unpaired device being *selected*. It did nothing
-about the wire. `docs/roadmap.md` section 1.1, the README and
+about the wire. The roadmap's "the audio itself is not encrypted" entry, the
+README and
 `crates/sonduit-transport/src/pairing.rs` all said the same thing in their own
 words: **the PCM is in the clear.** Anyone on the same Wi-Fi can reconstruct
 what the machine is playing, and anyone can inject a datagram into a running
@@ -270,6 +271,7 @@ none of them duplicates a version. All are in `sonduit-transport`;
 | `hkdf` 0.12 | MIT OR Apache-2.0 | Per-stream, per-direction key derivation. A thin wrapper over the `hmac` already here. |
 | `x25519-dalek` 2 | BSD-3-Clause | The key agreement. `default-features = false` with `static_secrets`, which is what allows a key pair to be built from a caller-supplied seed -- this crate does no I/O and cannot read the system entropy source itself. |
 | `zeroize` 1 | MIT OR Apache-2.0 | Key material wiped on drop. Already in the tree under `chacha20poly1305`; naming it directly is what lets the session types derive `ZeroizeOnDrop`. |
+| `getrandom` 0.3 | MIT OR Apache-2.0 | The platform's cryptographic random source, added when the handshake was wired up. An X25519 private key's whole strength is its seed, and the two ad-hoc generators already in this tree seed six-digit pairing codes, whose strength is twenty bits whatever they are seeded from. It is the one crate here that puts `libc` back on the Android build; reading the system entropy source is what `libc` is for, and the alternative was two hand-written copies in the two application crates, which is how a fallback to a clock reading gets added later by somebody in a hurry. |
 
 Every licence in the resulting subtree is on the `tools/deny.toml` allowlist,
 verified with `cargo deny --config tools/deny.toml --workspace check licenses
@@ -298,26 +300,37 @@ backend is safe Rust. This is a dependency and not our crate, so the
 - **A pairing is now worth keeping.** Before this, re-pairing cost nothing.
   Now the master secret is what a session is keyed from, so anything that
   discards it discards the ability to talk to that device.
-- **Nothing here is live until the sender wires it up.** The mechanism, the
-  handshake, the tests and the measurement are in `crates/`; the desktop's
-  send path and the phone's receive path have to be changed together, because
-  a keyed receiver refuses cleartext by design. Until then `docs/roadmap.md`
-  section 1.1 stays accurate.
+- **This is live in both ends as of the commit that follows this ADR.** The
+  desktop runs the handshake on both pairing paths and builds a
+  `Packetizer::sealed`; the phone holds the master secret and routes sealed
+  packets to an `Opener`. They landed together, because a keyed receiver
+  refuses cleartext by design and one end alone would be a bridge that plays
+  nothing.
 
-  `DISCOVERY_VERSION` is already 3 in this tree, which is honest but worth
-  stating precisely: **version 3 means "this build's discovery protocol carries
-  the key agreement messages", not "this build encrypts".** The refusal it
-  buys is real from the moment it lands -- a peer that cannot speak the
-  handshake is not selected -- and the enforcement in `Opener` is
-  unconditional. What is still missing is the desktop actually running the
-  handshake and building a `Packetizer::sealed`, and the phone holding the
-  master secret and routing sealed packets to an `Opener`. Those two changes
-  must land together.
+  `DISCOVERY_VERSION` is 3, and it is worth still stating precisely what that
+  means: **version 3 means "this build's discovery protocol carries the key
+  agreement messages"**. It is now also true that a build speaking it
+  encrypts, but the two remain different claims and only the first is what the
+  version byte can settle.
 
   Nothing has shipped (`docs/roadmap.md`: no `release-v*` tag exists), so the
   version bump strands no installed build.
-- `docs/protocol.md` section 7.4 names discovery "version 2" and section 7.5
-  ends with "Audio is still not encrypted". Both need the corresponding edit.
+- **A session that cannot be encrypted is refused rather than sent in the
+  clear.** On the desktop that means a Sonduit session against a target this
+  process has not paired with -- an address typed by hand, or the multicast
+  group -- does not start, and the button says why. There is no pairing this
+  can strand: the paired-device list lives in the process and nothing persists
+  it, so every session that has ever worked was paired inside the run that
+  started it. Scream compatibility is the one exception, because that protocol
+  has no version field and no key, and the panel says so for that session.
+- **A user who wants an unencrypted sender has to say so.** On the phone,
+  regenerating the pairing code discards the master secret with it, which is
+  the one way back to a receiver that accepts version 1 or Scream. Stated in
+  the UI rather than discovered.
+- `docs/protocol.md` gains section 7.4.1 for the two handshake datagrams and
+  section 8 for the sealed wire; the "version 2" and "Audio is still not
+  encrypted" lines are gone. `docs/latency-budget.md` section 7 carries the
+  measurement, outside the budget table.
 
 ## Alternatives rejected
 

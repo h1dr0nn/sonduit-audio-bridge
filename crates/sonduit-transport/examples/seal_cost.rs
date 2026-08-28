@@ -22,9 +22,11 @@ use std::time::Instant;
 
 use sonduit_core::format::{Format, PCM_PAYLOAD_BYTES};
 use sonduit_core::packet::SonduitPacket;
+use sonduit_transport::packetize::Packetizer;
 use sonduit_transport::pairing::{PairingCode, NONCE_BYTES};
 use sonduit_transport::sealed::{Opener, Sealer};
 use sonduit_transport::session::{KeyExchange, SessionSecret, SALT_BYTES, SEED_BYTES};
+use sonduit_transport::Wire;
 
 /// Packets sealed per batch, and so packets held in memory at once.
 const BATCH: usize = 4096;
@@ -133,11 +135,98 @@ fn main() {
     }
     let open = report("open", open_nanos, BATCH * BATCHES);
 
+    // --- the call sites ---------------------------------------------------
+    //
+    // The two figures above are the cipher on its own. These are the two
+    // places the application actually calls it, because the cost that matters
+    // is the cost after wiring: a buffer copied per packet at the call site
+    // would not appear anywhere above.
+    //
+    // The sender is , framing and emitting whole packets.
+    // The receiver is what 's receive loop does with one arriving
+    // datagram: recover it, and own the PCM so the jitter buffer can hold it.
+    let block = vec![0_u8; PCM_PAYLOAD_BYTES * 8];
+
+    let mut push_plain_nanos = 0_u128;
+    for _ in 0..BATCHES {
+        let mut packetizer = Packetizer::new(format, Wire::Sonduit);
+        let started = Instant::now();
+        for _ in 0..(BATCH / 8) {
+            packetizer.push(&block, |_| Ok(())).expect("push");
+        }
+        push_plain_nanos += started.elapsed().as_nanos();
+    }
+    let push_plain = report("packetizer, cleartext", push_plain_nanos, BATCH * BATCHES);
+
+    let mut push_sealed_nanos = 0_u128;
+    for batch in 0..BATCHES {
+        let mut packetizer =
+            Packetizer::sealed(format, Sealer::new(&sending, [batch as u8; SALT_BYTES]));
+        let started = Instant::now();
+        for _ in 0..(BATCH / 8) {
+            packetizer.push(&block, |_| Ok(())).expect("push");
+        }
+        push_sealed_nanos += started.elapsed().as_nanos();
+    }
+    let push_sealed = report("packetizer, sealed", push_sealed_nanos, BATCH * BATCHES);
+
+    // The receive side, both wires, each doing the copy the buffer needs.
+    let mut plain_wire = vec![0_u8; SonduitPacket::encoded_len(PCM_PAYLOAD_BYTES)];
+    SonduitPacket {
+        format,
+        sequence: 0,
+        timestamp_frames: 0,
+        flags: 0,
+        pcm: &pcm,
+    }
+    .encode(&mut plain_wire)
+    .expect("encode");
+
+    let mut decode_plain_nanos = 0_u128;
+    for _ in 0..BATCHES {
+        let started = Instant::now();
+        for _ in 0..BATCH {
+            let packet = SonduitPacket::decode(&plain_wire).expect("decode");
+            std::hint::black_box(packet.pcm.to_vec());
+        }
+        decode_plain_nanos += started.elapsed().as_nanos();
+    }
+    let decode_plain = report(
+        "receive loop, cleartext",
+        decode_plain_nanos,
+        BATCH * BATCHES,
+    );
+
+    let mut decode_sealed_nanos = 0_u128;
+    for batch in 0..BATCHES {
+        let mut sealer = Sealer::new(&sending, [batch as u8; SALT_BYTES]);
+        let mut sealed = Vec::with_capacity(BATCH);
+        for _ in 0..BATCH {
+            let mut one = vec![0_u8; Sealer::sealed_len(PCM_PAYLOAD_BYTES)];
+            sealer.seal(&format, 0, 0, &pcm, &mut one).expect("seal");
+            sealed.push(one);
+        }
+
+        let mut opener = Opener::new(receiving.clone());
+        let started = Instant::now();
+        for one in &sealed {
+            let opened = opener.open(one, &mut plaintext).expect("open");
+            std::hint::black_box(opened.pcm.to_vec());
+        }
+        decode_sealed_nanos += started.elapsed().as_nanos();
+    }
+    let decode_sealed = report("receive loop, sealed", decode_sealed_nanos, BATCH * BATCHES);
+
     println!();
     println!(
         "encryption adds {:.3} us on the sender and {:.3} us on the receiver",
         seal - plain,
         open
+    );
+    println!(
+        "at the call site it adds {:.3} us on the sender and {:.3} us on the receiver",
+        push_sealed - push_plain,
+        decode_sealed - decode_plain
     );
     println!(
         "worst of the two is {:.3}% of the 6 ms a packet lasts",

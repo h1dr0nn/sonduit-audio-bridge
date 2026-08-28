@@ -188,7 +188,49 @@ most useful thing this session produced.
   carry them and `TelemetryView` sets all three to `None` deliberately, so the
   panel shows nothing for them and this session measured nothing for them.
 
-## 7. How this document is used
+## 7. What encryption costs, measured
+
+**This is measured content, not a budget.** It is in a section of its own for
+the same reason section 6 is: nothing in the table above came from it, and it
+must not be read as a line of that table.
+
+Encryption ([ADR-009](adr/ADR-009-audio-encryption.md)) adds work to two
+stages, and to no others:
+
+| Stage | Added | As a fraction of the stage's budget |
+| --- | --- | --- |
+| 3, packetisation, on the sender's capture thread | **+0.002 ms** | 0.03% of 6.0 ms |
+| 6, receive and decode, on the receiver's receive thread | **+0.002 ms** | 0.5% of 0.5 ms |
+
+Both round to zero at the resolution this table uses, so **no budget line
+moves**. The numbers are written down anyway because CONTRIBUTING asks a change
+that adds latency to name the stage and the amount, and this is both.
+
+Measured by `cargo run --release --example seal_cost -p sonduit-transport` on
+an i5-12400, 65 536 packets per figure, 1152-byte payloads, five runs:
+
+| What was timed | Per packet |
+| --- | --- |
+| `Packetizer::push`, cleartext, for scale | 0.025 - 0.037 us |
+| **`Packetizer::push`, sealed** -- the sender's call site | **2.00 - 2.08 us** |
+| Decode and own the PCM, cleartext, for scale | 0.046 - 0.057 us |
+| **Open and own the PCM, sealed** -- the receiver's call site | **2.21 - 2.32 us** |
+
+Those two bold rows are the whole cost at the place the application actually
+calls the cipher, not the cipher measured on its own. That distinction is the
+point of listing them: the mechanism costs 2.00 - 2.11 us to seal and
+2.15 - 2.26 us to open when driven directly, and the call sites land inside
+that spread. Wiring it up added nothing measurable, because the sender seals
+into the datagram buffer it was going to write anyway and the receiver opens
+into a buffer it reuses. **Neither path allocates per packet**, which is the
+constraint that made it free.
+
+An ARM core with no SIMD path will be slower. Forcing the portable software
+backends on this machine, which is the closest proxy available here, gives
+2.21 us and 2.33 us, so the figure is not resting on AVX2 -- and even ten times
+the measured cost would be 0.35% of the 6 ms a packet lasts.
+
+## 8. How this document is used
 
 **Any pull request that adds latency to a stage must say which stage and how
 much, and update this table.** A change that pushes the total past the target
