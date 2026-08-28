@@ -1,7 +1,9 @@
 # ADR-004: One transport for Wi-Fi and USB
 
-- Status: accepted, assumption **confirmed** with corrections
+- Status: accepted, assumption **confirmed** with corrections; the firewall
+  consequence was **amended on 2026-08-28**
 - Date: 2026-08-27
+- Amended: 2026-08-28, see [Windows Firewall blocks the return path](#consequences-and-the-assumptions-that-were-wrong)
 
 ## Context
 
@@ -53,8 +55,32 @@ The single-path theory holds. Three assumptions underneath it do not:
    address for exactly this reason.
 
 3. **Windows Firewall blocks the return path.** The tether adapter lands on the
-   Public profile, which blocks all inbound connections. The installer must add
-   a rule.
+   Public profile, which blocks all inbound connections.
+
+   **Amended 2026-08-28.** As originally decided: *the installer must add a
+   rule.* As amended, and as it stands: **the installer adds nothing, and
+   Windows asks the user once on first run.**
+
+   There was an NSIS `NSIS_HOOK_POSTINSTALL` in
+   `desktop/src-tauri/installer/hooks.nsh` running
+   `netsh advfirewall firewall add rule ... protocol=UDP localport=4011`. The
+   hook file is deleted and so is the `bundle.windows.nsis.installerHooks`
+   entry that pointed at it, because it could not work and could not have
+   worked:
+
+   - The NSIS installer is per user (`CurrentUser`), so it has no
+     administrator rights and `netsh` fails. The hook noticed, printed the
+     failure code into the install log, and carried on.
+   - The rule was scoped to a **port**. Windows prompts per **program**, so
+     even with the rights it would not have suppressed the prompt it existed
+     to suppress.
+
+   Suppressing the prompt for real means a per-machine install, which means a
+   UAC prompt on the install and on every update after it. That was weighed
+   against one allow-once dialog the first time the app runs, and declined:
+   a program that listens on a socket is expected to raise that dialog, and
+   the user answers it once. **The absence of firewall handling here is the
+   decision, not an omission.**
 
 Additional consequences:
 

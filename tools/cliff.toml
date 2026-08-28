@@ -12,10 +12,10 @@
 # The boundary is the `harmonix-final` tag, which points at the last Harmonix
 # commit (fbcc8b4). Everything after it is Sonduit.
 #
-# `tag_pattern` below only matches `v<major>.<minor>.<patch>`, so the Harmonix
-# tags v1.0.0 through v1.0.4 are invisible to git-cliff. That is necessary but
-# NOT sufficient: with no Sonduit release tag yet, git-cliff would still walk
-# back to the root commit.
+# `tag_pattern` below only matches `release-v<major>.<minor>.<patch>`, so the
+# Harmonix tags v1.0.0 through v1.0.4 are invisible to git-cliff. That is
+# necessary but NOT sufficient: with no Sonduit release tag yet, git-cliff
+# would still walk back to the root commit.
 #
 # So the workflows ALWAYS pass an explicit range, falling back to
 # `harmonix-final..<tag>` when no previous Sonduit release exists. Never invoke
@@ -39,7 +39,12 @@ docs/adr/ADR-008-versioning.md.
 
 body = """
 {% if version -%}
-## {{ version | trim_start_matches(pat="v") }} - {{ timestamp | date(format="%Y-%m-%d") }}
+{# `version` is the tag name, `release-vX.Y.Z`. The heading wants the bare
+   X.Y.Z, so the `release-v` prefix is stripped -- anchored, as a prefix, with
+   git-cliff's own `replace_regex`. `trim_start_matches(pat="v")` was wrong
+   twice over: a `release-v` tag does not begin with `v` at all, and that
+   filter strips a repeated character rather than one fixed prefix. -#}
+## {{ version | replace_regex(from="^release-v", to="") }} - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else -%}
 ## Unreleased
 {% endif %}
@@ -69,9 +74,21 @@ split_commits = false
 protect_breaking_commits = true
 filter_commits = false
 
-# Only Sonduit release tags. Harmonix's v1.0.x tags and the rolling `develop`
-# tag deliberately do not match.
-tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+# Only Sonduit release tags, which are `release-vX.Y.Z`. Three kinds of tag
+# deliberately do not match:
+#
+#   v1.0.0 .. v1.0.4   Harmonix, and not Conventional Commits
+#   develop-vX.Y.Z     cuts a test build; git-cliff is never run for one, and
+#                      matching it would chop a release's changelog into a
+#                      section per dev build, each headed `develop-vX.Y.Z`
+#   develop-build      the rolling prerelease those tags overwrite
+#
+# Note this is doing real work even though release.yml always passes an
+# explicit range: the range only bounds which commits are walked, while this
+# pattern decides which tags inside it name a release. If the release tag at
+# the head of the range does not match, git-cliff has no version to attribute
+# the commits to and the section comes out headed `Unreleased`.
+tag_pattern = "^release-v[0-9]+\\.[0-9]+\\.[0-9]+$"
 
 topo_order = false
 sort_commits = "oldest"

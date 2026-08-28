@@ -63,10 +63,13 @@ Installed Rust targets: **`x86_64-pc-windows-msvc` only.**
   (ADR-001), so it compiles and unit-tests on this host like any ordinary
   library. **This is the main reason that constraint exists.**
 - `sonduit-transport` — UDP send and receive over loopback and over the LAN.
-- `sonduit-capture-win` — **compiles only.** Its entry points are `todo!()`,
-  so calling one panics. WASAPI is user-mode and the MSVC toolchain plus the
-  Windows SDK are present, so the implementation can be built here once it is
-  written.
+- `sonduit-capture-win` — **implemented and run here.** WASAPI is user-mode
+  and the MSVC toolchain plus the Windows SDK are present, so endpoint loopback
+  builds and captures on this machine: three seconds produced exactly 144000
+  frames at 48 kHz, and a 440 Hz tone was captured at -21.1 dBFS. Process
+  loopback is the one path still unwritten, and it returns a declared
+  `ModeUnavailable` error rather than a `todo!()`. There is no `todo!()`
+  anywhere in the Rust tree; see `roadmap.md` section 4.
 - `sonduit-desktop` (Tauri) — compiles, bundles, and **runs**. Verified: the
   application was built with `--features custom-protocol`, launched, and
   screenshotted; the acrylic backdrop, custom window chrome, navigation,
@@ -81,8 +84,8 @@ Installed Rust targets: **`x86_64-pc-windows-msvc` only.**
 | Android build of any kind | No JDK, SDK, NDK or `cargo-ndk` | GitHub Actions `ubuntu-latest` |
 | `sonduit-playback-android` | Same | CI compile only; behaviour needs hardware |
 | UniFFI binding generation and the Kotlin side | Same | CI |
-| **Anything audible, end to end** | No Android device, no emulator with audio | **Nowhere. Requires the maintainer on real hardware.** |
-| Real measured latency | Same | Same |
+| **Anything audible, end to end** | No Android device, no emulator with audio | **The maintainer, on real hardware.** Done once: audio played on a physical phone over USB tethering. Three fixes landed after that session and have not been heard. |
+| Real measured latency | Same | **Still nowhere.** The session above produced sound, not a measurement. No loopback-cable timing exists. |
 | AAudio EXCLUSIVE / LOW_LATENCY behaviour, burst sizes, OEM quirks | Same | Same |
 | Kernel driver compilation | No WDK | Not planned — the driver is redistributed unmodified (ADR-002) |
 | Driver installation and Windows endpoint enumeration | Needs an elevated install of an unsigned-by-us driver | Manual, on the maintainer's machine |
@@ -105,9 +108,10 @@ source, core, encode, UDP, decode, jitter buffer, sink — and it runs in CI.
 
 What it does **not** prove:
 
-> **End-to-end audibility is unverified.** No audio has been played through
-> an Android device. Latency figures in
-> [latency-budget.md](./latency-budget.md) are budgets derived from
+> **Audibility has since been proved elsewhere, and latency has not.** Audio
+> has been played through a physical Android phone over USB tethering — not
+> on this machine, and not by this test. Latency figures in
+> [latency-budget.md](./latency-budget.md) remain budgets derived from
 > documentation and arithmetic, **not measurements**. They must be validated
 > on real hardware before any of them is quoted as a result.
 

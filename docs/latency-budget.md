@@ -3,11 +3,13 @@
 Targets: **40-80 ms over Wi-Fi**, **25-50 ms over USB**, mouth to ear, at
 48 kHz / 16-bit / stereo.
 
-> **Every number in this document is a budget, not a measurement.** Nothing
-> here has been measured end to end, because this project has no Android device
-> and no signed capture driver (`environment.md`). Figures are derived from
-> vendor documentation and from arithmetic that is shown so it can be checked.
-> **Do not quote any of these as a result.**
+> **Every number in this document is a budget, not a measurement.** Audio has
+> since been played on a real phone over USB tethering, which proves the chain
+> carries sound; it produced no timing figure. Nothing here has been measured
+> end to end, because that needs a loopback cable and a session nobody has run
+> yet, and there is still no signed capture driver (`environment.md`). Figures
+> are derived from vendor documentation and from arithmetic that is shown so it
+> can be checked. **Do not quote any of these as a result.**
 
 ---
 

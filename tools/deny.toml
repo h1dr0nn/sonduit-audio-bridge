@@ -32,9 +32,18 @@ allow = [
   "Unlicense",
   "BSL-1.0",
 ]
-# MPL-2.0 is deliberately absent. It is file-level copyleft, so it does not fit
-# the "permissive only" rule docs/licensing.md states. If a dependency ever
-# needs it, that is an ADR, not a quiet addition here.
+# MPL-2.0 is on this list and is the one entry that is not plainly permissive.
+# It is file-level copyleft: the obligation attaches to the MPL-licensed files
+# themselves, and section 3.3 permits distributing a Larger Work under another
+# licence provided those files stay under the MPL. Nothing here modifies them,
+# so Sonduit stays MIT.
+#
+# It is also not removable. Fourteen crates in the tree resolve against it:
+# uniffi and its eight companions, which are the entire Android binding layer,
+# and cssparser, cssparser-macros, selectors, dtoa-short and option-ext, which
+# arrive under tauri. None of them is in sonduit-core's tree, so the
+# shared-core contamination this file exists to prevent does not arise. See
+# docs/licensing.md section 4.2.
 confidence-threshold = 0.9
 
 # Everything not on the list above is denied, which is the intent: GPL-2.0,

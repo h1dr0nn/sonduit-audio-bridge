@@ -23,7 +23,8 @@ Every decision below is measured against the goal of keeping it that way.
 | `BreadFish64/AndroidUsbAudioDevice` | GitHub | **No licence at all** | **Nothing. Read the README only.** | **High if violated** |
 | **FFmpeg** | BtbN builds, **LGPL variant** | LGPL-2.1+ | Bundled binary, run as a **separate process**. Never linked. | Low, notice required |
 | Rust crates | crates.io | MIT / Apache-2.0 | Linked normally | None |
-| Oboe | `google/oboe` | Apache-2.0 | Linked on Android | None, notice required |
+| `ndk` crate | crates.io | MIT OR Apache-2.0 | AAudio bindings on Android. **Oboe is not a dependency**: ADR-003 chose `ndk::audio` over the `oboe` crate | None, notice required |
+| UniFFI, and five crates that arrive under Tauri | crates.io | **MPL-2.0** | Linked unmodified. File-level copyleft; it does not reach Sonduit's own files. See section 4.2 | Low, notice and source availability |
 
 ---
 
@@ -58,8 +59,9 @@ What this means concretely:
 
 1. Shipping the prebuilt `Scream.sys` / `Scream.cat` / `Scream.inf` inside
    `driver/` would be permitted, provided the MS-PL text and the copyright
-   notice travel with them. **`driver/` is empty today and ships nothing**, so
-   no such obligation is live yet. When it does ship, it must carry its own
+   notice travel with them. **`driver/` does not exist in the tree and ships
+   nothing**, so no such obligation is live yet. When it does ship, it must
+   carry its own
    `LICENSE` copy and a `NOTICE` naming the upstream project and commit.
    Separately, ADR-002 found the upstream binaries are unusable anyway.
 2. MS-PL 3(D) applies **to the driver files only**. It does not license
@@ -232,14 +234,64 @@ crates" rule in ADR-001.
 
 Discipline is not a control. Both mechanisms are in place:
 
-- **`cargo deny`** with a permissive-only licence allowlist, denying everything
-  else, run by the `licences` job in `.github/workflows/ci.yml`. The list lives
-  in `deny.toml` and is `MIT`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`,
-  `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Zlib`, `Unicode-3.0`, `CC0-1.0`,
-  `Unlicense` and `BSL-1.0`. **MPL-2.0 is deliberately excluded**: it is
-  file-level copyleft and does not meet the permissive-only rule.
+- **`cargo deny`** with a closed licence allowlist, denying everything else,
+  run by the `licences` job in `.github/workflows/ci.yml`. The list lives in
+  `tools/deny.toml` -- under `tools/`, with the other tool configuration, which
+  is why the job passes `--config tools/deny.toml` -- and is `MIT`,
+  `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`,
+  `BSD-3-Clause`, `ISC`, `Zlib`, `Unicode-3.0`, `MPL-2.0`, `CC0-1.0`,
+  `Unlicense` and `BSL-1.0`. Every other licence fails the build, GPL and LGPL
+  crates included. It gates Cargo dependencies only: the bundled LGPL FFmpeg
+  is a separate process, not a crate, so cargo-deny never sees it and section
+  2.2 is what covers it. MPL-2.0 is the one entry on the list that is not
+  plainly permissive; section 4.2 is why it is there.
 - **`third_party/reference/` in `.gitignore`**, so quarantined source cannot be
   committed by accident.
+
+### 4.2 MPL-2.0 is allowed, and why
+
+An earlier version of this document said MPL-2.0 was "deliberately excluded".
+It was not excluded, and it could not have been. Established by running
+`cargo deny --config tools/deny.toml --workspace check licenses`, which passes
+as the file stands, and running it again with `MPL-2.0` removed from the
+allowlist, which fails on **fourteen** crates:
+
+| Crates | Arrive through | Ship in |
+| --- | --- | --- |
+| `uniffi`, `uniffi_bindgen`, `uniffi_build`, `uniffi_core`, `uniffi_internal_macros`, `uniffi_macros`, `uniffi_meta`, `uniffi_pipeline`, `uniffi_udl` | `sonduit-ffi`, a direct dependency | the Android app |
+| `cssparser`, `cssparser-macros`, `selectors`, `dtoa-short` | `tauri-utils` -> `dom_query` | the desktop app |
+| `option-ext` | `tauri` -> `dirs` -> `dirs-sys` | the desktop app |
+
+Traced with `cargo tree --workspace -i <crate>`. Striking MPL-2.0 off the list
+would therefore not tighten a policy. It would delete the Android binding layer
+and the desktop shell, which is to say the product. The prose was wrong and the
+allowlist was right.
+
+It is also the right answer on the merits, and this is the reasoning the
+document should have carried from the start:
+
+1. **MPL-2.0 is file-level copyleft.** The obligation attaches to the
+   MPL-licensed files themselves. Section 3.3 permits distributing a Larger
+   Work under a different licence, provided those files stay under the MPL.
+   Sonduit modifies none of them and links them exactly as published, so
+   nothing propagates into Sonduit's own MIT licence.
+2. **That is precisely what GPL does not allow**, which is why section 4 still
+   forbids GPL outright. GPL reaches across the linking boundary; MPL stops at
+   the file. The two are not on a spectrum here, they differ in kind, and the
+   old "permissive only" wording collapsed that distinction.
+3. **`sonduit-core` has no MPL-2.0 dependency.** Verified with
+   `cargo tree -p sonduit-core`: the whole tree is `rtrb`, `rubato`,
+   `thiserror` and their transitive dependencies, every one MIT or Apache-2.0.
+   The shared-core contamination argument that makes the rest of this file
+   strict does not arise, in either direction.
+
+The cost is attribution, not licence risk: the MPL text and the crate names
+must ship, and the Source Code Form of those files must stay available.
+Section 5.1 is the mechanism, and `tools/about.toml` already accepts MPL-2.0,
+so it is already discharged.
+
+**If a future dependency ever needs a licence that is not on the allowlist,
+that is an ADR, not a quiet addition to `tools/deny.toml`.**
 
 ---
 
@@ -247,11 +299,17 @@ Discipline is not a control. Both mechanisms are in place:
 
 Shipped with the distributed application:
 
-- **Scream driver** (`driver/`): MS-PL text, Microsoft's 2015 copyright
-  notice, and attribution to the `duncanthrax/scream` project with the exact
+- **Scream driver** (`driver/`, once it exists): MS-PL text, Microsoft's 2015
+  copyright notice, and attribution to the `duncanthrax/scream` project with the exact
   commit the binaries came from.
-- **Oboe** (Android): Apache-2.0 requires the licence text and any `NOTICE`
-  file to be reproduced.
+- **The `ndk` crate** (Android): MIT OR Apache-2.0, attributed like any other
+  Rust dependency by the mechanism below. Sonduit does not link Oboe; ADR-003
+  records why, and an earlier version of this document listed it in error.
+- **The MPL-2.0 crates** (UniFFI, and five crates under Tauri): the MPL text
+  must travel with them, and MPL-2.0 section 3.2 requires the Source Code Form
+  of those files to remain available. crates.io publishes it and nothing here
+  modifies them, so both are satisfied by naming the crates and shipping the
+  text.
 - **Rust dependencies**: MIT and Apache-2.0 both require the copyright notice
   and the licence text to travel with the binary. **This obligation is met**,
   by the mechanism below.
@@ -265,16 +323,12 @@ beside `FFMPEG-LICENSE.txt` on the user's machine.
 
 Four decisions, and why each one is that way:
 
-1. **`about.toml` mirrors `deny.toml`.** A licence cargo-deny rejects can never
-   reach a build, and one it accepts has to be attributable, so the accepted
-   list and the allowed list are the same list. They can only diverge by
-   mistake, and a divergence means one of the two files is describing a build
-   that does not exist. (Note that section 4.1 and `deny.toml` currently
-   disagree with each other: the prose says MPL-2.0 is excluded, the file
-   allows it, and thirteen crates in the tree -- `cssparser`, `selectors`,
-   `option-ext`, `dtoa-short` and the `uniffi` family -- are MPL-2.0 and
-   resolve against it. `about.toml` follows `deny.toml`, because `deny.toml`
-   is what actually gates the build.)
+1. **`tools/about.toml` mirrors `tools/deny.toml`.** A licence cargo-deny
+   rejects can never reach a build, and one it accepts has to be attributable,
+   so the accepted list and the allowed list are the same list. They can only
+   diverge by mistake, and a divergence means one of the two files is
+   describing a build that does not exist. Checked: the two lists are
+   identical, MPL-2.0 included.
 2. **Plain text, not cargo-about's default HTML.** The file is read out of an
    installation directory, next to the binary it describes, not in a browser.
    `tools/licences.hbs` is the template.

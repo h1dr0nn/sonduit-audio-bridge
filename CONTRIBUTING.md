@@ -69,8 +69,9 @@ relevant ADR with a reason.
 
 `sonduit-core` compiles into **both** shipped binaries, so a copyleft
 dependency anywhere in its tree contaminates the desktop product as well as the
-mobile one. `cargo deny` enforces a permissive-only licence allowlist. See
-[docs/licensing.md](docs/licensing.md).
+mobile one. `cargo deny` enforces a closed licence allowlist. See
+[docs/licensing.md](docs/licensing.md), which explains why MPL-2.0 is on it and
+GPL never will be.
 
 ## The realtime contract
 
