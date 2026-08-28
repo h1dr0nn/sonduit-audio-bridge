@@ -43,20 +43,33 @@ impl TetherAdapter {
     }
 }
 
-/// Protocol names that only appear in a tethering driver.
+/// Protocol names that appear in a tethering driver and in nothing else.
 ///
 /// Matched as whole words. As substrings, `ncm` alone would match anything
 /// containing those three letters, and a display adapter is not a phone.
-/// `ndis` rather than `rndis`, because Windows writes the AOSP driver as
-/// "Remote NDIS" with a space, which does not contain "rndis" at all. That
-/// mistake made this function match nothing at all on the most common device
-/// there is.
-const TETHER_TOKENS: [&str; 3] = ["ndis", "rndis", "ncm"];
-
-/// Phrases that identify a tether, matched anywhere in the description.
 ///
-/// These are multi-word and specific enough that a substring match is safe.
-const TETHER_PHRASES: [&str; 3] = ["usb ethernet", "internet sharing", "tethering"];
+/// `ndis` is deliberately absent. NDIS names the Windows driver model, not a
+/// phone, and any virtual adapter is free to record which version of it it
+/// binds to: measured on a developer machine, "Fortinet Virtual Ethernet
+/// Adapter (NDIS 6.30)" matched this list, and a VPN is not a tether. The word
+/// carries a tether's meaning only once qualified, so it appears in
+/// [`TETHER_PHRASES`] as "remote ndis" instead of standing alone here.
+const TETHER_TOKENS: [&str; 2] = ["rndis", "ncm"];
+
+/// Phrases that identify a tether, matched against the description's words.
+///
+/// These are multi-word and specific enough that a loose match is safe, which
+/// a bare token is not. "remote ndis" is how Windows spells the AOSP driver:
+/// two words, containing no "rndis" at all, and matching only "rndis" once
+/// made this function find nothing on the most common device there is.
+/// Demanding the qualifier keeps that device while shutting out every adapter
+/// whose description merely carries a driver-model version stamp.
+const TETHER_PHRASES: [&str; 4] = [
+    "remote ndis",
+    "usb ethernet",
+    "internet sharing",
+    "tethering",
+];
 
 /// Whether an adapter description looks like a tethered phone.
 ///
@@ -64,17 +77,39 @@ const TETHER_PHRASES: [&str; 3] = ["usb ethernet", "internet sharing", "tetherin
 /// the address range, which is exactly the assumption this module exists to
 /// avoid. Case-insensitive: the description is a manufacturer string and its
 /// capitalisation is whatever the driver author chose.
+///
+/// Windows offers a structural signal beside the description, `IfType` on
+/// `IP_ADAPTER_ADDRESSES_LH`, and it is not used here because it does not
+/// separate these cases. RNDIS and NCM both emulate Ethernet, so a tether
+/// reports `IF_TYPE_ETHERNET_CSMACD`; so, measured, does the Fortinet adapter
+/// above, and so does this machine's real Realtek NIC. It would only rule out
+/// Wi-Fi and tunnels, which the strings rule out already. What does separate
+/// them is the bus the adapter hangs off, `USB\VID_18D1...` for the phone
+/// against `ROOT\NET\0000` for the VPN, and `GetAdaptersAddresses` does not
+/// report it: reaching it means SetupAPI and a second enumeration keyed by
+/// adapter GUID, which is a great deal of new unsafe code for a question a
+/// qualified phrase already answers correctly.
 #[must_use]
 pub fn looks_like_tether(description: &str) -> bool {
     let lowered = description.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
 
-    if TETHER_PHRASES.iter().any(|phrase| lowered.contains(phrase)) {
+    // Phrases are matched against the words rejoined by single spaces, not
+    // against the raw description, so a phrase is found however the driver
+    // author punctuated it: "USB-Ethernet" is the same two words as "USB
+    // Ethernet", and a substring search over the description would miss it.
+    let rejoined = words.join(" ");
+    if TETHER_PHRASES
+        .iter()
+        .any(|phrase| rejoined.contains(phrase))
+    {
         return true;
     }
 
-    lowered
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(is_tether_token)
+    words.into_iter().any(is_tether_token)
 }
 
 /// Whether one word out of a description names a tethering protocol.
@@ -420,6 +455,73 @@ mod tests {
         // being offered as a tethered phone.
         assert!(!looks_like_tether("Syncmaster Display Adapter"));
         assert!(!looks_like_tether("Broadcom NetXtreme Gigabit"));
+    }
+
+    #[test]
+    fn a_driver_model_version_stamp_is_not_a_phone() {
+        // NDIS names the Windows driver model. An adapter that records which
+        // version of it it binds to has said nothing about being a phone, and
+        // this one is a VPN. It was offered as a tether on a real machine and
+        // probed every time the VPN came up.
+        assert!(!looks_like_tether(
+            "Fortinet Virtual Ethernet Adapter (NDIS 6.30)"
+        ));
+    }
+
+    #[test]
+    fn ndis_needs_its_qualifier_where_rndis_and_ncm_do_not() {
+        // "Remote NDIS" is the whole reason the bare word was ever matched.
+        // Qualified it is decisive; alone it belongs to the driver model.
+        assert!(looks_like_tether("Remote NDIS"));
+        assert!(looks_like_tether("Acme RNDIS Adapter"));
+        assert!(looks_like_tether("Acme NCM Adapter"));
+        assert!(!looks_like_tether("Acme NDIS Adapter"));
+    }
+
+    #[test]
+    fn punctuation_between_the_words_does_not_hide_a_phrase() {
+        // Phrases are matched against the words, not the raw string, so a
+        // driver author who put a hyphen or a slash where Windows puts a space
+        // is still recognised.
+        assert!(looks_like_tether("USB-Ethernet Gadget"));
+        assert!(looks_like_tether("Remote-NDIS based Device"));
+    }
+
+    #[test]
+    fn every_adapter_on_a_real_machine_is_judged_correctly() {
+        // Read off a Windows 11 machine with `Get-NetAdapter -IncludeHidden`
+        // and `Get-PnpDevice -Class Net`, with the phone plugged in and USB
+        // tethering switched off, so its driver is present but idle. Only the
+        // phone may match. Asserting the true cases alone is what let a VPN
+        // adapter through in the first place.
+        for (expected, description) in [
+            (true, "UsbNcm Host Device"),
+            (false, "Fortinet Virtual Ethernet Adapter (NDIS 6.30)"),
+            (false, "Fortinet SSL VPN Virtual Ethernet Adapter"),
+            (false, "Realtek Gaming 2.5GbE Family Controller"),
+            (false, "Microsoft Kernel Debug Network Adapter"),
+            (false, "Microsoft IP-HTTPS Platform Interface"),
+            (false, "Tailscale Tunnel"),
+            (false, "Teredo Tunneling Pseudo-Interface"),
+            (false, "6to4 Adapter"),
+            // Bluetooth PAN is tethering, but not over the USB link this
+            // module exists to find, and it has never matched here.
+            (false, "Bluetooth Device (Personal Area Network)"),
+            (false, "WAN Miniport (IP)"),
+            (false, "WAN Miniport (IPv6)"),
+            (false, "WAN Miniport (IKEv2)"),
+            (false, "WAN Miniport (L2TP)"),
+            (false, "WAN Miniport (PPPOE)"),
+            (false, "WAN Miniport (PPTP)"),
+            (false, "WAN Miniport (SSTP)"),
+            (false, "WAN Miniport (Network Monitor)"),
+        ] {
+            assert_eq!(
+                looks_like_tether(description),
+                expected,
+                "misjudged {description:?}"
+            );
+        }
     }
 
     #[test]
