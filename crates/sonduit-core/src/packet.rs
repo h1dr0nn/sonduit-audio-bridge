@@ -102,6 +102,20 @@ impl<'a> ScreamPacket<'a> {
     }
 }
 
+/// Flag bit 0: the sender is on a wired link.
+///
+/// The receiver sizes its jitter buffer from this. It cannot work the answer
+/// out for itself: it only sees the address the datagrams came from, and USB
+/// tethering hands out whatever range the phone's driver chose -- a real
+/// device here reported 10.114.89.x, nothing like the 192.168.42/24 that
+/// guess assumed, so a wired link was treated as Wi-Fi and held 30 ms instead
+/// of 10. The sender does know, because it picked the interface.
+///
+/// A sender that does not set it is not claiming Wi-Fi, only declining to say,
+/// which is also what every pre-flag sender does. The receiver falls back to
+/// guessing in that case, so this is additive on the wire.
+pub const FLAG_WIRED_LINK: u8 = 0b0000_0001;
+
 /// Sonduit's native packet.
 ///
 /// Layout, all integers little-endian:
@@ -109,7 +123,7 @@ impl<'a> ScreamPacket<'a> {
 /// ```text
 ///  0..4   magic "SDT1"
 ///  4      version
-///  5      flags
+///  5      flags, see [`FLAG_WIRED_LINK`]
 ///  6..8   sequence number, wrapping
 ///  8..12  timestamp: frames elapsed on the sender's sample clock
 /// 12      sample rate marker, encoded as Scream does
@@ -132,10 +146,18 @@ pub struct SonduitPacket<'a> {
     /// drift estimator needs: comparing it against frames actually consumed by
     /// the receiver measures the difference between the two sample clocks.
     pub timestamp_frames: u32,
-    /// Reserved flag bits, zero in version 1.
+    /// Flag bits. See [`FLAG_WIRED_LINK`]; the rest are reserved and zero.
     pub flags: u8,
     /// Raw interleaved little-endian PCM.
     pub pcm: &'a [u8],
+}
+
+impl SonduitPacket<'_> {
+    /// Whether the sender declared a wired link.
+    #[must_use]
+    pub const fn wired_link(&self) -> bool {
+        self.flags & FLAG_WIRED_LINK != 0
+    }
 }
 
 impl<'a> SonduitPacket<'a> {
