@@ -313,22 +313,11 @@ body {
   box-shadow: var(--shadow-raised);
 }
 
-/* A command palette belongs near the top, where the eye already is after a
- * keyboard shortcut, not in the middle of the window. */
-.modal-panel {
-  position: fixed;
-  left: 50%;
-  top: calc(var(--titlebar-height) + 12vh);
-  transform: translateX(-50%);
-  z-index: var(--z-modal);
-  background: var(--surface-card);
-  border: 1px solid var(--line-soft);
-  box-shadow: var(--shadow-raised);
-}
-
-/* A dialog is centred in the area BELOW the titlebar, not in the whole window.
- * Centring against the window puts the panel visibly high, because the
- * titlebar overlays the top of that area and is not part of it. */
+/* Every overlay is centred in the area BELOW the titlebar, never against the
+ * whole window: the titlebar overlays the top of that area and is not part of
+ * it, so centring against the window puts the panel visibly high. That applies
+ * to the command palette too, which was top-anchored for a while and read as
+ * misaligned every time. */
 .modal-center {
   position: fixed;
   top: var(--titlebar-height);
@@ -373,10 +362,21 @@ body {
 
 /* ---- Scrollbars ---- */
 
+/* A scrolling region.
+ *
+ * The scrollbar sits in the gutter the layout already has rather than taking a
+ * further eight pixels from the content. A classic scrollbar occupies layout
+ * width, so the container is widened by exactly that much and pulled back by
+ * the same amount: the bar lands in the shell padding, the content keeps its
+ * width, and the left and right margins match. Before this the right edge cost
+ * twenty-four pixels against the left edge's twelve, and the asymmetry was
+ * visible on every page. */
 .scroll-area {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
+  padding-right: 8px;
+  margin-right: -8px;
 }
 
 .scroll-area::-webkit-scrollbar {

@@ -70,6 +70,7 @@
   "connection.pairingHint": "Die sechs Ziffern aus der Sonduit-App auf dem Telefon",
   "connection.qrAddresses": "Adressen in diesem Code",
   "connection.qrEmpty": "Noch kein Code. Auf Kopplungscode anzeigen tippen.",
+  "connection.qrExpires": "Dieser Code läuft in {{seconds}} s ab",
   "connection.qrHint": "Öffne Sonduit auf dem Telefon, tippe auf Scannen und richte die Kamera auf diesen Code.",
   "connection.qrPaired": "Telefon gekoppelt",
   "connection.qrTimeout": "Kein Telefon hat rechtzeitig gescannt. Zeige einen neuen Code und versuche es erneut.",

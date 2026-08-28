@@ -70,6 +70,7 @@
   "connection.pairingHint": "Os seis dígitos mostrados no app Sonduit do telefone",
   "connection.qrAddresses": "Endereços incluídos neste código",
   "connection.qrEmpty": "Ainda sem código. Toque em Mostrar código de emparelhamento.",
+  "connection.qrExpires": "Este código expira em {{seconds}} s",
   "connection.qrHint": "Abra o Sonduit no telemóvel, toque em Ler código e aponte a câmara para este código.",
   "connection.qrPaired": "Telemóvel emparelhado",
   "connection.qrTimeout": "Nenhum telemóvel leu o código a tempo. Mostre um código novo e tente de novo.",

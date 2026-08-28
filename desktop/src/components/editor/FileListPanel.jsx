@@ -78,7 +78,7 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload }
             <span>{t('noFilesYet')}</span>
           </div>
         ) : (
-          <div className="scroll-area min-h-0 flex-1 space-y-2 pr-1">
+          <div className="scroll-area min-h-0 flex-1 space-y-2">
             {files.map((file, index) => (
               <div key={file.id || index} className="space-y-2">
                 <article

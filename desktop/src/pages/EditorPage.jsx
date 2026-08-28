@@ -40,7 +40,7 @@ const TAB_COLUMNS = 'grid min-h-0 flex-1 grid-cols-[minmax(280px,340px)_1fr] gap
  * `min-h-0` is load-bearing, not decoration: a flex or grid child defaults to
  * `min-height: auto`, refuses to shrink below its content, and pushes the
  * overflow out to the page instead of scrolling inside itself. */
-const SCROLL_COLUMN = 'scroll-area flex min-h-0 min-w-0 flex-col gap-4 pr-1';
+const SCROLL_COLUMN = 'scroll-area flex min-h-0 min-w-0 flex-col gap-4';
 
 /* A card that is itself the scroll container for its one piece of content. */
 const SCROLL_CARD = 'card flex min-h-0 min-w-0 flex-col p-5';
@@ -781,7 +781,7 @@ export function EditorPage({ onOpenSettings }) {
       {editorTab === 'process' && (
         <div className={TAB_COLUMNS}>
           <section className={SCROLL_CARD}>
-            <div className="scroll-area min-h-0 flex-1 pr-1">
+            <div className="scroll-area min-h-0 flex-1">
               <ModeSelector selected={mode} onChange={setMode} />
             </div>
           </section>
@@ -789,7 +789,7 @@ export function EditorPage({ onOpenSettings }) {
           <section className={SCROLL_CARD}>
             {/* Enhance and Modify are taller than the window, so this pane
               * scrolls rather than dragging the whole page down with it. */}
-            <div className="scroll-area flex min-h-0 flex-1 flex-col gap-5 pr-1">
+            <div className="scroll-area flex min-h-0 flex-1 flex-col gap-5">
               <div>
                 <h2 className="text-lg font-semibold text-ink">{t('sessionOverview')}</h2>
                 <p className="mt-1 text-sm text-ink-soft">
