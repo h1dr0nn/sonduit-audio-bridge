@@ -1,8 +1,12 @@
 name: release
 
+# A tag, and nothing else. There is no release branch and no release pull
+# request: pushing `release-v2.0.0` is the whole ceremony. The version in
+# Cargo.toml is bumped in an ordinary commit beforehand, and the check below
+# refuses the tag if the two disagree.
 on:
   push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+    tags: ['release-v[0-9]+.[0-9]+.[0-9]+']
 
 permissions:
   contents: write
@@ -29,14 +33,14 @@ jobs:
         name: Decide whether this release gets a changelog
         run: |
           set -e
-          version="${GITHUB_REF_NAME#v}"
-          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          version="${GITHUB_REF_NAME#release-v}"
+          previous=$(git describe --tags --abbrev=0 --match 'release-v[0-9]*.[0-9]*.[0-9]*' "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
 
           if [ -z "$previous" ]; then
             kind=minor
             echo "first release; treating as minor"
           else
-            old="${previous#v}"
+            old="${previous#release-v}"
             IFS=. read -r om onm _ <<EOF
           $old
           EOF
@@ -148,7 +152,7 @@ jobs:
         run: |
           set -e
           declared=$(node tools/version.mjs read)
-          tagged="${GITHUB_REF_NAME#v}"
+          tagged="${GITHUB_REF_NAME#release-v}"
           if [ "$declared" != "$tagged" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $declared"
             exit 1
@@ -251,23 +255,112 @@ jobs:
         with:
           path: artifacts
 
+      # Named for the person downloading them, not for the tool that built
+      # them. Tauri emits "Sonduit_2.0.0_x64_en-US.msi" and Gradle emits
+      # "app-release-unsigned.apk"; neither says what it is once it is sitting
+      # in a downloads folder beside six other files.
+      #
+      # product_platform_version_arch.ext, which is the scheme Harmonix used
+      # and the one the release notes below describe.
+      - name: Name the artifacts for humans
+        run: |
+          set -e
+          version="${GITHUB_REF_NAME#release-v}"
+          mkdir -p upload
+          find artifacts -type f -print
+
+          take() {
+            found=$(find artifacts -type f -name "$1" | head -n 1)
+            if [ -z "$found" ]; then
+              echo "::error::no artifact matched $1"
+              exit 1
+            fi
+            cp "$found" "upload/$2"
+            echo "named $2"
+          }
+
+          take '*.msi' "sonduit_windows_${version}_x86_64.msi"
+          take '*-setup.exe' "sonduit_windows_${version}_x86_64.exe"
+          # One APK carries every ABI: see releaseAbis in
+          # android/app/build.gradle.kts. There is no per-ABI split to name.
+          take '*.apk' "sonduit_android_${version}_universal.apk"
+
+          # A checksum per file, because these are unsigned and a checksum is
+          # the only thing a person can check them against.
+          ( cd upload && sha256sum * > "sonduit_${version}_SHA256SUMS.txt" )
+          ls -l upload
+
+      - name: Compose the release notes
+        run: |
+          set -e
+          version="${GITHUB_REF_NAME#release-v}"
+          repo="${{ github.repository }}"
+
+          cat > changelog.md <<'CHANGELOG_EOF'
+          ${{ needs.changelog.outputs.changelog }}
+          CHANGELOG_EOF
+
+          {
+            echo "# Sonduit v${version}"
+            echo ""
+            echo "**Repository:** [${repo}](https://github.com/${repo})  "
+            echo "**Release Type:** Stable"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Changelog"
+            echo ""
+            if [ "${{ needs.changelog.outputs.kind }}" = "patch" ]; then
+              echo "Patch release. See the [commit history](https://github.com/${repo}/commits/${GITHUB_REF_NAME}) for what changed."
+            else
+              cat changelog.md
+            fi
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Download Options"
+            echo ""
+            echo "### Windows"
+            echo "- **MSI Installer:** \`sonduit_windows_${version}_x86_64.msi\` (enterprise)"
+            echo "- **NSIS Installer:** \`sonduit_windows_${version}_x86_64.exe\` (standard)"
+            echo ""
+            echo "### Android"
+            echo "- **APK:** \`sonduit_android_${version}_universal.apk\` (arm64-v8a, armeabi-v7a, x86_64)"
+            echo ""
+            echo "The APK is **unsigned**, and Android will refuse to install it as it stands."
+            echo "Sonduit has no release keystore yet, and shipping one signed with a throwaway"
+            echo "key would lock \`net.sonduit.app\` to a key nobody controls."
+            echo ""
+            echo "Checksums for every file are in \`sonduit_${version}_SHA256SUMS.txt\`."
+            echo ""
+            echo "---"
+            echo ""
+            echo "## System Requirements"
+            echo "- **Windows:** 10 or later (64-bit)  "
+            echo "- **Android:** 8.1 (API 27) or later  "
+            echo "- **Link:** both devices on the same Wi-Fi, or the phone tethered over USB"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Documentation"
+            echo "- [Repository](https://github.com/${repo})  "
+            echo "- [Open an Issue](https://github.com/${repo}/issues)"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## License"
+            echo "MIT License -- free for personal and commercial use."
+            echo "Third-party notices are installed beside the application."
+          } > notes.md
+
+          cat notes.md
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          find artifacts -type f -print
-          files=$(find artifacts -type f -name '*.msi' -o -name '*.exe' -o -name '*.apk' -o -name '*.so' | tr '\n' ' ')
-          if [ -z "$files" ]; then
-            echo "::error::no artifacts to attach"
-            exit 1
-          fi
-
-          cat > notes.md <<'NOTES_EOF'
-          ${{ needs.changelog.outputs.changelog }}
-          NOTES_EOF
-
           gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+            --title "Sonduit v${GITHUB_REF_NAME#release-v}" \
             --notes-file notes.md \
-            $files
+            upload/*

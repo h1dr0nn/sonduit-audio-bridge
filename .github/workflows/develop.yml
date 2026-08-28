@@ -179,26 +179,70 @@ jobs:
       # No changelog here on purpose. Changelogs are generated for minor and
       # major releases only; a per-push develop build has nothing worth
       # summarising and would only create noise. See ADR-008.
+      # The same naming as a real release, so a tester downloading both does
+      # not have to work out which file is which. The version carries the
+      # develop build number, so two develop builds never share a name.
+      - name: Name the artifacts for humans
+        run: |
+          set -e
+          version="${{ needs.version.outputs.version }}"
+          mkdir -p upload
+          find artifacts -type f -print
+
+          take() {
+            found=$(find artifacts -type f -name "$1" | head -n 1)
+            if [ -n "$found" ]; then cp "$found" "upload/$2"; echo "named $2"; fi
+          }
+
+          take '*.msi' "sonduit_windows_${version}_x86_64.msi"
+          take '*-setup.exe' "sonduit_windows_${version}_x86_64.exe"
+          take '*.apk' "sonduit_android_${version}_universal.apk"
+
+          if [ -z "$(ls -A upload)" ]; then
+            echo "::error::no artifacts to attach"
+            exit 1
+          fi
+          ( cd upload && sha256sum * > "sonduit_${version}_SHA256SUMS.txt" )
+          ls -l upload
+
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
           version="${{ needs.version.outputs.version }}"
-          find artifacts -type f -print
 
-          notes=$(printf '%s\n' \
-            "Automated develop build \`$version\`." \
-            "" \
-            "Built from ${{ github.sha }}. Unsigned debug artifacts, for testing only." \
-            "The \`develop-build\` tag is rolling and is overwritten by every push to develop." \
-            "" \
-            "No changelog is generated for develop builds.")
+          {
+            echo "# Sonduit v${version}"
+            echo ""
+            echo "**Repository:** [${{ github.repository }}](https://github.com/${{ github.repository }})  "
+            echo "**Release Type:** Development"
+            echo ""
+            echo "---"
+            echo ""
+            echo "Built from \`${{ github.sha }}\`. Debug artifacts, unsigned, for testing only."
+            echo "The \`develop-build\` tag is rolling: every push to develop overwrites it."
+            echo ""
+            echo "No changelog is generated for develop builds. See ADR-008."
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Download Options"
+            echo ""
+            echo "### Windows"
+            echo "- **MSI Installer:** \`sonduit_windows_${version}_x86_64.msi\`"
+            echo "- **NSIS Installer:** \`sonduit_windows_${version}_x86_64.exe\`"
+            echo ""
+            echo "### Android"
+            echo "- **APK:** \`sonduit_android_${version}_universal.apk\`"
+            echo ""
+            echo "Checksums are in \`sonduit_${version}_SHA256SUMS.txt\`."
+          } > notes.md
 
           gh release delete develop-build --yes --cleanup-tag=false 2>/dev/null || true
           gh release create develop-build \
             --prerelease \
             --title "develop ($version)" \
-            --notes "$notes" \
+            --notes-file notes.md \
             --target "${{ github.sha }}" \
-            $(find artifacts -type f | tr '\n' ' ')
+            upload/*

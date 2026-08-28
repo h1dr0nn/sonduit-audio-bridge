@@ -15,7 +15,7 @@ release or a dev build.
 
 | Build | Format | Example |
 | --- | --- | --- |
-| Release, tagged on `main` | `va.b.c` | `v1.2.3` |
+| Release, tagged on `main` | `release-va.b.c` | `release-v2.0.0` |
 | Develop build | `va.b.c-dev.N+<sha>` | `1.3.0-dev.42+9f316eda` |
 
 Develop builds are published under one rolling tag, `develop-build`, which
@@ -170,14 +170,24 @@ The Harmonix git tags are **kept**. History is the only archive, and
 
 ### Releasing
 
-`release-pr.yml` keeps a `Release vX.Y.Z` pull request against `main` up to
-date with the computed bump and the drafted changelog. **Merging it is the only
-manual step.** Tagging `main` then triggers `release.yml`.
+A tag, and nothing else. Pushing `release-vX.Y.Z` on `main` triggers
+`release.yml`, which builds, generates the changelog for a minor or major, and
+publishes. The version in `Cargo.toml` is bumped in an ordinary commit before
+the tag; `release.yml` refuses the tag if the two disagree, so the two cannot
+drift apart silently.
+
+There was briefly a `release-pr.yml` that computed the bump, drafted the
+changelog and kept a `Release vX.Y.Z` pull request open from a `release/vX.Y.Z`
+branch. It was removed. Automating the bump bought little -- it is one line in
+one file -- and it paid for that with a branch and a pull request nobody asked
+for appearing in the repository on every push to `develop`. A release should be
+one deliberate act by a person, and a tag is already that act.
 
 ## Consequences
 
-- Version numbers are never edited by hand, and CI fails if they are edited in
-  only one place.
+- The release version is edited by hand, once, in `Cargo.toml`. Everything
+  else is derived from it, and CI fails if the derived files disagree or if the
+  tag disagrees with the file.
 - 998 develop builds per release cycle is a real ceiling. At one build per push
   that is months of work, and cutting a release resets it.
 - Patch releases have thin release notes by design. If that proves unhelpful,
