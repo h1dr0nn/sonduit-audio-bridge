@@ -13,6 +13,8 @@ pub mod invite;
 pub mod packetize;
 pub mod pairing;
 pub mod roundtrip;
+pub mod sealed;
+pub mod session;
 pub mod sink;
 pub mod source;
 
@@ -48,6 +50,15 @@ pub enum TransportError {
     /// Packet decoding failed.
     #[error(transparent)]
     Codec(#[from] sonduit_core::Error),
+
+    /// Sealing or opening an encrypted datagram failed.
+    ///
+    /// On the send side this is a buffer-size mistake and never a cipher
+    /// failure: encryption cannot fail for a well-sized buffer. On the receive
+    /// side [`sealed::SealError`] is the type to match on, because "forged"
+    /// and "arrived late" need telling apart and a socket error does not.
+    #[error(transparent)]
+    Seal(#[from] sealed::SealError),
 }
 
 /// Which wire format a datagram is in.
@@ -72,6 +83,25 @@ pub fn classify(datagram: &[u8]) -> Option<Wire> {
         return Some(Wire::Scream);
     }
     None
+}
+
+/// The version byte of a datagram carrying Sonduit's magic.
+///
+/// `classify` says which wire format a datagram is in; this says which
+/// revision of it, which is what tells a receiver whether the payload is PCM
+/// or ciphertext. Version 1 is cleartext and version 2 is sealed; see
+/// [`sealed`] and ADR-009.
+///
+/// Reading the version without decoding matters because the two formats are
+/// only distinguishable by this byte: a receiver that guessed would play
+/// ciphertext as audio, which is a full-scale noise burst into somebody's
+/// headphones.
+#[must_use]
+pub fn sonduit_version(datagram: &[u8]) -> Option<u8> {
+    if !SonduitPacket::has_magic(datagram) || datagram.len() < 5 {
+        return None;
+    }
+    Some(datagram[4])
 }
 
 /// Bind a UDP socket for sending.

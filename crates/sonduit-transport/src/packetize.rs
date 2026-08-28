@@ -9,6 +9,7 @@
 use sonduit_core::format::{Format, PCM_PAYLOAD_BYTES};
 use sonduit_core::packet::{ScreamPacket, SonduitPacket, FLAG_WIRED_LINK};
 
+use crate::sealed::Sealer;
 use crate::{TransportError, Wire};
 
 /// Frames a PCM stream into fixed-size datagrams.
@@ -31,10 +32,13 @@ pub struct Packetizer {
     packets: u64,
     /// Header flag bits every packet carries. See [`Packetizer::on_wired_link`].
     flags: u8,
+    /// Present when the stream is encrypted. Owns the packet counter, which is
+    /// why it lives here rather than being handed in per packet.
+    sealer: Option<Sealer>,
 }
 
 impl Packetizer {
-    /// A packetizer for `format`, emitting `wire` datagrams.
+    /// A packetizer for `format`, emitting `wire` datagrams in the clear.
     #[must_use]
     pub fn new(format: Format, wire: Wire) -> Self {
         Self {
@@ -45,7 +49,38 @@ impl Packetizer {
             timestamp_frames: 0,
             packets: 0,
             flags: 0,
+            sealer: None,
         }
+    }
+
+    /// A packetizer that encrypts every datagram under `sealer`.
+    ///
+    /// The wire format is Sonduit's, at [`crate::sealed::SEALED_VERSION`]:
+    /// Scream's header has no version field and nowhere to put a tag, so there
+    /// is no sealed Scream and asking for one is a mistake rather than an
+    /// option.
+    ///
+    /// The sealer is moved in because it owns the packet counter. One sealer
+    /// serves one stream; starting a second stream needs a second sealer with
+    /// a fresh salt, and that is the constraint that keeps the nonces unique.
+    #[must_use]
+    pub fn sealed(format: Format, sealer: Sealer) -> Self {
+        Self {
+            format,
+            wire: Wire::Sonduit,
+            pending: Vec::with_capacity(PCM_PAYLOAD_BYTES * 2),
+            sequence: 0,
+            timestamp_frames: 0,
+            packets: 0,
+            flags: 0,
+            sealer: Some(sealer),
+        }
+    }
+
+    /// Whether these datagrams are encrypted.
+    #[must_use]
+    pub const fn is_sealed(&self) -> bool {
+        self.sealer.is_some()
     }
 
     /// Declare that these packets travel over a wired link.
@@ -108,8 +143,15 @@ impl Packetizer {
 
         while self.pending.len() - consumed >= PCM_PAYLOAD_BYTES {
             let payload = &self.pending[consumed..consumed + PCM_PAYLOAD_BYTES];
-            match self.wire {
-                Wire::Sonduit => SonduitPacket {
+            match (&mut self.sealer, self.wire) {
+                (Some(sealer), _) => sealer.seal(
+                    &self.format,
+                    self.timestamp_frames,
+                    self.flags,
+                    payload,
+                    &mut datagram,
+                )?,
+                (None, Wire::Sonduit) => SonduitPacket {
                     format: self.format,
                     sequence: self.sequence,
                     timestamp_frames: self.timestamp_frames,
@@ -117,7 +159,9 @@ impl Packetizer {
                     pcm: payload,
                 }
                 .encode(&mut datagram)?,
-                Wire::Scream => ScreamPacket::encode(&self.format, payload, &mut datagram)?,
+                (None, Wire::Scream) => {
+                    ScreamPacket::encode(&self.format, payload, &mut datagram)?;
+                }
             }
 
             consumed += PCM_PAYLOAD_BYTES;
@@ -143,9 +187,10 @@ impl Packetizer {
     }
 
     fn datagram_bytes(&self) -> usize {
-        match self.wire {
-            Wire::Sonduit => SonduitPacket::encoded_len(PCM_PAYLOAD_BYTES),
-            Wire::Scream => sonduit_core::packet::SCREAM_PACKET_BYTES,
+        match (self.sealer.is_some(), self.wire) {
+            (true, _) => Sealer::sealed_len(PCM_PAYLOAD_BYTES),
+            (false, Wire::Sonduit) => SonduitPacket::encoded_len(PCM_PAYLOAD_BYTES),
+            (false, Wire::Scream) => sonduit_core::packet::SCREAM_PACKET_BYTES,
         }
     }
 }
@@ -332,6 +377,97 @@ mod tests {
             .expect("encoding cannot fail for a whole number of packets");
 
         assert_eq!(seen, 3);
+    }
+
+    #[test]
+    fn a_sealed_stream_emits_sealed_datagrams_the_receiver_can_open() {
+        use crate::sealed::{Opener, Sealer};
+
+        let (secret, opener_secret) = crate::session::tests_support::pair();
+        let mut packetizer = Packetizer::sealed(
+            Format::stereo_48k(),
+            Sealer::new(&secret, [0xC3; crate::session::SALT_BYTES]),
+        );
+        assert!(packetizer.is_sealed());
+
+        let pcm: Vec<u8> = (0..PCM_PAYLOAD_BYTES * 3)
+            .map(|index| (index % 251) as u8)
+            .collect();
+
+        let mut sent = Vec::new();
+        packetizer
+            .push(&pcm, |datagram| {
+                sent.push(datagram.to_vec());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(sent.len(), 3);
+
+        let mut opener = Opener::new(opener_secret);
+        let mut out = vec![0_u8; PCM_PAYLOAD_BYTES];
+        let mut rejoined = Vec::new();
+        for (index, datagram) in sent.iter().enumerate() {
+            assert_eq!(datagram.len(), Sealer::sealed_len(PCM_PAYLOAD_BYTES));
+            let opened = opener.open(datagram, &mut out).expect("must open");
+            assert_eq!(opened.counter, index as u64);
+            assert_eq!(opened.sequence, index as u16);
+            rejoined.extend_from_slice(opened.pcm);
+        }
+
+        assert_eq!(rejoined, pcm, "the audio did not survive the round trip");
+    }
+
+    #[test]
+    fn a_sealed_stream_advances_the_timestamp_exactly_as_a_cleartext_one_does() {
+        // Drift correction reads this. If sealing changed it, every figure
+        // downstream would be measured against the wrong clock.
+        use crate::sealed::{Opener, Sealer};
+
+        let (secret, opener_secret) = crate::session::tests_support::pair();
+        let frames_per_packet = (PCM_PAYLOAD_BYTES / 4) as u32;
+        let mut packetizer = Packetizer::sealed(
+            Format::stereo_48k(),
+            Sealer::new(&secret, [1; crate::session::SALT_BYTES]),
+        );
+
+        let mut opener = Opener::new(opener_secret);
+        let mut out = vec![0_u8; PCM_PAYLOAD_BYTES];
+        let mut headers = Vec::new();
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES * 3], |datagram| {
+                let opened = opener.open(datagram, &mut out).expect("must open");
+                headers.push((opened.sequence, opened.timestamp_frames));
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            headers,
+            vec![(0, 0), (1, frames_per_packet), (2, frames_per_packet * 2)]
+        );
+    }
+
+    #[test]
+    fn the_link_flag_survives_sealing_and_is_authenticated() {
+        use crate::sealed::{Opener, Sealer};
+
+        let (secret, opener_secret) = crate::session::tests_support::pair();
+        let mut packetizer = Packetizer::sealed(
+            Format::stereo_48k(),
+            Sealer::new(&secret, [2; crate::session::SALT_BYTES]),
+        )
+        .on_wired_link(true);
+
+        let mut opener = Opener::new(opener_secret);
+        let mut out = vec![0_u8; PCM_PAYLOAD_BYTES];
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES], |datagram| {
+                let opened = opener.open(datagram, &mut out).expect("must open");
+                assert!(opened.wired_link());
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]

@@ -47,6 +47,16 @@ pub const CODE_DIGITS: usize = 6;
 /// another one that happens to key an HMAC with the same code.
 const CONTEXT: &[u8] = b"sonduit-pairing-v1";
 
+/// Domain separator for the key-agreement datagrams.
+///
+/// A second separator rather than a label inside the body, because the two
+/// bodies are both raw bytes under the same key and the same nonce: an
+/// announcement whose body happened to look like a key offer's body would
+/// otherwise carry a tag that verifies as one. The separators differ at their
+/// eighth byte and everything after them is fixed-length, so no announcement
+/// can be read as an agreement message or the reverse.
+const AGREEMENT_CONTEXT: &[u8] = b"sonduit-keyagree-v1";
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// A pairing code, held by both ends of a session.
@@ -112,6 +122,15 @@ impl PairingCode {
     fn key(&self) -> [u8; CODE_DIGITS] {
         self.digits
     }
+
+    /// The digits, for mixing into the session key derivation.
+    ///
+    /// Crate-private on purpose. The code is a twenty-bit authenticator and
+    /// not key material (see [`crate::session`]); handing it out as bytes
+    /// invites exactly the mistake that module exists to prevent.
+    pub(crate) const fn key_bytes(&self) -> [u8; CODE_DIGITS] {
+        self.digits
+    }
 }
 
 impl core::fmt::Debug for PairingCode {
@@ -156,6 +175,50 @@ pub fn verify(
     }
     let mut mac = HmacSha256::new_from_slice(&code.key()).expect("hmac accepts any key length");
     mac.update(CONTEXT);
+    mac.update(nonce);
+    mac.update(body);
+    mac.verify_slice(candidate).is_ok()
+}
+
+/// Compute the tag on a key-agreement datagram.
+///
+/// `kind` is the discovery message kind, so an offer's tag cannot be lifted
+/// onto an accept. `body` is the public key or keys the message carries.
+#[must_use]
+pub fn agreement_tag(
+    kind: u8,
+    code: &PairingCode,
+    nonce: &[u8; NONCE_BYTES],
+    body: &[u8],
+) -> [u8; TAG_BYTES] {
+    let mut mac = HmacSha256::new_from_slice(&code.key()).expect("hmac accepts any key length");
+    mac.update(AGREEMENT_CONTEXT);
+    mac.update(&[kind]);
+    mac.update(nonce);
+    mac.update(body);
+
+    let mut out = [0_u8; TAG_BYTES];
+    out.copy_from_slice(&mac.finalize().into_bytes());
+    out
+}
+
+/// Check a key-agreement tag.
+///
+/// Constant time, for the reason given on [`verify`].
+#[must_use]
+pub fn verify_agreement(
+    kind: u8,
+    code: &PairingCode,
+    nonce: &[u8; NONCE_BYTES],
+    body: &[u8],
+    candidate: &[u8],
+) -> bool {
+    if candidate.len() != TAG_BYTES {
+        return false;
+    }
+    let mut mac = HmacSha256::new_from_slice(&code.key()).expect("hmac accepts any key length");
+    mac.update(AGREEMENT_CONTEXT);
+    mac.update(&[kind]);
     mac.update(nonce);
     mac.update(body);
     mac.verify_slice(candidate).is_ok()
@@ -260,5 +323,50 @@ mod tests {
     fn a_seed_larger_than_six_digits_still_produces_six() {
         let code = PairingCode::from_seed(u64::MAX);
         assert_eq!(code.to_display().len(), CODE_DIGITS);
+    }
+
+    #[test]
+    fn an_agreement_tag_verifies_against_the_same_inputs() {
+        let body = b"public key bytes";
+        let computed = agreement_tag(3, &code(), &NONCE, body);
+        assert!(verify_agreement(3, &code(), &NONCE, body, &computed));
+    }
+
+    #[test]
+    fn an_agreement_tag_does_not_verify_as_an_announcement_tag() {
+        // Both constructions key an HMAC with the same code over the same
+        // nonce. Without separate domain separators a captured announcement
+        // whose body happened to match could be lifted into the key exchange,
+        // which is the one message an attacker most wants to forge.
+        let body = b"a body that both messages could carry";
+        let announcement = tag(&code(), &NONCE, body);
+        let agreement = agreement_tag(3, &code(), &NONCE, body);
+
+        assert_ne!(announcement, agreement);
+        assert!(!verify(&code(), &NONCE, body, &agreement));
+        assert!(!verify_agreement(3, &code(), &NONCE, body, &announcement));
+    }
+
+    #[test]
+    fn an_offer_tag_cannot_be_lifted_onto_an_accept() {
+        // The kind byte is in the MAC for exactly this: the two messages carry
+        // overlapping bodies and a tag that worked for either would let an
+        // attacker skip half the handshake.
+        let body = b"public key bytes";
+        let offer = agreement_tag(3, &code(), &NONCE, body);
+        assert!(!verify_agreement(4, &code(), &NONCE, body, &offer));
+    }
+
+    #[test]
+    fn an_agreement_tag_from_the_wrong_code_is_refused() {
+        let body = b"public key bytes";
+        let forged = agreement_tag(3, &PairingCode::parse("000000").unwrap(), &NONCE, body);
+        assert!(!verify_agreement(3, &code(), &NONCE, body, &forged));
+    }
+
+    #[test]
+    fn an_agreement_tag_of_the_wrong_length_is_refused_rather_than_compared() {
+        assert!(!verify_agreement(3, &code(), &NONCE, b"body", &[]));
+        assert!(!verify_agreement(3, &code(), &NONCE, b"body", &[0_u8; 16]));
     }
 }

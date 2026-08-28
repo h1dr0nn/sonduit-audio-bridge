@@ -14,6 +14,37 @@ authors.workspace = true
 # poor trade.
 hmac = "0.12"
 sha2 = "0.10"
+
+# Audio encryption. See ADR-009 for why each of these is here and why nothing
+# smaller would do. All four are pure Rust, all four resolve to the same
+# digest 0.10 / generic-array 0.14 generation the two crates above already
+# pull, so none of them duplicates a version.
+#
+# ChaCha20-Poly1305 rather than AES-GCM: half of this product runs on ARM, and
+# armeabi-v7a has no AES instructions at all, so software AES there is both
+# slower and harder to keep constant-time. default-features = false drops
+# `alloc` and `getrandom`, neither of which a per-packet in-place seal needs,
+# and with them libc off the Android builds.
+chacha20poly1305 = { version = "0.10", default-features = false }
+# HKDF-SHA256 to turn one agreed secret into per-stream, per-direction keys.
+# It is a thin wrapper over the hmac crate that is already here.
+hkdf = "0.12"
+# X25519. The pairing code is twenty bits and cannot be a key; it authenticates
+# an ephemeral Diffie-Hellman instead, which is what makes captured audio stay
+# unreadable after the code is brute-forced. BSD-3-Clause, on the deny.toml
+# allowlist. default-features = false drops `alloc`; `static_secrets` is what
+# lets a secret be built from a caller-supplied seed, which this crate needs
+# because it does no I/O and cannot read the system entropy source itself.
+x25519-dalek = { version = "2", default-features = false, features = [
+    "static_secrets",
+    "zeroize",
+    "precomputed-tables",
+] }
+# Key material is wiped on drop rather than left in freed memory. Already in
+# the tree under chacha20poly1305; naming it directly is what lets the session
+# types derive ZeroizeOnDrop.
+zeroize = { version = "1", default-features = false, features = ["derive"] }
+
 sonduit-core.workspace = true
 thiserror.workspace = true
 

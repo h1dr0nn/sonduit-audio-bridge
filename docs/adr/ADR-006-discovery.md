@@ -1,7 +1,11 @@
 # ADR-006: UDP broadcast discovery, not mDNS
 
-- Status: accepted
+- Status: accepted; the "deliberately excluded for now" consequence was
+  **answered on 2026-08-28** and the protocol was **amended** with it
 - Date: 2026-08-27
+- Amended: 2026-08-28, see [Consequences](#consequences)
+- Superseded in part by [ADR-009](ADR-009-audio-encryption.md): discovery is
+  version 3, carries two further message kinds, and now agrees a session key
 
 ## Context
 
@@ -48,11 +52,16 @@ which is the standard answer, and a small purpose-built UDP exchange.
   Wi-Fi. A manual address entry is required as a fallback and is in the
   roadmap.
 - The protocol is versioned from the first commit, so it can be replaced.
-- Deliberately excluded for now: authentication and pairing. Anything on the
-  LAN can answer a probe, and anything can send audio to a listening receiver.
-  For a v0 on a home network this is the same posture Scream has. **It is not
-  acceptable for a shipped product** and is tracked in the roadmap as a
-  security item, not a feature.
+- ~~Deliberately excluded for now: authentication and pairing.~~ **Answered,
+  in two steps.** Version 2 added a per-probe nonce and an HMAC-SHA256 keyed by
+  a six-digit pairing code, so nothing on the LAN can answer a probe and be
+  selected. Version 3 ([ADR-009](ADR-009-audio-encryption.md)) added the two
+  further message kinds that agree a session key, so nothing on the LAN can
+  read the audio or send audio to a listening receiver either.
+
+  Being versioned from the first commit is what made both steps cheap: a peer
+  that speaks an older version is not answered, which is a loud refusal rather
+  than a silent downgrade. The three versions are why that byte is there.
 
 ## Revisit if
 

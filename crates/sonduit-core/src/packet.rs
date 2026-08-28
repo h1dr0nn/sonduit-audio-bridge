@@ -34,6 +34,25 @@ pub const SONDUIT_MAGIC: [u8; 4] = *b"SDT1";
 /// Wire format version carried in the header.
 pub const SONDUIT_VERSION: u8 = 1;
 
+/// Version reserved for the encrypted format, which lives in
+/// `sonduit-transport`.
+///
+/// It is named here so that the two crates cannot drift into using the same
+/// byte for different things, and so that [`SonduitPacket::decode`]'s refusal
+/// of it is a documented decision rather than an accident of the version
+/// check.
+///
+/// Encryption is a version bump and not a flag bit. A flag would have been
+/// ignored by every receiver already built, which would decode the ciphertext
+/// as PCM and play it: a full-scale noise burst into somebody's headphones. A
+/// version this build does not know is refused here, before a single byte of
+/// payload is looked at. See ADR-009.
+///
+/// The key that opens such a packet is agreed during pairing, so the two ends
+/// have already settled whether they can encrypt before any audio flows; a
+/// receiver never has to guess.
+pub const SONDUIT_VERSION_SEALED: u8 = 2;
+
 /// A decoded packet: the format it declares, plus a borrowed PCM payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreamPacket<'a> {
@@ -342,6 +361,30 @@ mod tests {
             Err(Error::BadMagic)
         ));
         assert!(!SonduitPacket::has_magic(&buffer));
+    }
+
+    #[test]
+    fn a_sealed_packet_is_refused_rather_than_played_as_noise() {
+        // The encrypted format shares this magic and differs only in the
+        // version byte. A build that does not hold a key must refuse it here;
+        // decoding the ciphertext as PCM would send it to the speakers.
+        let pcm = payload();
+        let packet = SonduitPacket {
+            format: Format::stereo_48k(),
+            sequence: 1,
+            timestamp_frames: 0,
+            flags: 0,
+            pcm: &pcm,
+        };
+        let mut buffer = vec![0_u8; SonduitPacket::encoded_len(pcm.len())];
+        packet.encode(&mut buffer).unwrap();
+        buffer[4] = SONDUIT_VERSION_SEALED;
+
+        assert!(matches!(
+            SonduitPacket::decode(&buffer),
+            Err(Error::UnsupportedVersion(SONDUIT_VERSION_SEALED))
+        ));
+        assert_ne!(SONDUIT_VERSION, SONDUIT_VERSION_SEALED);
     }
 
     #[test]
