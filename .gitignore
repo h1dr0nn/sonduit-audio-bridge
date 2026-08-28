@@ -12,7 +12,8 @@ desktop/.vite/
 desktop/src-tauri/gen/
 desktop/src-tauri/.tauri-build/
 
-# Android
+# Android build output, and the local SDK path. local.properties names a
+# machine-specific directory and must never be committed.
 android/.gradle/
 android/build/
 android/app/build/
@@ -40,10 +41,3 @@ third_party/reference/
 
 # FFmpeg is fetched by tools/fetch-ffmpeg.mjs, never committed.
 desktop/src-tauri/binaries/
-
-# Android build output, and the local SDK path. local.properties names a
-# machine-specific directory and must never be committed.
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties

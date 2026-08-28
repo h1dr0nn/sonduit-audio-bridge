@@ -1,9 +1,11 @@
 name: ci
 
+# Pull requests only. A push to main used to start this, which meant every
+# commit spent seven minutes of CI whether anyone wanted a build or not; the
+# tag workflows run the same checks before they build anything.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -96,6 +98,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
+          # The config lives under tools/ with the other tool configuration,
+          # so it has to be named: cargo-deny looks in the workspace root.
+          arguments: --config tools/deny.toml --workspace
           command: check licenses bans
 
   desktop:
