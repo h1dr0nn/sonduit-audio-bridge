@@ -26,7 +26,7 @@ import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const TARGET_DIR = resolve('desktop/src-tauri/binaries');
-const CONFIG = 'about.toml';
+const CONFIG = 'tools/about.toml';
 const TEMPLATE = 'tools/licences.hbs';
 
 const destination = join(TARGET_DIR, 'THIRD-PARTY-LICENSES.txt');

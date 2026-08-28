@@ -1,11 +1,14 @@
 name: develop
 
-# Work happens on main, so the test build is cut from main. The tag it
-# publishes under is still `develop-build`: it names what the build is for,
-# not the branch it came from.
+# A tag, and nothing else, exactly like a release. Pushing `develop-v2.0.0`
+# cuts a test build; pushing nothing cuts nothing. Work on main does not
+# trigger this, because most commits are not something anyone wants to install.
+#
+# The published tag stays `develop-build` and stays rolling: it names what the
+# build is for, and there is only ever one current test build.
 on:
   push:
-    branches: [main]
+    tags: ['develop-v[0-9]+.[0-9]+.[0-9]+']
 
 concurrency:
   group: develop
@@ -46,6 +49,17 @@ jobs:
           # from the run number: a run number grows without bound and would
           # eventually hit the reserved release slot. See ADR-008.
           version=$(node tools/version.mjs dev "$range")
+
+          # The tag says which release this is a test build of, so it must
+          # agree with the file the version is derived from. A tag that says
+          # 2.1.0 against a 2.0.0 tree produces artifacts named for a release
+          # that does not exist.
+          declared=$(node tools/version.mjs read)
+          tagged="${GITHUB_REF_NAME#develop-v}"
+          if [ "$declared" != "$tagged" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $declared"
+            exit 1
+          fi
           code=$(node tools/version.mjs code "$version")
 
           echo "version=$version" >> "$GITHUB_OUTPUT"

@@ -109,7 +109,7 @@ jobs:
             range="${previous}..${GITHUB_REF_NAME}"
           fi
           echo "generating changelog for $range"
-          git cliff "$range" --strip header --output generated.md
+          git cliff --config tools/cliff.toml "$range" --strip header --output generated.md
 
           if [ ! -s generated.md ]; then
             echo "::error::git-cliff produced an empty changelog for a $kind release"
@@ -125,7 +125,7 @@ jobs:
 
       - name: Regenerate the full CHANGELOG.md
         if: steps.classify.outputs.kind != 'patch'
-        run: git cliff "harmonix-final..$GITHUB_REF_NAME" --output CHANGELOG.md
+        run: git cliff --config tools/cliff.toml "harmonix-final..$GITHUB_REF_NAME" --output CHANGELOG.md
 
       - uses: actions/upload-artifact@v4
         if: steps.classify.outputs.kind != 'patch'
