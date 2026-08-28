@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { FiTrash2, FiX, FiLoader, FiRefreshCw, FiMusic, FiSquare } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
+import { Tooltip } from '../ui/Tooltip';
 import { WaveformPlayer } from './WaveformPlayer';
 import { formatBitrate } from '../../utils/metadataUtils';
 
@@ -56,16 +57,17 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload, 
           {actions}
           {files.length > 0 && (
             <>
-            <button
-              type="button"
-              onClick={handleReload}
-              disabled={isReloading}
-              className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-full bg-blue-500/10 text-blue-600 shadow-md transition duration-smooth hover:-translate-y-[1px] hover:bg-blue-500/20 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50 dark:bg-blue-500/20 dark:text-blue-400"
-              aria-label="Reload files"
-              title="Reset all files to ready"
-            >
-              <FiRefreshCw className={`h-3.5 w-3.5 ${isReloading ? 'animate-spin' : ''}`} />
-            </button>
+            <Tooltip label={t('resetToReady')}>
+              <button
+                type="button"
+                onClick={handleReload}
+                disabled={isReloading}
+                className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-full bg-blue-500/10 text-blue-600 shadow-md transition duration-smooth hover:-translate-y-[1px] hover:bg-blue-500/20 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50 dark:bg-blue-500/20 dark:text-blue-400"
+                aria-label="Reload files"
+              >
+                <FiRefreshCw className={`h-3.5 w-3.5 ${isReloading ? 'animate-spin' : ''}`} />
+              </button>
+            </Tooltip>
             <button
               type="button"
               onClick={onClearAll}
@@ -112,7 +114,9 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload, 
                         </div>
                       ) : (
                         <>
-                          <p className="truncate text-sm font-semibold leading-5" title={file.name}>{file.name}</p>
+                          <Tooltip label={file.name} side="top">
+                            <p className="truncate text-sm font-semibold leading-5">{file.name}</p>
+                          </Tooltip>
                           <p className="text-[10px] text-slate-500 dark:text-slate-400">
                             {file.duration === '00:00' ? '--' : file.duration}
                             {file.bitrate && <> • {formatBitrate(file.bitrate)}</>}
@@ -124,18 +128,19 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload, 
 
                     <div className="flex flex-shrink-0 items-center gap-2">
                       {/* Preview/Stop Button */}
-                      <button
-                        onClick={() => setPreviewFileId(previewFileId === file.id ? null : file.id)}
-                        className={cn(
-                          "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-all duration-300",
-                          previewFileId === file.id 
-                            ? "bg-red-500 text-white hover:bg-red-600 shadow-md scale-105" 
-                            : "bg-indigo-500/10 text-indigo-600 hover:bg-indigo-500/20 dark:text-indigo-400"
-                        )}
-                        title={previewFileId === file.id ? "Stop Preview" : "Preview Audio"}
-                      >
-                        {previewFileId === file.id ? <FiSquare className="h-3.5 w-3.5 fill-current" /> : <FiMusic className="h-4 w-4" />}
-                      </button>
+                      <Tooltip label={previewFileId === file.id ? t('stopPreview') : t('previewAudio')} side="left">
+                        <button
+                          onClick={() => setPreviewFileId(previewFileId === file.id ? null : file.id)}
+                          className={cn(
+                            "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-all duration-300",
+                            previewFileId === file.id 
+                              ? "bg-red-500 text-white hover:bg-red-600 shadow-md scale-105" 
+                              : "bg-indigo-500/10 text-indigo-600 hover:bg-indigo-500/20 dark:text-indigo-400"
+                          )}
+                        >
+                          {previewFileId === file.id ? <FiSquare className="h-3.5 w-3.5 fill-current" /> : <FiMusic className="h-4 w-4" />}
+                        </button>
+                      </Tooltip>
 
                       {/* Status Badge - only show when NOT in preview mode */}
                       {previewFileId !== file.id && (
@@ -154,14 +159,15 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload, 
                       
                       {/* Remove Button - hidden during processing/loading */}
                       {previewFileId !== file.id && file.status !== 'processing' && file.status !== 'loading' && onRemoveFile && (
-                        <button
-                          onClick={() => onRemoveFile(file.id || index)}
-                          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-600 transition duration-smooth hover:bg-red-500/20 dark:text-red-400"
-                          aria-label="Remove file"
-                          title="Remove file"
-                        >
-                          <FiX className="h-4 w-4" />
-                        </button>
+                        <Tooltip label={t('removeFile')} side="left">
+                          <button
+                            onClick={() => onRemoveFile(file.id || index)}
+                            className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-600 transition duration-smooth hover:bg-red-500/20 dark:text-red-400"
+                            aria-label="Remove file"
+                          >
+                            <FiX className="h-4 w-4" />
+                          </button>
+                        </Tooltip>
                       )}
                     </div>
                   </div>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { FiCheck } from 'react-icons/fi';
+import { Tooltip } from '../ui/Tooltip';
 import { useTranslation } from '../../i18n';
 
 // Animated number component for smooth transitions
@@ -104,9 +105,11 @@ export function ProgressIndicator({ progress, status, currentFile }) {
 
       {currentFile && (
         <div className="min-w-0">
-          <p className="truncate text-xs text-ink-soft" title={currentFile}>
-            {t('processingFile')} {currentFile.split(/[/\\]/).pop()}
-          </p>
+          <Tooltip label={currentFile} side="top">
+            <p className="truncate text-xs text-ink-soft">
+              {t('processingFile')} {currentFile.split(/[/\\]/).pop()}
+            </p>
+          </Tooltip>
         </div>
       )}
 

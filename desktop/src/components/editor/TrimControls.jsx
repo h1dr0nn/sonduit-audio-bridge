@@ -1,4 +1,5 @@
 import React from 'react';
+import { Tooltip } from '../ui/Tooltip';
 import { useTranslation } from '../../i18n';
 
 export function TrimControls({ threshold, onThresholdChange, minSilence, onMinSilenceChange, padding, onPaddingChange }) {
@@ -90,12 +91,24 @@ export function TrimControls({ threshold, onThresholdChange, minSilence, onMinSi
       {/* Example Visual */}
       <div className="rounded-xl border border-accent/30 bg-accent/5 p-4 dark:border-accent/20 dark:bg-accent/10">
         <p className="mb-2 text-xs font-semibold text-accent">{t('example')}</p>
+        {/* The legend below names the three main bands, so those need no tip.
+          * The padding bands are not in it, and they appear only once padding
+          * is turned on, so they are the one thing here that has to say what
+          * it is. */}
         <div className="flex items-center gap-2">
-          <div className="h-8 w-3 rounded-sm bg-slate-300 dark:bg-slate-600" title={t('silenceRemoved')} />
-          {padding > 0 && <div className="h-6 w-2 rounded-sm bg-accent/30" title={t('padding')} />}
-          <div className="h-12 flex-1 rounded-sm bg-accent" title={t('audioKept')} />
-          {padding > 0 && <div className="h-6 w-2 rounded-sm bg-accent/30" title={t('padding')} />}
-          <div className="h-8 w-3 rounded-sm bg-slate-300 dark:bg-slate-600" title={t('silenceRemoved')} />
+          <div className="h-8 w-3 rounded-sm bg-slate-300 dark:bg-slate-600" />
+          {padding > 0 && (
+            <Tooltip label={t('padding')} side="top">
+              <div className="h-6 w-2 rounded-sm bg-accent/30" />
+            </Tooltip>
+          )}
+          <div className="h-12 flex-1 rounded-sm bg-accent" />
+          {padding > 0 && (
+            <Tooltip label={t('padding')} side="top">
+              <div className="h-6 w-2 rounded-sm bg-accent/30" />
+            </Tooltip>
+          )}
+          <div className="h-8 w-3 rounded-sm bg-slate-300 dark:bg-slate-600" />
         </div>
         <div className="mt-2 flex justify-between text-xs text-slate-500 dark:text-slate-400">
           <span>{t('silenceRemoved')}</span>

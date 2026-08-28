@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { FiActivity, FiChevronDown } from 'react-icons/fi';
 import { cn } from '../../utils/cn';
+import { Tooltip } from '../ui/Tooltip';
 
 const DOT = {
   disconnected: 'bg-ink-faint',
@@ -23,9 +24,11 @@ function Line({ label, value }) {
   return (
     <div className="flex items-baseline justify-between gap-4 px-3 py-1.5">
       <span className="flex-none whitespace-nowrap text-xs text-ink-soft">{label}</span>
-      <span className="min-w-0 truncate font-mono text-xs text-ink" title={String(shown)}>
-        {shown}
-      </span>
+      <Tooltip label={String(shown)} side="left">
+        <span className="min-w-0 truncate font-mono text-xs text-ink">
+          {shown}
+        </span>
+      </Tooltip>
     </div>
   );
 }
