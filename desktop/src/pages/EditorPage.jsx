@@ -704,10 +704,12 @@ export function EditorPage({ onOpenSettings }) {
         <nav
           role="tablist"
           aria-label={t('audioSuite')}
-          // A pill outside as well as in. card-sunken rounds to 16px while the
-          // active tab is a pill, so at this height the inner corner was the
-          // rounder of the two and the two curves visibly disagreed.
-          className="card-sunken flex shrink-0 gap-1 rounded-pill p-1"
+          // A pill outside as well as in, so the two curves agree. Written out
+          // rather than reusing card-sunken: that class is plain CSS declared
+          // after Tailwind's utilities layer, so its 16px radius beat the
+          // rounded-pill utility and the inner corner stayed the rounder of
+          // the two.
+          className="flex shrink-0 gap-1 rounded-pill border border-line-soft bg-sunken p-1"
         >
           {EDITOR_TABS.map((tab) => (
             <button
