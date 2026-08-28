@@ -8,15 +8,18 @@
 //!
 //! # Threads
 //!
-//! `start` creates two: one blocked on `recv_from`, decoding datagrams into the
-//! jitter buffer, and one answering discovery probes. Audio is pulled by
-//! AAudio on a third thread it owns. The jitter buffer is the only thing all
-//! three touch, and the audio callback only ever `try_lock`s it.
+//! A [`Bridge`] owns one from the moment it is constructed: the thread that
+//! answers discovery probes. That one is not part of a session, because the
+//! user reading the pairing code off this screen has not started a session
+//! yet and still has to be findable. `start` adds a second, blocked on
+//! `recv_from` and decoding datagrams into the jitter buffer. Audio is pulled
+//! by AAudio on a third thread it owns. The jitter buffer is the only thing
+//! the last two touch, and the audio callback only ever `try_lock`s it.
 
 #![forbid(unsafe_code)]
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -193,8 +196,13 @@ pub struct BridgeTelemetry {
     pub drift_ppm: Option<f64>,
     /// Correction currently being applied, in parts per million.
     pub correction_ppm: f64,
-    /// Which link the audio is arriving over, as guessed from the sender's
-    /// address. Empty before the first packet.
+    /// Which link the audio is arriving over. Empty before the first packet.
+    ///
+    /// Taken from the wired-link flag the sender sets in the packet header,
+    /// because the sender is the only end that knows which interface it chose.
+    /// A sender too old to set the flag is not claiming Wi-Fi, only declining
+    /// to say, and only that case falls back to a guess from the source
+    /// address.
     pub transport: String,
 }
 
@@ -225,12 +233,23 @@ struct Shared {
     transport: Mutex<Option<Transport>>,
 }
 
-/// A handle the Android app holds for the lifetime of a session.
+/// A handle the Android app holds for as long as it is running.
+///
+/// Not for as long as a session: answering discovery probes is what makes this
+/// device findable at all, and it has to work while the app sits idle showing
+/// its pairing code. That responder is created here and lives here, so a
+/// session can start and stop underneath it without rebinding anything.
 #[derive(uniffi::Object)]
 pub struct Bridge {
     inner: Mutex<Option<Running>>,
     shared: Mutex<Option<Arc<Shared>>>,
-    device_name: Mutex<String>,
+    /// The name announced in reply to probes.
+    ///
+    /// Shared with the responder rather than copied into it, for the same
+    /// reason as the code below: the responder outlives every session, and a
+    /// name captured when it started would still be the placeholder long after
+    /// the app had learned the real one.
+    device_name: Arc<Mutex<String>>,
     /// The code this device will answer probes with.
     ///
     /// Generated once per process rather than per session, so a user who stops
@@ -240,15 +259,97 @@ pub struct Bridge {
     /// would go stale the moment the code changed, and the phone would then
     /// show one code on screen while proving it knew another.
     pairing: Arc<Mutex<PairingCode>>,
+    /// The port an announcement advertises, which is where the desktop will
+    /// send audio.
+    ///
+    /// While a session is running this is the port that session actually
+    /// bound. While none is, it is the port the next one will bind, which is
+    /// the only honest answer available: being found is what prompts the user
+    /// to start it.
+    advertised_port: Arc<AtomicU16>,
+    /// The discovery responder, alive for as long as this handle is.
+    ///
+    /// `None` when the discovery port could not be bound, which in practice
+    /// means another copy of this app already holds it. Nothing else in this
+    /// crate binds that port, so there is one owner of it per process.
+    ///
+    /// Held for its `Drop` and never otherwise read: dropping it is what stops
+    /// the thread and gives the port back.
+    #[allow(dead_code)]
+    responder: Option<Responder>,
 }
 
 struct Running {
     stop: Arc<AtomicBool>,
     receive: Option<std::thread::JoinHandle<()>>,
-    announce: Option<std::thread::JoinHandle<()>>,
     /// The port audio is arriving on, which is what an announcement has to
-    /// advertise. Kept here because only a running session has one.
+    /// advertise. Kept here because only a running session has one, and
+    /// [`Bridge::accept_invite`] refuses without it.
     port: u16,
+}
+
+/// The thread that answers discovery probes, and the socket it owns.
+///
+/// Its lifetime is a [`Bridge`], not a session. That is the whole point:
+/// spawning it from `start` meant a phone displaying its six digits with
+/// nothing started answered no probe at all, so the desktop's typed-code scan
+/// reported there was no device on the network.
+///
+/// One socket, one owner. Two things bound to the well-known discovery port is
+/// the "only one usage of each socket address" failure, and the way to not have
+/// it is for the port to be claimed in exactly one place.
+struct Responder {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Responder {
+    /// Bind the discovery port and start answering.
+    ///
+    /// The socket is bound here rather than on the new thread, so a port
+    /// already in use is reported to the caller. Discovering it on the thread
+    /// would turn it into an immediate exit and a device that is silently
+    /// unfindable, which is the failure this exists to prevent.
+    ///
+    /// # Errors
+    /// Whatever binding the port or spawning the thread reported.
+    fn spawn(
+        discovery_port: u16,
+        name: Arc<Mutex<String>>,
+        audio_port: Arc<AtomicU16>,
+        code: Arc<Mutex<PairingCode>>,
+    ) -> std::io::Result<Self> {
+        let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, discovery_port)))?;
+        let _ = socket.set_broadcast(true);
+        socket.set_read_timeout(Some(RECV_TIMEOUT))?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let stop = Arc::clone(&stop);
+            std::thread::Builder::new()
+                .name("sonduit-announce".into())
+                .spawn(move || announce_loop(&socket, &stop, &name, &audio_port, &code))?
+        };
+
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for Responder {
+    /// Stop answering, and do not return until the thread has gone.
+    ///
+    /// Joined rather than detached: a detached thread keeps the discovery port
+    /// for as long as it likes, and the next `Bridge` in the same process
+    /// would fail to bind it. The wait is bounded by [`RECV_TIMEOUT`].
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Default for Bridge {
@@ -257,19 +358,61 @@ impl Default for Bridge {
     }
 }
 
-#[uniffi::export]
 impl Bridge {
-    /// Create an idle bridge.
-    #[uniffi::constructor]
-    #[must_use]
-    pub fn new() -> Self {
+    /// Build a bridge whose responder answers on `discovery_port`.
+    ///
+    /// Separate from [`Bridge::new`] only so the tests can take a port of
+    /// their own: the real one is a fixed well-known number, and a test that
+    /// claimed it would collide with a desktop pairing dialog on the same
+    /// machine, or with another test.
+    ///
+    /// A responder that cannot bind is recorded as absent rather than raised.
+    /// There is no caller to raise it to, this being a constructor the UI runs
+    /// before it has anywhere to show an error, and a bridge that cannot be
+    /// discovered can still be paired by QR and can still play audio.
+    fn with_discovery_port(discovery_port: u16) -> Self {
         install_logging();
+
+        let device_name = Arc::new(Mutex::new("Sonduit".to_string()));
+        let pairing = Arc::new(Mutex::new(PairingCode::from_seed(random_seed())));
+        let advertised_port = Arc::new(AtomicU16::new(DEFAULT_PORT));
+
+        let responder = match Responder::spawn(
+            discovery_port,
+            Arc::clone(&device_name),
+            Arc::clone(&advertised_port),
+            Arc::clone(&pairing),
+        ) {
+            Ok(responder) => Some(responder),
+            Err(error) => {
+                note!("discovery responder could not bind port {discovery_port}: {error}");
+                None
+            }
+        };
+
         Self {
             inner: Mutex::new(None),
             shared: Mutex::new(None),
-            device_name: Mutex::new("Sonduit".to_string()),
-            pairing: Arc::new(Mutex::new(PairingCode::from_seed(random_seed()))),
+            device_name,
+            pairing,
+            advertised_port,
+            responder,
         }
+    }
+}
+
+#[uniffi::export]
+impl Bridge {
+    /// Create an idle bridge that is already answering discovery probes.
+    ///
+    /// Idle means no session, not silent. Constructing this claims the
+    /// discovery port and starts the responder, because the moment worth being
+    /// findable in is the one where the user is reading the pairing code off
+    /// the screen and has pressed nothing.
+    #[uniffi::constructor]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_discovery_port(discovery::DISCOVERY_PORT)
     }
 
     /// The pairing code to show the user.
@@ -479,6 +622,10 @@ impl Bridge {
     /// starting, and a device opened at the wrong rate is the single largest
     /// avoidable source of latency on this path.
     ///
+    /// Discovery is untouched. The responder is bound for the life of this
+    /// handle and keeps answering across every start and stop; all this does
+    /// is tell it which port to name.
+    ///
     /// # Errors
     /// Returns [`FfiError::AlreadyRunning`] if a session is live, and
     /// [`FfiError::Transport`] when the socket cannot be bound.
@@ -539,26 +686,14 @@ impl Bridge {
                 })?
         };
 
-        let announce = {
-            let stop = Arc::clone(&stop);
-            let name = self
-                .device_name
-                .lock()
-                .map(|guard| guard.clone())
-                .unwrap_or_else(|_| "Sonduit".to_string());
-            let code = Arc::clone(&self.pairing);
-            std::thread::Builder::new()
-                .name("sonduit-announce".into())
-                .spawn(move || announce_loop(&stop, &name, port, &code))
-                .map_err(|error| FfiError::Transport {
-                    reason: error.to_string(),
-                })?
-        };
+        // No responder is started here. One has been answering since this
+        // handle was constructed, and all a session changes about it is the
+        // port it names.
+        self.advertised_port.store(port, Ordering::Relaxed);
 
         *running = Some(Running {
             stop,
             receive: Some(receive),
-            announce: Some(announce),
             port,
         });
 
@@ -569,7 +704,10 @@ impl Bridge {
         Ok(())
     }
 
-    /// Stop and release the audio device.
+    /// Stop the session and release the audio device.
+    ///
+    /// Discovery is deliberately not stopped: this device stays findable until
+    /// the app itself goes away, which is when [`Responder`] is dropped.
     ///
     /// Idempotent, because the Android lifecycle calls it from more than one
     /// place and a service torn down twice is normal.
@@ -601,9 +739,12 @@ impl Bridge {
         if let Some(handle) = session.receive.take() {
             let _ = handle.join();
         }
-        if let Some(handle) = session.announce.take() {
-            let _ = handle.join();
-        }
+
+        // Back to the port the next session will bind. The responder keeps
+        // running either way: this device is still on the network and still
+        // worth finding, and the user who stops a session is often the user
+        // about to pair a different computer.
+        self.advertised_port.store(DEFAULT_PORT, Ordering::Relaxed);
 
         if let Ok(mut shared) = self.shared.lock() {
             if let Some(shared) = shared.as_ref() {
@@ -1008,16 +1149,17 @@ fn open_playback(_shared: &Arc<Shared>, _format: Format) {}
 ///
 /// Each reply is tagged against the probe's own nonce, so it proves this
 /// device knows the pairing code without putting the code on the wire.
-fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16, code: &Mutex<PairingCode>) {
-    let Ok(socket) = UdpSocket::bind(SocketAddr::from((
-        Ipv4Addr::UNSPECIFIED,
-        discovery::DISCOVERY_PORT,
-    ))) else {
-        return;
-    };
-    let _ = socket.set_broadcast(true);
-    let _ = socket.set_read_timeout(Some(RECV_TIMEOUT));
-
+///
+/// Runs for as long as the app does. It is not part of playing audio and it
+/// does not touch the audio path: no session state is reachable from here, and
+/// nothing here is on a realtime thread.
+fn announce_loop(
+    socket: &UdpSocket,
+    stop: &AtomicBool,
+    name: &Mutex<String>,
+    audio_port: &AtomicU16,
+    code: &Mutex<PairingCode>,
+) {
     let mut datagram = [0_u8; 256];
 
     while !stop.load(Ordering::Relaxed) {
@@ -1031,16 +1173,25 @@ fn announce_loop(stop: &AtomicBool, name: &str, audio_port: u16, code: &Mutex<Pa
             continue;
         };
 
-        // The code is read per probe rather than captured once, because
-        // scanning a desktop's QR replaces it mid-session and a reply keyed by
-        // the code this thread started with would then fail to verify.
+        // All three are read per probe rather than captured once. Scanning a
+        // desktop's QR replaces the code, starting a session replaces the
+        // port, and the app learns its own name after this thread is already
+        // running: a reply built from what was true at startup would name the
+        // wrong port under a key the desktop cannot verify.
+        let name = {
+            let Ok(name) = name.lock() else {
+                return;
+            };
+            name.clone()
+        };
+        let port = audio_port.load(Ordering::Relaxed);
         let Ok(code) = code.lock() else {
             return;
         };
 
         // The reply is built per probe rather than once, because the tag
         // covers that probe's nonce. That is what stops it being replayed.
-        let reply = discovery::encode_announce(name, audio_port, &nonce, &code);
+        let reply = discovery::encode_announce(&name, port, &nonce, &code);
         drop(code);
 
         // Straight back to the prober rather than broadcast: the answer
@@ -1128,14 +1279,21 @@ fn playback_disconnected(_shared: &Arc<Shared>) -> bool {
     false
 }
 
-/// Guess the link from the address the audio is arriving from.
+/// Decide which link the audio is arriving over.
 ///
-/// Android's tethering range is fixed at 192.168.42/24 in AOSP and most OEMs
-/// keep it, so the guess is usually right. When it is wrong the cost is a
-/// buffer sized for the other link, which is 20 ms of latency or a few
-/// dropouts, not a broken session. The sender labels the link the same way;
-/// this is deliberately not taken from the packet, because a field an
-/// attacker controls should not decide how much audio is held.
+/// The sender declares it, in flag bit 0 of the packet header
+/// ([`sonduit_core::packet::FLAG_WIRED_LINK`]). Only the sender can answer
+/// this, because it is the end that picked the interface. A set flag means a
+/// wired link and is taken at face value.
+///
+/// A clear flag is not a claim of Wi-Fi, only a sender declining to say, which
+/// is also what every sender predating the flag does. That is the one case
+/// that falls back to guessing from the source address, and the guess is right
+/// only by luck: USB tethering has no reserved range, and a real phone here
+/// handed out 10.114.89.x rather than the 192.168.42/24 stock Android uses.
+///
+/// Either way, the cost of being wrong is a buffer sized for the other link,
+/// which is 20 ms of latency or a few dropouts, not a broken session.
 fn link_of(from: SocketAddr, declared_wired: bool) -> Transport {
     if declared_wired {
         return Transport::Usb;
@@ -1189,9 +1347,135 @@ fn random_seed() -> u64 {
 mod tests {
     use super::*;
 
+    /// Probe a responder and return what it announced, if anything verified.
+    ///
+    /// Retried rather than sent once: this is UDP on the loopback interface,
+    /// which does not lose datagrams often but is not obliged to keep any of
+    /// them. Twenty attempts at a quarter of a second each is five seconds
+    /// before it gives up, which is long enough that a failure here is the
+    /// responder and not the timing.
+    #[cfg(not(target_os = "android"))]
+    fn probe(discovery_port: u16, code: &PairingCode) -> Option<discovery::Announcement> {
+        let nonce = [0xA7; sonduit_transport::pairing::NONCE_BYTES];
+        let prober = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).ok()?;
+        prober
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .ok()?;
+        let target = SocketAddr::from((Ipv4Addr::LOCALHOST, discovery_port));
+        let mut datagram = [0_u8; 256];
+
+        for _ in 0..20 {
+            if prober
+                .send_to(&discovery::encode_probe(&nonce), target)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok((length, _)) = prober.recv_from(&mut datagram) else {
+                continue;
+            };
+            if let Some(found) = discovery::decode_announce(&datagram[..length], &nonce, code) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn an_idle_bridge_answers_a_probe_carrying_its_own_code() {
+        // The bug this exists for. The responder used to be spawned by start,
+        // so a phone that was open, showing its six digits and not yet started
+        // answered nothing at all, and the desktop's typed-code scan reported
+        // that there was no device on the network. The QR flow hid it, because
+        // there the phone sends and never has to be listening.
+        let discovery_port = 41_028;
+        let bridge = Bridge::with_discovery_port(discovery_port);
+        bridge.set_device_name("Pixel 8".to_string());
+
+        // Nothing is started. That is the whole point of the test.
+        assert_eq!(bridge.state(), BridgeState::Idle);
+
+        let code = PairingCode::parse(&bridge.pairing_code()).expect("the code is six digits");
+        let announcement =
+            probe(discovery_port, &code).expect("an idle bridge must answer a probe for its code");
+
+        assert_eq!(announcement.name, "Pixel 8");
+        assert_eq!(
+            announcement.audio_port, DEFAULT_PORT,
+            "an idle bridge names the port the next session will bind"
+        );
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_probe_for_the_wrong_code_is_not_answered_by_an_idle_bridge() {
+        // Being findable while idle must not mean being findable by anyone.
+        let discovery_port = 41_030;
+        let bridge = Bridge::with_discovery_port(discovery_port);
+
+        let mine = PairingCode::parse(&bridge.pairing_code()).expect("the code is six digits");
+        let theirs = if mine == PairingCode::parse("482913").unwrap() {
+            PairingCode::parse("000001").unwrap()
+        } else {
+            PairingCode::parse("482913").unwrap()
+        };
+
+        assert!(probe(discovery_port, &theirs).is_none());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_session_starting_and_stopping_leaves_the_responder_answering() {
+        // One socket, one owner: start must not bind a second responder, and
+        // stop must not take the only one away. What changes across a session
+        // is the port the announcement names, and nothing else.
+        let discovery_port = 41_029;
+        let audio_port = 41_012;
+        let bridge = Bridge::with_discovery_port(discovery_port);
+        let code = PairingCode::parse(&bridge.pairing_code()).expect("the code is six digits");
+
+        let idle = probe(discovery_port, &code).expect("answers before a session");
+        assert_eq!(idle.audio_port, DEFAULT_PORT);
+
+        if bridge.start(audio_port).is_err() {
+            return;
+        }
+        let running = probe(discovery_port, &code).expect("still answers during a session");
+        assert_eq!(
+            running.audio_port, audio_port,
+            "a running session names the port it actually bound"
+        );
+
+        bridge.stop().unwrap();
+        let after = probe(discovery_port, &code).expect("still answers after a session");
+        assert_eq!(after.audio_port, DEFAULT_PORT);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn dropping_a_bridge_frees_the_discovery_port_for_the_next_one() {
+        // A detached responder would hold the port and the next Bridge in the
+        // process would be silently unfindable, which is the failure this
+        // change is about wearing a different hat.
+        let discovery_port = 41_031;
+
+        let first = Bridge::with_discovery_port(discovery_port);
+        let code = PairingCode::parse(&first.pairing_code()).expect("the code is six digits");
+        assert!(probe(discovery_port, &code).is_some());
+        drop(first);
+
+        let second = Bridge::with_discovery_port(discovery_port);
+        let code = PairingCode::parse(&second.pairing_code()).expect("the code is six digits");
+        assert!(
+            probe(discovery_port, &code).is_some(),
+            "the port was still held by the dropped bridge"
+        );
+    }
+
     #[test]
     fn a_fresh_bridge_is_idle_and_reports_empty_telemetry() {
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_020);
         assert_eq!(bridge.state(), BridgeState::Idle);
 
         let telemetry = bridge.telemetry();
@@ -1202,14 +1486,14 @@ mod tests {
     #[test]
     fn stopping_a_stopped_bridge_is_not_an_error() {
         // The Android service lifecycle calls stop from more than one place.
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_021);
         assert!(bridge.stop().is_ok());
         assert!(bridge.stop().is_ok());
     }
 
     #[test]
     fn the_announced_name_can_be_set_before_starting() {
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_022);
         bridge.set_device_name("Pixel".to_string());
         assert_eq!(*bridge.device_name.lock().unwrap(), "Pixel");
     }
@@ -1222,7 +1506,7 @@ mod tests {
         // every part of the receive path that is not the device itself.
         use sonduit_core::format::PCM_PAYLOAD_BYTES;
 
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_023);
         // Port zero would bind an ephemeral port the sender cannot guess, so a
         // fixed high port is used; a bind failure here means something else
         // holds it, and the test reports that rather than hanging.
@@ -1268,7 +1552,7 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     #[test]
     fn junk_is_counted_as_malformed_rather_than_buffered() {
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_024);
         let port = 41_011;
         if bridge.start(port).is_err() {
             return;
@@ -1290,7 +1574,7 @@ mod tests {
     #[test]
     fn scanned_text_that_is_not_an_invite_is_refused_rather_than_acted_on() {
         // The camera sees whatever is in frame. None of it may start pairing.
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_025);
         for text in ["", "https://example.com", "SDQ9:482913:4011:A:10.0.0.2"] {
             assert!(
                 matches!(
@@ -1308,7 +1592,7 @@ mod tests {
         // idle bridge has not bound one. Announcing a port nothing is
         // listening on would have the desktop send audio into a closed socket
         // and report a healthy session.
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_026);
         let invite = Invite::new(
             &[Ipv4Addr::new(10, 10, 0, 61)],
             discovery::DISCOVERY_PORT,
@@ -1328,7 +1612,7 @@ mod tests {
         // The desktop chose the code, so this device has to adopt it: a later
         // broadcast probe from the same desktop is answered with the same key
         // or the rescan finds nothing.
-        let bridge = Bridge::new();
+        let bridge = Bridge::with_discovery_port(41_027);
         let port = 41_013;
         if bridge.start(port).is_err() {
             return;

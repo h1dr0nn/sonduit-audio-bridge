@@ -24,6 +24,15 @@ object BridgeController {
 
     private const val TAG = "SonduitBridge"
 
+    /**
+     * The native handle.
+     *
+     * Constructing it is not free of consequence: the constructor binds the
+     * discovery port and starts the thread that answers the computer's probes.
+     * That is why [prepare] exists and why the activity calls it as it comes
+     * up, rather than leaving the first touch to whatever happened to ask for
+     * telemetry first.
+     */
     private val bridge: Bridge by lazy { Bridge() }
 
     /** Set once the native session is live, so stop is not called on nothing. */
@@ -77,6 +86,28 @@ object BridgeController {
                 driftPpm = null,
                 correctionPpm = 0.0,
             )
+        }
+    }
+
+    /**
+     * Make this device findable, and tell it the name to answer with.
+     *
+     * Discovery is not part of playing audio. The computer finds this phone by
+     * broadcasting a probe, and the phone has to answer it while the user is
+     * still reading the six digits off the screen with nothing started: a
+     * responder that only ran during a session meant the typed-code flow never
+     * found anything. So this is wired to the activity's onCreate, not to a
+     * button, and the user does nothing to make it happen.
+     *
+     * Idempotent. There is one native handle per process and one responder
+     * behind it, so calling this twice renames the same one.
+     */
+    @Synchronized
+    fun prepare() {
+        try {
+            bridge.setDeviceName(deviceName())
+        } catch (error: Exception) {
+            Log.e(TAG, "the bridge could not be prepared", error)
         }
     }
 

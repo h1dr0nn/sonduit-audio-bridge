@@ -29,6 +29,10 @@ import net.sonduit.app.ui.SonduitTheme
  * screen going off. This polls the controller for a snapshot while it is
  * visible and stops when it is not, because a UI nobody is looking at should
  * not be waking the CPU four times a second.
+ *
+ * It does not own discovery either. That belongs to the native handle and
+ * lasts as long as the process; all this does is ask for it in [onCreate],
+ * because the app being open is the condition for being pairable.
  */
 class MainActivity : ComponentActivity() {
 
@@ -48,6 +52,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Before anything is drawn, and before the user has pressed anything.
+        // This is what makes the phone answer the computer's discovery probe,
+        // which the typed-code pairing flow needs and which has nothing to do
+        // with whether a session is running.
+        BridgeController.prepare()
 
         setContent {
             SonduitTheme {
