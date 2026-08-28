@@ -275,14 +275,16 @@ where
 /// the seeds are fixed so the result is reproducible.
 #[cfg(test)]
 pub(crate) fn agreed_secret() -> SessionSecret {
-    use sonduit_transport::handshake::{answer, Offer};
+    use sonduit_transport::handshake::{Offer, Responder};
     use sonduit_transport::session::SEED_BYTES;
 
     let nonce = [0x5A_u8; NONCE_BYTES];
     let code = PairingCode::parse("482913").expect("a six digit code");
     let offer = Offer::new([1; SEED_BYTES], nonce, code.clone());
-    let (accept, _) =
-        answer(&offer.datagram(), &nonce, &code, [2; SEED_BYTES]).expect("the offer verifies");
+    let accept = Responder::new()
+        .answer(&offer.datagram(), &[nonce], &code, [2; SEED_BYTES])
+        .expect("the offer verifies")
+        .accept;
     offer.accept(&accept).expect("the accept verifies")
 }
 

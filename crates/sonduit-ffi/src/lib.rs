@@ -554,6 +554,12 @@ impl Bridge {
         let deadline = std::time::Instant::now() + KEY_OFFER_WAIT;
         let mut datagram = [0_u8; 256];
         let mut sent_at = std::time::Instant::now();
+        // One nonce here, the invite's, and one offer answered before this
+        // returns. The responder is still the type that does the answering,
+        // so this path cannot drift away from the discovery one: the desktop
+        // repeats its offer on both, and both have to answer a repeat the
+        // same way.
+        let mut responder = handshake::Responder::new();
 
         while std::time::Instant::now() < deadline {
             // The announcement goes again while nothing has come back. One
@@ -570,13 +576,17 @@ impl Bridge {
             let Ok((length, from)) = socket.recv_from(&mut datagram) else {
                 continue;
             };
-            let Some((accept, secret)) =
-                handshake::answer(&datagram[..length], &invite.nonce, &invite.code, seed)
+            let Some(answered) =
+                responder.answer(&datagram[..length], &[invite.nonce], &invite.code, seed)
             else {
                 continue;
             };
-            let _ = socket.send_to(&accept, from);
-            return Ok(secret);
+            let _ = socket.send_to(&answered.accept, from);
+            // `None` cannot happen on the first answer, and returning here on
+            // a repeat would hand back a secret this end never derived.
+            if let Some(secret) = answered.secret {
+                return Ok(secret);
+            }
         }
 
         Err(FfiError::PairingIncomplete)
@@ -1741,6 +1751,11 @@ fn announce_loop(
     // and this device cannot tell from the offer alone which probe that was.
     // A nonce is not a secret: every probe carried its own in the clear.
     let mut recent: Vec<[u8; NONCE_BYTES]> = Vec::with_capacity(REMEMBERED_NONCES);
+    // What has already been answered, so the copies of one offer are answered
+    // identically. Without it the desktop keeps the key from the first copy
+    // and this device keeps the key from the last, and every packet of the
+    // session is refused. See `handshake::Responder`.
+    let mut responder = handshake::Responder::new();
 
     while !stop.load(Ordering::Relaxed) {
         let Ok((length, from)) = socket.recv_from(&mut datagram) else {
@@ -1753,7 +1768,15 @@ fn announce_loop(
         // not send audio to, because the desktop refuses to stream to a peer
         // it holds no key for.
         if handshake::is_key_offer(&datagram[..length]) {
-            answer_offer(socket, from, &datagram[..length], code, keys, &recent);
+            answer_offer(
+                socket,
+                from,
+                &datagram[..length],
+                code,
+                keys,
+                &recent,
+                &mut responder,
+            );
             continue;
         }
 
@@ -1810,6 +1833,12 @@ fn announce_loop(
 /// hold this code or a stray datagram, and saying which would tell an attacker
 /// which of its guesses was closer.
 ///
+/// The desktop sends its offer three times, so `responder` carries what was
+/// answered before: the second and third copies get the accept the first one
+/// got, and the key this device adopted stays the key the desktop derived. It
+/// is the caller's `responder` rather than one made here because a responder
+/// that forgot between datagrams would remember nothing at all.
+///
 /// A failure to read the system's random source is logged and the offer is
 /// left unanswered. The desktop then reports that the device did not pair,
 /// which is true, rather than this device pairing under a key pair generated
@@ -1821,6 +1850,7 @@ fn answer_offer(
     code: &Mutex<PairingCode>,
     keys: &Keys,
     recent: &[[u8; NONCE_BYTES]],
+    responder: &mut handshake::Responder,
 ) {
     // Cloned and the lock released at once: the announce thread must not hold
     // the code while it does a key agreement, and the UI reads the same mutex
@@ -1840,14 +1870,18 @@ fn answer_offer(
         }
     };
 
-    for nonce in recent.iter().rev() {
-        let Some((accept, secret)) = handshake::answer(offer, nonce, &code, seed) else {
-            continue;
-        };
-        let _ = socket.send_to(&accept, from);
+    let Some(answered) = responder.answer(offer, recent, &code, seed) else {
+        return;
+    };
+    let _ = socket.send_to(&answered.accept, from);
+
+    // Absent on a repeat, and a repeat must not re-adopt: the desktop that
+    // sent this offer either holds the key already or has been replaced by
+    // one that pairs later, and re-adopting would take that newer pairing
+    // down on a datagram anybody could have kept and sent again.
+    if let Some(secret) = answered.secret {
         keys.adopt(secret);
         note!("paired by scan; audio from this computer will be encrypted");
-        return;
     }
 }
 
@@ -2214,23 +2248,43 @@ mod tests {
         let responder = responder.expect("the bridge must answer a probe for its own code");
 
         // Step two: agree a key with it, which is what this change adds.
+        //
+        // Three offers before the listen, because that is what the desktop
+        // sends and one offer would not exercise the thing that broke: a
+        // responder answering each copy with its own key pair leaves this end
+        // holding the key from the copy that arrived first and the bridge
+        // holding the key from the copy that arrived last, and every packet of
+        // the session that follows is refused. So every accept that comes back
+        // is collected and they are required to be the same bytes.
         let offer = Offer::new([0x5D; SEED_BYTES], nonce, code.clone());
-        let mut accepted = None;
+        let mut accepts: Vec<Vec<u8>> = Vec::new();
+        for _ in 0..3 {
+            let _ = desktop.send_to(&offer.datagram(), responder);
+        }
         for _ in 0..20 {
-            if desktop.send_to(&offer.datagram(), responder).is_err() {
-                continue;
-            }
             let Ok((length, _)) = desktop.recv_from(&mut datagram) else {
+                if accepts.is_empty() {
+                    let _ = desktop.send_to(&offer.datagram(), responder);
+                }
                 continue;
             };
             if offer.is_our_accept(&datagram[..length]) {
-                accepted = Some(datagram[..length].to_vec());
-                break;
+                accepts.push(datagram[..length].to_vec());
+                if accepts.len() == 3 {
+                    break;
+                }
             }
+        }
+        assert!(!accepts.is_empty(), "the bridge must answer a key offer");
+        for accept in &accepts {
+            assert_eq!(
+                accept, &accepts[0],
+                "the bridge answered one offer with two different keys"
+            );
         }
 
         offer
-            .accept(&accepted.expect("the bridge must answer a key offer"))
+            .accept(&accepts[0])
             .expect("the accept must complete the agreement")
     }
 
@@ -2338,7 +2392,7 @@ mod tests {
         // receiver with no key that treated ciphertext as PCM would play it at
         // full scale into somebody's headphones.
         use sonduit_core::format::PCM_PAYLOAD_BYTES;
-        use sonduit_transport::handshake::{answer, Offer};
+        use sonduit_transport::handshake::{Offer, Responder};
         use sonduit_transport::sealed::Sealer;
         use sonduit_transport::session::{SALT_BYTES, SEED_BYTES};
 
@@ -2353,8 +2407,10 @@ mod tests {
         let nonce = [0x11_u8; NONCE_BYTES];
         let code = PairingCode::parse("482913").unwrap();
         let offer = Offer::new([1; SEED_BYTES], nonce, code.clone());
-        let (accept, _) =
-            answer(&offer.datagram(), &nonce, &code, [2; SEED_BYTES]).expect("well formed");
+        let accept = Responder::new()
+            .answer(&offer.datagram(), &[nonce], &code, [2; SEED_BYTES])
+            .expect("well formed")
+            .accept;
         let stranger = offer.accept(&accept).expect("a complete agreement");
 
         let sender = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();

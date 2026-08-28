@@ -41,11 +41,28 @@ const PACKETS: usize = 24;
 /// How long a step of the handshake waits before the test gives up.
 const STEP: Duration = Duration::from_secs(3);
 
+/// Copies of the key offer the desktop sends, mirrored from `bridge::mod`.
+///
+/// The retransmission is the reason this file has to check what it checks. One
+/// offer meeting a receiver that replies once agrees a key whatever either end
+/// does with repeats.
+const KEY_OFFERS: usize = 3;
+
 /// The phone's side of pairing, as `sonduit-ffi`'s responder runs it.
 ///
 /// One socket, one thread, for as long as the guard lives. It answers probes
 /// with an announcement tagged by `code`, and answers the key offer that
 /// follows with its own public key, keeping the secret.
+///
+/// It answers **every** copy of the offer, because a real one does: the
+/// desktop sends three and the responder is a loop that reads whatever
+/// arrives. And it offers a different seed for each copy, which is the part
+/// that matters. A stand-in with a constant seed answers three copies
+/// identically whether or not the responder remembers anything, so it cannot
+/// tell a correct responder from one that mints a key pair per datagram --
+/// which is exactly how a build shipped in which the desktop kept the key from
+/// the first copy, the phone kept the key from the last, and every packet of
+/// every session was refused.
 struct StandInPhone {
     port: u16,
     stop: Arc<AtomicBool>,
@@ -71,6 +88,8 @@ impl StandInPhone {
                 // what decides which it belongs to.
                 let mut recent: Vec<[u8; NONCE_BYTES]> = Vec::new();
                 let mut secret = None;
+                let mut responder = handshake::Responder::new();
+                let mut answers = 0_u8;
 
                 while !stop.load(Ordering::Relaxed) {
                     let Ok((length, from)) = socket.recv_from(&mut datagram) else {
@@ -79,13 +98,14 @@ impl StandInPhone {
                     let bytes = &datagram[..length];
 
                     if handshake::is_key_offer(bytes) {
-                        for nonce in recent.iter().rev() {
-                            if let Some((accept, agreed)) =
-                                handshake::answer(bytes, nonce, &code, [0x2B; SEED_BYTES])
-                            {
-                                let _ = socket.send_to(&accept, from);
+                        let seed = [0x2B_u8.wrapping_add(answers); SEED_BYTES];
+                        if let Some(answered) = responder.answer(bytes, &recent, &code, seed) {
+                            answers = answers.wrapping_add(1);
+                            let _ = socket.send_to(&answered.accept, from);
+                            // Only the first answer to an exchange carries one.
+                            // A repeat is the same accept and no new key.
+                            if let Some(agreed) = answered.secret {
                                 secret = Some(agreed);
-                                break;
                             }
                         }
                         continue;
@@ -154,19 +174,48 @@ fn pair_with(phone: &StandInPhone, code: &PairingCode) -> Option<(SocketAddr, Se
     let responder = responder?;
 
     let offer = Offer::new([0x1D; SEED_BYTES], nonce, code.clone());
-    let mut accept = None;
-    let deadline = Instant::now() + STEP;
-    while Instant::now() < deadline && accept.is_none() {
+    let accept = collect_accepts(&desktop, responder, &offer, 1)?.remove(0);
+    offer.accept(&accept).map(|secret| (responder, secret))
+}
+
+/// Send the key offer the way the desktop does and gather what comes back.
+///
+/// [`KEY_OFFERS`] copies of one datagram, then a listen until `wanted` accepts
+/// have verified against the offer or the step times out. Nothing is discarded
+/// on the way: the whole point of gathering them is that a responder which
+/// answers each copy with a key pair of its own is visible here as two
+/// different accepts, where a caller that stopped at the first would see one
+/// perfectly good accept and go on to a session that plays nothing.
+fn collect_accepts(
+    desktop: &UdpSocket,
+    responder: SocketAddr,
+    offer: &Offer,
+    wanted: usize,
+) -> Option<Vec<Vec<u8>>> {
+    let mut datagram = [0_u8; 256];
+    let mut accepts: Vec<Vec<u8>> = Vec::with_capacity(wanted);
+
+    for _ in 0..KEY_OFFERS {
         let _ = desktop.send_to(&offer.datagram(), responder);
+    }
+
+    let deadline = Instant::now() + STEP;
+    while Instant::now() < deadline && accepts.len() < wanted {
         let Ok((length, _)) = desktop.recv_from(&mut datagram) else {
+            // The offer again, in case every copy of it was lost. Harmless
+            // against a responder that remembers: it answers with the bytes it
+            // answered before.
+            for _ in 0..KEY_OFFERS {
+                let _ = desktop.send_to(&offer.datagram(), responder);
+            }
             continue;
         };
         if offer.is_our_accept(&datagram[..length]) {
-            accept = Some(datagram[..length].to_vec());
+            accepts.push(datagram[..length].to_vec());
         }
     }
 
-    offer.accept(&accept?).map(|secret| (responder, secret))
+    (accepts.len() == wanted).then_some(accepts)
 }
 
 /// Whether `haystack` contains `needle` anywhere in it.
@@ -326,13 +375,165 @@ fn the_reports_coming_back_are_sealed_too_and_a_forged_one_is_refused() {
     assert_eq!(opener.rejected(), 2);
 }
 
+/// Seal a packet under `sender` and open it under `receiver`, over a socket.
+///
+/// The assertion two ends holding the same key have to pass, and the only one
+/// worth making: comparing derived key bytes says the two structures match,
+/// while this says the audio arrives. It is deliberately not
+/// `assert_eq!(a.audio_key(), b.audio_key())`.
+fn audio_survives_the_trip(sender: &SessionSecret, receiver: &SessionSecret) -> bool {
+    let format = Format::stereo_48k();
+    let salt = [0xC4_u8; SALT_BYTES];
+
+    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("bind");
+    socket
+        .set_read_timeout(Some(STEP))
+        .expect("a fresh socket takes a timeout");
+    let at = socket.local_addr().expect("bound");
+
+    let pcm: Vec<u8> = (0..PCM_PAYLOAD_BYTES)
+        .map(|byte| (byte % 251) as u8)
+        .collect();
+    let mut packetizer = Packetizer::sealed(format, Sealer::new(sender, salt));
+    packetizer
+        .push(&pcm, |datagram| {
+            socket.send_to(datagram, at).map(|_| ()).map_err(Into::into)
+        })
+        .expect("sealing cannot fail");
+
+    let mut wire = vec![0_u8; MAX_DATAGRAM_BYTES];
+    let Ok((length, _)) = socket.recv_from(&mut wire) else {
+        return false;
+    };
+
+    let mut opener = Opener::new(receiver.clone());
+    let mut plaintext = vec![0_u8; PCM_PAYLOAD_BYTES];
+    match opener.open(&wire[..length], &mut plaintext) {
+        Ok(opened) => opened.pcm == pcm.as_slice(),
+        Err(_) => false,
+    }
+}
+
+#[test]
+fn a_receiver_that_answers_every_offer_still_agrees_one_key_with_the_sender() {
+    // The test this file was missing, and the reason a build shipped in which
+    // encryption never once worked.
+    //
+    // The desktop sends its offer three times for loss tolerance and keeps the
+    // first accept that reaches it. The receiver answers all three, because it
+    // is a loop reading a socket and has no idea they are copies. If it mints a
+    // key pair per copy it keeps the third and the desktop keeps the first:
+    // both ends report a pairing, and the receiver refuses every packet.
+    //
+    // So: three offers, every accept collected, all of them required to be the
+    // same bytes, and the agreement completed from the *last* one -- the copy
+    // a responder that forgets would have answered differently.
+    let code = PairingCode::parse("482913").expect("six digits");
+    let phone = StandInPhone::spawn("Pixel 7a", 4010, code.clone());
+
+    let nonce = [0x5A_u8; NONCE_BYTES];
+    let desktop = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("bind");
+    desktop
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("a fresh socket takes a timeout");
+    let target = SocketAddr::from((Ipv4Addr::LOCALHOST, phone.port));
+    let mut datagram = [0_u8; 256];
+
+    let mut responder = None;
+    let deadline = Instant::now() + STEP;
+    while Instant::now() < deadline && responder.is_none() {
+        let _ = desktop.send_to(&discovery::encode_probe(&nonce), target);
+        let Ok((length, from)) = desktop.recv_from(&mut datagram) else {
+            continue;
+        };
+        if discovery::decode_announce(&datagram[..length], &nonce, &code).is_some() {
+            responder = Some(from);
+        }
+    }
+    let responder = responder.expect("the phone must answer a probe for its own code");
+
+    let offer = Offer::new([0x1D; SEED_BYTES], nonce, code.clone());
+    let accepts = collect_accepts(&desktop, responder, &offer, KEY_OFFERS)
+        .expect("every copy of the offer must be answered");
+
+    for (index, accept) in accepts.iter().enumerate() {
+        assert_eq!(
+            accept, &accepts[0],
+            "copy {index} of one offer was answered with a different key"
+        );
+    }
+
+    let desktop_secret = offer
+        .accept(&accepts[KEY_OFFERS - 1])
+        .expect("the last accept must complete the agreement");
+    let phone_secret = phone.finish().expect("the phone must have kept a secret");
+
+    assert!(
+        audio_survives_the_trip(&desktop_secret, &phone_secret),
+        "the two ends did not agree a key: audio sealed by the sender did not open"
+    );
+}
+
+#[test]
+fn an_offer_repeated_after_a_lost_accept_agrees_the_key_the_receiver_already_holds() {
+    // The other half of the retransmission, and the one that makes repeating
+    // the offer safe rather than merely harmless: the accept can be lost too.
+    //
+    // Here the first accept is read and thrown away, standing in for one that
+    // never arrived, and the offer goes again. The receiver has already
+    // adopted a key by then. If the repeat produced a new key pair the sender
+    // would end up holding a secret the receiver has replaced; instead it gets
+    // back the accept it missed, byte for byte.
+    let code = PairingCode::parse("482913").expect("six digits");
+    let phone = StandInPhone::spawn("Pixel 7a", 4010, code.clone());
+
+    let nonce = [0x5A_u8; NONCE_BYTES];
+    let desktop = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("bind");
+    desktop
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("a fresh socket takes a timeout");
+    let target = SocketAddr::from((Ipv4Addr::LOCALHOST, phone.port));
+    let mut datagram = [0_u8; 256];
+
+    let mut responder = None;
+    let deadline = Instant::now() + STEP;
+    while Instant::now() < deadline && responder.is_none() {
+        let _ = desktop.send_to(&discovery::encode_probe(&nonce), target);
+        let Ok((length, from)) = desktop.recv_from(&mut datagram) else {
+            continue;
+        };
+        if discovery::decode_announce(&datagram[..length], &nonce, &code).is_some() {
+            responder = Some(from);
+        }
+    }
+    let responder = responder.expect("the phone must answer a probe for its own code");
+
+    let offer = Offer::new([0x1D; SEED_BYTES], nonce, code.clone());
+    let first = collect_accepts(&desktop, responder, &offer, 1).expect("an answer");
+    // Lost in flight, as far as this end is concerned.
+    drop(first);
+
+    let second = collect_accepts(&desktop, responder, &offer, 1).expect("an answer to the repeat");
+    let desktop_secret = offer
+        .accept(&second[0])
+        .expect("the repeat's accept must complete the agreement");
+    let phone_secret = phone.finish().expect("the phone must have kept a secret");
+
+    assert!(
+        audio_survives_the_trip(&desktop_secret, &phone_secret),
+        "the repeat agreed a key the receiver no longer held"
+    );
+}
+
 /// A master secret from a pairing this session has nothing to do with.
 fn phone_secret_twin() -> SessionSecret {
     let nonce = [0x77_u8; NONCE_BYTES];
     let code = PairingCode::parse("000001").expect("six digits");
     let offer = Offer::new([0x40; SEED_BYTES], nonce, code.clone());
-    let (accept, _) = handshake::answer(&offer.datagram(), &nonce, &code, [0x41; SEED_BYTES])
-        .expect("well formed");
+    let accept = handshake::Responder::new()
+        .answer(&offer.datagram(), &[nonce], &code, [0x41; SEED_BYTES])
+        .expect("well formed")
+        .accept;
     offer.accept(&accept).expect("a complete agreement")
 }
 

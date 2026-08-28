@@ -101,6 +101,62 @@ handshake that works on both paths is worth one round trip that happens once
 per pairing, and it leaves the `SDQ1` invite grammar and
 `discovery::encode_announce` untouched.
 
+### 1a. The offer is sent more than once, so answering it is idempotent
+
+Amended after the exchange was measured on hardware. It is part of the
+decision, not a note on it: without it the design above agrees no key at all.
+
+Each of the four datagrams is repeated for loss tolerance -- a single datagram
+after an idle period is regularly dropped on Wi-Fi, and the probe already went
+three times for that reason. The key offer goes three times too. **The
+responder therefore sees one offer three times and must answer all three
+identically**, because the initiator keeps the first accept that reaches it and
+has no way to ask which key the responder kept.
+
+The first implementation drew a fresh seed per offer and adopted the last. Both
+ends reported a completed pairing and **every packet of every encrypted session
+was refused**: 18186 sent, 18428 refusals counted at the receiver, nothing
+played. Isolated on hardware by varying nothing but the offer count -- one
+offer played all 200 packets, three offers refused all 200.
+
+So the responder remembers the offers it has answered:
+
+- **The memory is keyed on the exchange**, meaning the initiator's public key
+  under the nonce it is tagged against. Both are covered by the offer's tag, so
+  neither can be altered by anyone who does not hold the code, and a genuinely
+  new exchange -- a fresh seed, a fresh pairing window -- differs in one or the
+  other and draws a new key pair as before.
+- **A repeat is answered with the recorded accept and adopts nothing.** The
+  secret was handed over on the first answer; re-adopting it would let a
+  replayed old offer displace a pairing made since, which the previous
+  behaviour of minting a fresh key could also do.
+- **Only public bytes are remembered**, four exchanges deep. No key material is
+  retained beyond the one secret the receiver already holds, so nothing here
+  changes what a compromise of the process yields.
+
+**An attacker gains nothing from an answer that repeats.** Replaying a captured
+offer returns the accept that was already on the wire beside it, and both
+halves are public keys. It buys no extra guess at the code, because the memory
+is consulted only after the offer's tag has verified: a forged offer still
+costs one online guess in 10^6 and a wrong one is still met with silence. The
+"one online guess in a million" property of the section above is unchanged.
+
+The initiator does not simply trust this. It keeps listening for 50 ms after
+the first accept verifies and **refuses the pairing if two accepts differ**,
+which turns a peer built the old way into a message at the pairing rather than
+a session that reports itself encrypted and plays nothing. Nobody outside the
+pairing can provoke that refusal: an accept only counts once its tag verifies
+under the six-digit code.
+
+Two alternatives were weighed and rejected. **Tolerating several accepts and
+adopting the one that matches** fails because the initiator cannot tell which
+one that is -- an accept carries a public key, not a proof of what the peer
+kept -- so it would need another round trip. **One offer with a retry only on
+timeout** narrows the window without closing it: an accept that is merely slow
+rather than lost still leaves the initiator holding the answer to the first
+offer and the responder holding the key it made for the second, and it is
+slower to recover from the loss the retransmission exists for.
+
 ### 2. ChaCha20-Poly1305, in place, per packet
 
 `chacha20poly1305`, RustCrypto, `default-features = false`.
@@ -355,6 +411,9 @@ backend is safe Rust. This is a dependency and not our crate, so the
   every packet to replace a guarantee with a probability, when the counter is
   already in the header and already unique.
 - **AES-256-GCM.** Rejected on `armeabi-v7a`, which has no AES instructions.
+- **A responder that answers each copy of an offer afresh.** Not so much
+  rejected as found to be wrong: see section 1a. It is what shipped, and it
+  agrees no key at all.
 - **DTLS or WireGuard-style tunnelling.** Rejected: a handshake, a session
   state machine, a retransmission story and a large dependency, to protect four
   datagram kinds that already have a pairing exchange to key from.
@@ -366,6 +425,23 @@ backend is safe Rust. This is a dependency and not our crate, so the
   a second, it drives the numbers the user is shown and the sender's idea of
   whether the receiver is alive, and it would have been the only
   unauthenticated message left.
+
+## What the tests cover, and what they did not
+
+The defect reached hardware past a full test suite, and the reason is worth
+recording because it is a pattern rather than an oversight:
+
+- the transport's stand-in receiver answered every offer, as a real one does,
+  but from a **constant seed**, so three copies were answered identically
+  whether or not the responder remembered anything;
+- the desktop's stand-in receiver **returned after the first offer**, so the
+  repeats never met a responder at all.
+
+Neither could distinguish a correct responder from one that minted a key pair
+per datagram. Both now answer every copy from a **different** seed, and the
+assertion is that audio sealed by one end opens at the other rather than that
+two derived keys compare equal. Reverting the responder to its previous
+behaviour turns six tests red across three crates.
 
 ## Revisit if
 

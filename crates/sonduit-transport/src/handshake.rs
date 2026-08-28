@@ -16,8 +16,8 @@
 //!   desktop (initiator)                          phone (responder)
 //!     | Offer::new(seed, nonce, code)                             |
 //!     | ---- Offer::datagram(), the SDDS key offer -------------> |
-//!     |                                    answer(offer, nonce,   |
-//!     |                                           code, seed)     |
+//!     |                       Responder::answer(offer, nonces,    |
+//!     |                                        code, seed)        |
 //!     | <--- the SDDS key accept -------------------------------- |
 //!     | Offer::accept(..) -> SessionSecret          SessionSecret |
 //! ```
@@ -25,6 +25,16 @@
 //! Nothing here does I/O and nothing here reads a clock. The seed comes from
 //! [`crate::entropy`] in the application and from a constant in a test, which
 //! is the only way the exchange can be asserted against known values.
+//!
+//! # The offer is sent more than once, so answering it is stateful
+//!
+//! The initiator repeats its offer for loss tolerance and keeps the first
+//! accept that comes back. That only agrees a key if a repeated offer is
+//! answered the same way every time, so the responder is a [`Responder`] that
+//! remembers what it answered rather than a function that answers afresh.
+//! A responder that drew a new key pair per copy would leave the initiator
+//! holding the first key it minted and itself holding the last, both ends
+//! reporting a pairing, and every packet of the session refused.
 //!
 //! # What the code is doing in here
 //!
@@ -140,37 +150,189 @@ impl Offer {
     }
 }
 
-/// The responder's half: answer an offer and derive the same secret.
+/// How many answered offers a [`Responder`] remembers.
 ///
-/// One call, because the responder has nothing to remember between the two
-/// datagrams. It generates its key pair, replies, and is finished.
+/// Four, the same depth the callers of this module keep of recent probe
+/// nonces. One pairing is one remembered offer however many copies of it
+/// arrive, so this is four *pairings* of history and not four datagrams. It is
+/// what lets a duplicate that arrives after the user has re-paired still be
+/// recognised as the repeat it is rather than answered afresh.
+const REMEMBERED_OFFERS: usize = 4;
+
+/// What a [`Responder`] decided about one key offer.
 ///
-/// Returns the datagram to send back and the secret to keep, or `None` when
-/// the offer is not one this end may answer -- malformed, tagged with a code
-/// it does not hold, bound to a nonce it did not issue, or carrying a
-/// small-order public key.
+/// `secret` is `Some` only the first time an offer is answered. A repeat is
+/// answered with the same `accept` bytes and no secret, because the responder
+/// has already handed that secret to its caller and re-adopting it would let a
+/// replayed old offer displace a newer pairing.
+pub struct Answer {
+    /// The key accept to send back to the initiator.
+    pub accept: Vec<u8>,
+    /// The master secret to adopt, or `None` when this is a repeat.
+    pub secret: Option<SessionSecret>,
+}
+
+impl core::fmt::Debug for Answer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The accept went out on the wire; the secret never may.
+        write!(
+            f,
+            "Answer({} bytes, {})",
+            self.accept.len(),
+            if self.secret.is_some() {
+                "adopt"
+            } else {
+                "already held"
+            }
+        )
+    }
+}
+
+/// The responder's half of the exchange: the phone, which plays the audio.
 ///
-/// `seed` must come from [`crate::entropy::key_seed`] outside a test.
-#[must_use]
-pub fn answer(
-    offer: &[u8],
-    nonce: &[u8; NONCE_BYTES],
-    code: &PairingCode,
-    seed: [u8; SEED_BYTES],
-) -> Option<(Vec<u8>, SessionSecret)> {
-    let initiator = discovery::decode_key_offer(offer, nonce, code)?;
+/// # Why this is not a free function
+///
+/// The initiator sends its offer more than once, because a single datagram
+/// after an idle period is regularly dropped on a radio. A responder that
+/// generated a fresh key pair per copy would answer three identical offers
+/// with three different keys and keep the last, while the initiator kept the
+/// first accept that reached it. Both ends would report a pairing, and every
+/// packet of the session would then be refused.
+///
+/// So answering is stateful, and the state is here. An offer this responder
+/// has already answered is answered again with **the same bytes**, which makes
+/// the retransmission free: the initiator may keep any of the accepts it
+/// receives, in any order, and holds the same secret either way.
+///
+/// # What "the same offer" means
+///
+/// The same initiator public key under the same nonce. Both are covered by the
+/// offer's tag, so neither can be altered by anyone who does not hold the
+/// pairing code, and a genuinely new exchange -- a fresh seed, or a fresh
+/// pairing window -- differs in one or the other and is a miss.
+///
+/// # What an attacker gains from an answer that repeats
+///
+/// Nothing.
+///
+/// * Replaying a captured offer gets back the accept that was already on the
+///   wire beside it. Both halves are public keys, so there is nothing in the
+///   reply the replayer did not already hold.
+/// * It buys no extra guess at the code. The memory is consulted only after an
+///   offer's tag has verified, so a forged offer still costs one online guess
+///   in 10^6 and a wrong one is still answered with silence.
+/// * It reuses no Diffie-Hellman key across two exchanges. A hit is the same
+///   exchange by definition; a different public key or a different nonce is a
+///   miss and draws a fresh seed.
+/// * It holds no key material. Only the public accept is remembered, so
+///   nothing here widens what a compromise of this process yields, and
+///   ADR-009's forward secrecy is untouched.
+/// * A replayed *superseded* offer is answered but not adopted, so it cannot
+///   knock out a pairing made since. Deriving a fresh key for it, which is
+///   what a stateless responder does, can.
+pub struct Responder {
+    /// Offers answered, oldest first. Public bytes only.
+    answered: Vec<Answered>,
+}
 
-    let exchange = KeyExchange::from_seed(seed);
-    let responder = exchange.public_key();
+/// One offer this responder has answered, and the reply it sent.
+struct Answered {
+    nonce: [u8; NONCE_BYTES],
+    initiator: [u8; PUBLIC_KEY_BYTES],
+    accept: Vec<u8>,
+}
 
-    // Derived from the key that arrived, not from any expectation about it.
-    // The accept's tag covers both halves, so an attacker that rewrites either
-    // one leaves two ends holding different secrets rather than one session on
-    // its terms.
-    let secret = exchange.agree(&initiator, nonce, code, &initiator, &responder)?;
-    let reply = discovery::encode_key_accept(&responder, &initiator, nonce, code);
+impl core::fmt::Debug for Responder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Responder({} answered)", self.answered.len())
+    }
+}
 
-    Some((reply, secret))
+impl Default for Responder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Responder {
+    /// A responder that has answered nothing.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            answered: Vec::with_capacity(REMEMBERED_OFFERS),
+        }
+    }
+
+    /// Answer `offer`, idempotently.
+    ///
+    /// `nonces` are the nonces of the pairings this end will answer for,
+    /// newest last: the probes it has replied to lately, or the single nonce a
+    /// scanned invite carried. The offer names none of them -- the tag is what
+    /// decides which it belongs to -- so each is tried, newest first.
+    ///
+    /// Returns `None` for a datagram that is not a key offer, one whose tag
+    /// verifies against none of `nonces`, and one carrying a small-order
+    /// public key. The three are deliberately not told apart: none of them is
+    /// a peer this end may key a session from, and a caller that could tell
+    /// them apart would be tempted to treat one as recoverable.
+    ///
+    /// `seed` must come from [`crate::entropy::key_seed`] outside a test. It
+    /// is not read at all for an offer already answered, which is the whole
+    /// point of this type.
+    #[must_use]
+    pub fn answer(
+        &mut self,
+        offer: &[u8],
+        nonces: &[[u8; NONCE_BYTES]],
+        code: &PairingCode,
+        seed: [u8; SEED_BYTES],
+    ) -> Option<Answer> {
+        for nonce in nonces.iter().rev() {
+            let Some(initiator) = discovery::decode_key_offer(offer, nonce, code) else {
+                continue;
+            };
+
+            // Verified, so this is the nonce the offer belongs to and no other
+            // can be: the tag covers the nonce. Whatever happens below, there
+            // is no point trying the rest.
+            if let Some(seen) = self
+                .answered
+                .iter()
+                .find(|seen| seen.nonce == *nonce && seen.initiator == initiator)
+            {
+                return Some(Answer {
+                    accept: seen.accept.clone(),
+                    secret: None,
+                });
+            }
+
+            let exchange = KeyExchange::from_seed(seed);
+            let responder = exchange.public_key();
+
+            // Derived from the key that arrived, not from any expectation
+            // about it. The accept's tag covers both halves, so an attacker
+            // that rewrites either one leaves two ends holding different
+            // secrets rather than one session on its terms.
+            let secret = exchange.agree(&initiator, nonce, code, &initiator, &responder)?;
+            let accept = discovery::encode_key_accept(&responder, &initiator, nonce, code);
+
+            if self.answered.len() == REMEMBERED_OFFERS {
+                self.answered.remove(0);
+            }
+            self.answered.push(Answered {
+                nonce: *nonce,
+                initiator,
+                accept: accept.clone(),
+            });
+
+            return Some(Answer {
+                accept,
+                secret: Some(secret),
+            });
+        }
+
+        None
+    }
 }
 
 /// Whether a datagram is a key offer, cheaply and without authenticating it.
@@ -192,6 +354,25 @@ mod tests {
 
     fn code() -> PairingCode {
         PairingCode::parse("482913").expect("a six digit code")
+    }
+
+    /// One offer, answered by a responder that has answered nothing else.
+    ///
+    /// The tests that use it are about a single exchange. The ones about a
+    /// repeated offer drive a [`Responder`] directly, because what it
+    /// remembers between calls is the whole question there.
+    fn answer(
+        offer: &[u8],
+        nonce: &[u8; NONCE_BYTES],
+        code: &PairingCode,
+        seed: [u8; SEED_BYTES],
+    ) -> Option<(Vec<u8>, SessionSecret)> {
+        let mut responder = Responder::new();
+        let answered = responder.answer(offer, &[*nonce], code, seed)?;
+        Some((
+            answered.accept,
+            answered.secret.expect("a first answer carries the secret"),
+        ))
     }
 
     /// The whole exchange, as two ends holding the same code would run it.
@@ -318,6 +499,172 @@ mod tests {
         assert!(!offer.is_our_accept(b"rubbish"));
         assert!(offer.is_our_accept(&honest));
         assert!(offer.accept(&honest).is_some());
+    }
+
+    #[test]
+    fn a_repeated_offer_is_answered_with_the_same_bytes_and_one_key() {
+        // The defect this type exists for. The initiator sends its offer three
+        // times for loss tolerance and keeps whichever accept reaches it
+        // first; a responder that answered each copy with a fresh key pair
+        // left the two ends holding different secrets, a pairing both of them
+        // called a success, and a session in which every packet was refused.
+        //
+        // A different seed per copy, because a responder that ignored the
+        // repetition would be indistinguishable from a correct one under a
+        // constant seed -- which is how this got past the tests.
+        let offer = Offer::new([1; SEED_BYTES], NONCE, code());
+        let datagram = offer.datagram();
+        let mut responder = Responder::new();
+
+        let mut accepts = Vec::new();
+        let mut phone_secret = None;
+        for copy in 0..3_u8 {
+            let answered = responder
+                .answer(&datagram, &[NONCE], &code(), [0x40 + copy; SEED_BYTES])
+                .expect("every copy of an offer this end can answer is answered");
+            if copy == 0 {
+                phone_secret = answered.secret.clone();
+            } else {
+                assert!(
+                    answered.secret.is_none(),
+                    "a repeat must not hand out a second secret to adopt"
+                );
+            }
+            accepts.push(answered.accept);
+        }
+
+        assert_eq!(
+            accepts[0], accepts[1],
+            "the second copy answered differently"
+        );
+        assert_eq!(
+            accepts[0], accepts[2],
+            "the third copy answered differently"
+        );
+
+        // And the initiator agrees, whichever of the three it happened to keep.
+        let phone = phone_secret.expect("the first answer carries the secret");
+        let desktop = offer
+            .accept(&accepts[2])
+            .expect("the last accept must verify against the offer");
+        assert_eq!(
+            desktop.audio_key(&SALT).as_bytes(),
+            phone.audio_key(&SALT).as_bytes(),
+            "the two ends did not agree a key"
+        );
+    }
+
+    #[test]
+    fn a_new_exchange_is_not_answered_out_of_the_memory() {
+        // The memory keys on the exchange, not on the peer. A second pairing
+        // with the same device gets its own key pair, or two sessions would
+        // share a secret.
+        let mut responder = Responder::new();
+        let first = Offer::new([1; SEED_BYTES], NONCE, code());
+        let second = Offer::new([3; SEED_BYTES], NONCE, code());
+
+        let one = responder
+            .answer(&first.datagram(), &[NONCE], &code(), [0x40; SEED_BYTES])
+            .expect("answered");
+        let two = responder
+            .answer(&second.datagram(), &[NONCE], &code(), [0x41; SEED_BYTES])
+            .expect("answered");
+
+        assert_ne!(one.accept, two.accept);
+        let one = one.secret.expect("a first answer carries the secret");
+        let two = two.secret.expect("a different exchange is a first answer");
+        assert_ne!(
+            one.audio_key(&SALT).as_bytes(),
+            two.audio_key(&SALT).as_bytes()
+        );
+    }
+
+    #[test]
+    fn an_offer_a_later_pairing_replaced_is_answered_but_not_adopted() {
+        // A duplicate of an old offer, delayed on the network or replayed by
+        // somebody who captured it. It is answered, because the accept it gets
+        // back is bytes it already saw; it must not become the current key
+        // again, which would take down the pairing made since.
+        let mut responder = Responder::new();
+        let old = Offer::new([1; SEED_BYTES], NONCE, code()).datagram();
+        let new = Offer::new([3; SEED_BYTES], NONCE, code()).datagram();
+
+        let first = responder
+            .answer(&old, &[NONCE], &code(), [0x40; SEED_BYTES])
+            .expect("answered");
+        let _ = responder
+            .answer(&new, &[NONCE], &code(), [0x41; SEED_BYTES])
+            .expect("answered");
+        let replayed = responder
+            .answer(&old, &[NONCE], &code(), [0x42; SEED_BYTES])
+            .expect("answered");
+
+        assert_eq!(replayed.accept, first.accept);
+        assert!(
+            replayed.secret.is_none(),
+            "a replayed old offer must not displace the current pairing"
+        );
+    }
+
+    #[test]
+    fn an_offer_older_than_the_memory_is_answered_afresh() {
+        // The memory is bounded, so this is what falling out of it looks like:
+        // a new key pair and a secret to adopt. That is the same thing that
+        // happens to an offer nobody remembers, and it is safe because the
+        // initiator of an exchange that old is long gone.
+        let mut responder = Responder::new();
+        let first = Offer::new([1; SEED_BYTES], NONCE, code()).datagram();
+        responder
+            .answer(&first, &[NONCE], &code(), [0x40; SEED_BYTES])
+            .expect("answered");
+        for seed in 0..REMEMBERED_OFFERS as u8 {
+            let other = Offer::new([0x80 + seed; SEED_BYTES], NONCE, code()).datagram();
+            responder
+                .answer(&other, &[NONCE], &code(), [0x50 + seed; SEED_BYTES])
+                .expect("answered");
+        }
+
+        let again = responder
+            .answer(&first, &[NONCE], &code(), [0x60; SEED_BYTES])
+            .expect("answered");
+        assert!(again.secret.is_some());
+    }
+
+    #[test]
+    fn the_offer_is_tried_against_every_nonce_the_responder_still_holds() {
+        // A responder answers probes from more than one desktop, and the offer
+        // names none of the nonces it replied to. Newest first, but all of
+        // them, or the second desktop to probe would pair and the first would
+        // not.
+        let mut responder = Responder::new();
+        let older = [0x11_u8; NONCE_BYTES];
+        let offer = Offer::new([1; SEED_BYTES], older, code());
+
+        let answered = responder
+            .answer(
+                &offer.datagram(),
+                &[older, NONCE],
+                &code(),
+                [0x40; SEED_BYTES],
+            )
+            .expect("the older nonce must still be tried");
+        assert!(offer.accept(&answered.accept).is_some());
+    }
+
+    #[test]
+    fn neither_the_responder_nor_its_answer_prints_a_secret() {
+        let mut responder = Responder::new();
+        assert_eq!(format!("{responder:?}"), "Responder(0 answered)");
+
+        let offer = Offer::new([1; SEED_BYTES], NONCE, code());
+        let answered = responder
+            .answer(&offer.datagram(), &[NONCE], &code(), [0x40; SEED_BYTES])
+            .expect("answered");
+        assert_eq!(format!("{responder:?}"), "Responder(1 answered)");
+        assert_eq!(
+            format!("{answered:?}"),
+            format!("Answer({} bytes, adopt)", answered.accept.len())
+        );
     }
 
     #[test]

@@ -126,7 +126,22 @@ const KEY_AGREEMENT_WINDOW: Duration = Duration::from_millis(600);
 ///
 /// Same reasoning as the probe it follows: a single datagram after an idle
 /// period is regularly dropped on Wi-Fi, and three cost nothing.
+///
+/// Repeating it is only safe because the responder answers a repeated offer
+/// with the bytes it answered the first copy with. That is a property of the
+/// peer and not of this end, so [`agree_key`] checks it rather than assuming
+/// it: see [`BridgeError::KeyDisagreement`].
 const KEY_OFFERS: u32 = 3;
+
+/// How long the desktop keeps listening after the first accept verifies.
+///
+/// The offers go out back to back, so their answers arrive within a round trip
+/// of each other and this is wide enough to see all of them on any link this
+/// product runs over. It is spent once per pairing, behind a dialog the user
+/// is already waiting on, and it is what turns a peer that answered one offer
+/// with two keys into a refusal at the pairing rather than a session in which
+/// nothing is ever played.
+const KEY_ACCEPT_GRACE: Duration = Duration::from_millis(50);
 
 /// Consecutive capture blocks whose send failed before the session retreats.
 ///
@@ -268,6 +283,24 @@ pub enum BridgeError {
     /// predictable seed, which looks exactly like a working one.
     #[error("no session key could be generated: {0}")]
     NoEntropy(String),
+
+    /// The phone answered one key offer with two different keys.
+    ///
+    /// The offer is sent [`KEY_OFFERS`] times for loss tolerance and every
+    /// copy is the same datagram, so every answer has to be the same datagram
+    /// too. A peer that answers each copy afresh keeps the key it minted last
+    /// while this end keeps the one that arrived first: both ends report a
+    /// pairing, and the receiver then refuses every packet of the session.
+    ///
+    /// Raised rather than passed over in silence, because the alternative is
+    /// what shipped: eighteen thousand packets sent, eighteen thousand
+    /// refused, and a panel saying the session was encrypted.
+    ///
+    /// Nobody outside the pairing can provoke it. A second accept only counts
+    /// if its tag verifies under the six-digit code, and an attacker able to
+    /// forge that holds the code already.
+    #[error("the phone answered the key agreement with two different keys; it is running an incompatible build")]
+    KeyDisagreement,
 }
 
 impl From<BridgeError> for String {
@@ -598,11 +631,24 @@ fn seed_from(nonce: &[u8; NONCE_BYTES]) -> u64 {
 /// this desktop can send audio to, and telling them apart would only invite a
 /// caller to treat one of them as recoverable.
 ///
+/// # Why the listen does not stop at the first accept
+///
+/// The offer goes out [`KEY_OFFERS`] times and the copies are identical, so a
+/// correct responder answers them all with one datagram repeated -- that is
+/// what `sonduit_transport::handshake::Responder` is for. This end cannot tell
+/// from one accept which key the peer kept, so rather than assume, it listens
+/// on for [`KEY_ACCEPT_GRACE`] and requires the answers to agree. Two
+/// different accepts mean the peer minted a key pair per copy, and the session
+/// that would follow is one where every packet is refused.
+///
 /// # Errors
 /// Returns [`BridgeError::NoEntropy`] when the system's random source cannot be
 /// read. That is not a device problem and must not be reported as one: it
 /// affects every pairing, and continuing would mean an X25519 key pair from a
 /// seed somebody can guess.
+///
+/// Returns [`BridgeError::KeyDisagreement`] when the peer answered the same
+/// offer with two different keys.
 fn agree_key(
     socket: &UdpSocket,
     peer: SocketAddr,
@@ -627,7 +673,20 @@ fn agree_key(
     let deadline = Instant::now() + KEY_AGREEMENT_WINDOW;
     let mut buffer = [0_u8; 256];
     let mut found: Option<Vec<u8>> = None;
-    while Instant::now() < deadline && found.is_none() {
+    // Set when the first accept verifies, so the peer's other answers are
+    // collected rather than left unread in the receive buffer.
+    let mut settle_by: Option<Instant> = None;
+    let mut disagreed = false;
+    // Restored below. The caller's timeout is longer than the settle window,
+    // and leaving it in place would make the window cost whatever that
+    // happens to be rather than the fifty milliseconds it says.
+    let caller_timeout = socket.read_timeout().ok().flatten();
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline || settle_by.is_some_and(|until| now >= until) {
+            break;
+        }
         let Ok((length, from)) = socket.recv_from(&mut buffer) else {
             continue;
         };
@@ -636,9 +695,30 @@ fn agree_key(
         if from.ip() != peer.ip() {
             continue;
         }
-        if offer.is_our_accept(&buffer[..length]) {
-            found = Some(buffer[..length].to_vec());
+        if !offer.is_our_accept(&buffer[..length]) {
+            continue;
         }
+        match &found {
+            // A datagram duplicated by the network is the same bytes again,
+            // and is ordinary.
+            Some(first) if first.as_slice() == &buffer[..length] => {}
+            Some(_) => {
+                disagreed = true;
+                break;
+            }
+            None => {
+                found = Some(buffer[..length].to_vec());
+                settle_by = Some(Instant::now() + KEY_ACCEPT_GRACE);
+                let _ = socket.set_read_timeout(Some(KEY_ACCEPT_GRACE));
+            }
+        }
+    }
+
+    if settle_by.is_some() {
+        let _ = socket.set_read_timeout(caller_timeout);
+    }
+    if disagreed {
+        return Err(BridgeError::KeyDisagreement);
     }
 
     Ok(found.and_then(|accept| offer.accept(&accept)))
@@ -1857,6 +1937,77 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_answering_one_offer_with_two_keys_is_refused_rather_than_paired_wrongly() {
+        // The safety net under KEY_OFFERS. Repeating the offer is only safe
+        // because the peer answers a repeat with the bytes it answered before,
+        // and that is a property of the peer's build, not of this one. So it
+        // is checked: a peer that mints a key pair per copy is refused at the
+        // pairing, where it can be reported, instead of producing a session
+        // that reports itself encrypted and plays nothing.
+        //
+        // The stand-in here is the receiver as it was before it remembered
+        // anything -- a fresh responder per datagram -- which is exactly the
+        // build this refusal exists to name.
+        use sonduit_transport::handshake;
+        use sonduit_transport::session::SEED_BYTES;
+        use std::net::Ipv4Addr;
+
+        let nonce = [0x3C_u8; NONCE_BYTES];
+        let code = PairingCode::parse("482913").expect("six digits");
+
+        let listener = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("an ephemeral loopback socket");
+        listener
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("a fresh socket takes a timeout");
+        let peer = listener.local_addr().expect("bound");
+
+        let phone = {
+            let code = code.clone();
+            std::thread::spawn(move || {
+                let mut datagram = [0_u8; 256];
+                let mut answered = 0_u8;
+                while answered < KEY_OFFERS as u8 {
+                    let Ok((length, from)) = listener.recv_from(&mut datagram) else {
+                        break;
+                    };
+                    let Some(answer) = handshake::Responder::new().answer(
+                        &datagram[..length],
+                        &[nonce],
+                        &code,
+                        [0x31 + answered; SEED_BYTES],
+                    ) else {
+                        continue;
+                    };
+                    answered += 1;
+                    let _ = listener.send_to(&answer.accept, from);
+                }
+            })
+        };
+
+        let desktop = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("an ephemeral loopback socket");
+        desktop
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("a fresh socket takes a timeout");
+
+        let outcome = agree_key(&desktop, peer, &nonce, &code);
+        let _ = phone.join();
+
+        assert!(
+            matches!(outcome, Err(BridgeError::KeyDisagreement)),
+            "a peer that answered one offer with two keys was paired with anyway: {outcome:?}"
+        );
+        // And the caller's own timeout survives the settle window, because the
+        // sockets in this module are reused for the audio that follows.
+        assert_eq!(
+            desktop.read_timeout().expect("readable"),
+            Some(Duration::from_millis(200)),
+            "the read timeout was not put back"
+        );
+    }
+
+    #[test]
     fn a_phone_that_scanned_the_invite_is_accepted_and_located_by_its_source_address() {
         // The whole QR path, minus the camera: build the invite the panel
         // would show, have a stand-in phone parse it and answer the way the
@@ -1887,6 +2038,11 @@ mod tests {
             use sonduit_transport::session::SEED_BYTES;
 
             let scanned = Invite::parse(&payload).expect("the phone must be able to read it");
+            // The phone's own responder, so a repeated offer is answered the
+            // way the FFI answers it. A stand-in that answered only the first
+            // copy would be a receiver no real one resembles, and it is what
+            // let a desktop and a phone ship holding different keys.
+            let mut responder = handshake::Responder::new();
             let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .expect("an ephemeral loopback socket");
             socket
@@ -1895,6 +2051,7 @@ mod tests {
             let datagram =
                 discovery::encode_announce("Pixel 7a", 4010, &scanned.nonce, &scanned.code);
             let mut buffer = [0_u8; 256];
+            let mut answered = 0_u8;
 
             // Repeated because the listener may not be bound yet, and a single
             // datagram lost to that race would make this test flaky rather
@@ -1913,14 +2070,25 @@ mod tests {
                 // this end's public key and keep the secret. A stand-in that
                 // only announced would be testing a pairing that cannot carry
                 // audio.
-                if let Some((accept, _secret)) = handshake::answer(
+                //
+                // Every copy of the offer is answered, and the seed offered
+                // for each is a different one, so a responder that did not
+                // remember what it answered would be visible here as two
+                // different accepts rather than hidden behind a constant.
+                answered += 1;
+                if let Some(answer) = responder.answer(
                     &buffer[..length],
-                    &scanned.nonce,
+                    &[scanned.nonce],
                     &scanned.code,
-                    [0x2C; SEED_BYTES],
+                    [0x2C + answered; SEED_BYTES],
                 ) {
-                    let _ = socket.send_to(&accept, from);
-                    return;
+                    let _ = socket.send_to(&answer.accept, from);
+                    // The desktop sends its offer three times. Answering all
+                    // three is the point; waiting for a fourth that is never
+                    // coming is only slow.
+                    if answered == 3 {
+                        return;
+                    }
                 }
             }
         });
