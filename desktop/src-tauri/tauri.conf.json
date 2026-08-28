@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Sonduit",
+  "productName": "Sonduit - Audio Bridge",
   "mainBinaryName": "sonduit",
-  "version": "2.0.0",
+  "version": "1.1.0",
   "identifier": "net.sonduit.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -35,6 +35,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "h1dr0n",
+    "copyright": "Copyright (c) 2025 h1dr0n. MIT licence.",
+    "shortDescription": "Sonduit - Audio Bridge",
+    "longDescription": "Sonduit - Audio Bridge sends what your PC is playing to an Android phone on the same network, over Wi-Fi or over a USB cable, and plays it there with as little delay as the two operating systems allow.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -46,8 +50,7 @@
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
-        "displayLanguageSelector": false,
-        "installerHooks": "installer/hooks.nsh"
+        "displayLanguageSelector": false
       },
       "wix": {
         "language": "en-US"

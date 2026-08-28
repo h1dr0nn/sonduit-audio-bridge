@@ -1,6 +1,6 @@
 [package]
 name = "sonduit-desktop"
-description = "Sonduit desktop shell"
+description = "Sonduit - Audio Bridge, a low latency system audio bridge from Windows to Android"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
