@@ -3499,7 +3499,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-capture-win"
-version = "1.0.4"
+version = "2.0.0"
 dependencies = [
  "sonduit-core",
  "thiserror 2.0.20",
@@ -3508,7 +3508,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-core"
-version = "1.0.4"
+version = "2.0.0"
 dependencies = [
  "rtrb",
  "rubato",
@@ -3517,7 +3517,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-desktop"
-version = "1.0.4"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3532,14 +3532,16 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "tauri-plugin-process",
+ "tauri-plugin-single-instance",
  "tauri-plugin-store",
+ "tauri-plugin-window-state",
  "thiserror 2.0.20",
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "sonduit-ffi"
-version = "1.0.4"
+version = "2.0.0"
 dependencies = [
  "android_logger 0.14.1",
  "log",
@@ -3552,7 +3554,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-playback-android"
-version = "1.0.4"
+version = "2.0.0"
 dependencies = [
  "ndk",
  "sonduit-core",
@@ -3561,7 +3563,7 @@ dependencies = [
 
 [[package]]
 name = "sonduit-transport"
-version = "1.0.4"
+version = "2.0.0"
 dependencies = [
  "hmac",
  "sha2",
@@ -3998,6 +4000,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3214becf9ef5783c0ae99a3bb25adf5353a7a16ebf53e74b909e29205735c6c"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "windows-sys 0.60.2",
+ "zbus",
+]
+
+[[package]]
 name = "tauri-plugin-store"
 version = "2.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4011,6 +4029,21 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "tauri-plugin-window-state"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73736611e14142408d15353e21e3cca2f12a3cfb523ad0ce85999b6d2ef1a704"
+dependencies = [
+ "bitflags 2.13.1",
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
