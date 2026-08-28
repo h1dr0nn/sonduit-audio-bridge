@@ -1,6 +1,6 @@
 name: develop
 
-# A tag, and nothing else, exactly like a release. Pushing `develop-v2.0.0`
+# A tag, and nothing else, exactly like a release. Pushing `develop-v1.1.0`
 # cuts a test build; pushing nothing cuts nothing. Work on main does not
 # trigger this, because most commits are not something anyone wants to install.
 #
@@ -36,30 +36,43 @@ jobs:
           node-version: 22
 
       - id: compute
-        name: Derive the version from the commits since the last release
+        name: Derive the develop version from the version in the tree
         run: |
           set -e
-          # version.mjs excludes the Harmonix tags by reachability from
-          # harmonix-final; a plain git describe would pick up v1.0.4 and
-          # compute the next release as 1.1.0. See ADR-008.
-          range=$(node tools/version.mjs range)
-          echo "range: $range"
-
-          # The counter is derived from commits since the last release, not
-          # from the run number: a run number grows without bound and would
-          # eventually hit the reserved release slot. See ADR-008.
-          version=$(node tools/version.mjs dev "$range")
-
-          # The tag says which release this is a test build of, so it must
+          # The tag says which version this is a test build of, so it must
           # agree with the file the version is derived from. A tag that says
-          # 2.1.0 against a 2.0.0 tree produces artifacts named for a release
-          # that does not exist.
+          # 1.2.0 against a 1.1.0 tree produces artifacts named for a version
+          # this tree is not on.
           declared=$(node tools/version.mjs read)
           tagged="${GITHUB_REF_NAME#develop-v}"
           if [ "$declared" != "$tagged" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $declared"
             exit 1
           fi
+
+          # version.mjs excludes the Harmonix tags by reachability from
+          # harmonix-final; a plain git describe would pick up v1.0.4 and
+          # compute the next release as 1.1.0. See ADR-008.
+          range=$(node tools/version.mjs range)
+          echo "range: $range"
+
+          # The range is read for its length only. The base is $declared, the
+          # version in the tree -- NOT the version the commits imply, which
+          # one breaking-change commit would push to the next major. The
+          # counter is commits since the last release, not the run number: a
+          # run number grows without bound and would eventually hit the
+          # reserved release slot. Both amended/decided in ADR-008.
+          version=$(node tools/version.mjs dev "$range")
+
+          # Belt and braces: the check above is on the tag, this one is on the
+          # artifact name the tag produces.
+          case "$version" in
+            "$declared"-dev.*) ;;
+            *)
+              echo "::error::develop version $version is not a build of $declared"
+              exit 1
+              ;;
+          esac
           code=$(node tools/version.mjs code "$version")
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -114,7 +127,7 @@ jobs:
       # folder that works rather than one file that half does.
       #
       # No installer on develop. The develop version carries a prerelease and a
-      # build suffix -- 2.0.0-dev.38+bd4b3acd -- and MSI version fields are
+      # build suffix -- 1.1.0-dev.54+e59ed654 -- and MSI version fields are
       # four numbers and nothing else, so bundling would fail on the version
       # before it failed on anything real.
       - name: Stage the portable build

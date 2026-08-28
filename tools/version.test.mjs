@@ -18,6 +18,7 @@ import {
   applyBump,
   bumpFromCommits,
   devCounter,
+  devVersion,
   parseVersion,
   splitCommitRecords,
   versionCode,
@@ -135,6 +136,57 @@ test('the dev counter refuses to reach the reserved release slot', () => {
   assert.equal(devCounter(MAX_DEV), MAX_DEV);
   assert.throws(() => devCounter(RELEASE_SLOT), /exceeds/);
   assert.throws(() => devCounter(5000), /exceeds/);
+});
+
+test('a develop version is the version in the tree, not the one the commits imply', () => {
+  // The base is Cargo.toml's version. Anything else lets the commit log
+  // decide what a build is called, which is not a decision it gets to make.
+  assert.equal(devVersion('1.1.0', 0, '9f316eda'), '1.1.0-dev.0+9f316eda');
+  assert.equal(devVersion('1.1.0', 54, '9f316eda'), '1.1.0-dev.54+9f316eda');
+  assert.equal(devVersion('0.2.7', 3, 'abcdef12'), '0.2.7-dev.3+abcdef12');
+});
+
+test('a breaking change in the range does NOT push a develop build to the next major', () => {
+  // The regression this formula exists to prevent. Commit 81202e98 carries a
+  // '!' and a BREAKING CHANGE: footer, and under the first formula
+  // -- applyBump(workspaceVersion, bumpFromCommits(range)) -- it renamed every
+  // develop build of the 1.1.0 tree to 2.0.0-dev.N, so a develop-v1.1.0 tag
+  // produced sonduit_windows_2.0.0-dev.54_x86_64_portable.zip.
+  const subjects = ['feat(core)!: change the packet header', 'fix(desktop): a'];
+  const bodies = ['BREAKING CHANGE: the v1 header is gone', ''];
+
+  // The commits really do imply a major bump, and 'next' still says so.
+  assert.equal(bumpFromCommits(subjects, bodies), 'major');
+  assert.equal(applyBump('1.1.0', bumpFromCommits(subjects, bodies)), '2.0.0');
+
+  // The develop build is still a build of 1.1.0.
+  assert.equal(devVersion('1.1.0', subjects.length, '81202e98'), '1.1.0-dev.2+81202e98');
+  assert.equal(devVersion('1.1.0', 54, '81202e98'), '1.1.0-dev.54+81202e98');
+});
+
+test('a develop version and its code agree with the tree, so the tag check holds', () => {
+  // develop.yml verifies the develop-vX.Y.Z tag against 'version.mjs read'.
+  // The artifact name has to come from the same number or the tag and the
+  // files it produces name different releases.
+  const tree = '1.1.0';
+  const version = devVersion(tree, 54, '81202e98');
+  assert.ok(version.startsWith(tree + '-dev.'), version + ' must be a build of ' + tree);
+  assert.equal(versionCode(parseVersion(version.split('-')[0]), 54), 10_100_054);
+  // Still below the release it previews.
+  assert.ok(versionCode(parseVersion(tree), 54) < versionCode(parseVersion(tree)));
+});
+
+test('devVersion refuses a counter in the reserved release slot', () => {
+  assert.throws(() => devVersion('1.1.0', RELEASE_SLOT, 'deadbeef'), /exceeds/);
+  assert.equal(devVersion('1.1.0', MAX_DEV, 'deadbeef'), '1.1.0-dev.998+deadbeef');
+});
+
+test('devVersion refuses a base that is not a plain release version', () => {
+  // A develop version of a develop version would produce two -dev suffixes
+  // and a string nothing downstream can parse.
+  for (const bad of ['1.1.0-dev.4', 'v1.1.0', '1.1', '']) {
+    assert.throws(() => devVersion(bad, 1, 'deadbeef'), undefined, 'should reject ' + bad);
+  }
 });
 
 test('no dev build can ever produce the release code', () => {

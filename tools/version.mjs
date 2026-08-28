@@ -9,7 +9,7 @@
  *   last-release         print the last Sonduit release tag, or nothing
  *   range                print the commit range since that tag
  *   next [range]         print the version the commits in the range imply
- *   dev [range]          print a develop build version
+ *   dev [range]          print a develop build version of the version in the tree
  *   code [version]       print the Android versionCode
  *   sync [version]       write the version into tauri.conf.json and gradle.properties
  *   check                verify every derived file agrees with Cargo.toml
@@ -132,6 +132,36 @@ export function devCounter(commitCount) {
     );
   }
   return commitCount;
+}
+
+/**
+ * The version string for a develop build.
+ *
+ * The base is **the version in the tree**, not the version the accumulated
+ * Conventional Commits imply. A develop build is a test build of the version
+ * the project is currently on; it is not a preview of a release nobody has
+ * decided to cut.
+ *
+ * This is the second formula. The first one used
+ * `applyBump(workspaceVersion, bumpFromCommits(range))`, and it made every
+ * develop build carry a number the maintainer had not chosen: a single commit
+ * with a `!` or a `BREAKING CHANGE:` footer anywhere in the range forced a
+ * major bump, so a `develop-v1.1.0` tag on a 1.1.0 tree produced artifacts
+ * named `sonduit_windows_2.0.0-dev.54_x86_64_portable.zip`. The version is a
+ * decision, and the commits do not get to make it; `next` still reports what
+ * they imply, for whoever is deciding.
+ *
+ * It also puts the develop version and the tag check back in agreement.
+ * `develop.yml` verifies the `develop-vX.Y.Z` tag against
+ * `version.mjs read`, so deriving the artifact name from the same file is what
+ * makes the tag and the artifacts say the same number.
+ *
+ * `commitCount` is still commits since the last release: see {@link devCounter}
+ * for why that, and not a CI run number, is the counter.
+ */
+export function devVersion(workspaceVersion, commitCount, sha) {
+  const { major, minor, patch } = parseVersion(workspaceVersion);
+  return `${major}.${minor}.${patch}-dev.${devCounter(commitCount)}+${sha}`;
 }
 
 /** Highest bump implied by a set of Conventional Commit subjects and bodies. */
@@ -366,12 +396,13 @@ function main() {
     }
 
     case 'dev': {
-      // The counter is derived, not supplied: see devCounter for why a CI run
+      // The range is read for its LENGTH only. The base version comes from
+      // Cargo.toml, not from what the commits imply: see devVersion. The
+      // counter is derived, not supplied: see devCounter for why a CI run
       // number cannot be used.
       const range = args[0] ?? releaseRange();
-      const { subjects, bodies } = commitsIn(range);
-      const next = applyBump(readWorkspaceVersion(), bumpFromCommits(subjects, bodies));
-      console.log(`${next}-dev.${devCounter(subjects.length)}+${shortSha()}`);
+      const { subjects } = commitsIn(range);
+      console.log(devVersion(readWorkspaceVersion(), subjects.length, shortSha()));
       break;
     }
 
