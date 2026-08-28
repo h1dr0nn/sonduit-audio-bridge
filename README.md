@@ -2,25 +2,113 @@
 
 Low latency system audio bridge from Windows to Android.
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.0.0-brightgreen)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Version](https://img.shields.io/badge/version-1.1.0-brightgreen)
 
-Sonduit sends what your PC is playing to a phone on the same network, over
-Wi-Fi or over a USB cable, and plays it there with as little delay as the two
-operating systems allow.
+Sonduit turns an Android phone into an output device for a Windows PC. What the
+PC is playing goes to a phone on the same network, over Wi-Fi or over a USB
+cable, and comes out there with as little delay as the two operating systems
+allow.
+
+It is a Rust workspace with a Tauri desktop app and a Kotlin and Compose Android
+app on top of a shared core that has no platform dependencies at all.
+
+**It is not finished.** The [Status](#status) section below says exactly how far
+it has got, and is blunt about the difference between what has been measured and
+what has only been reasoned about.
 
 ![The connection screen](docs/screenshots/connection.png)
 
-The editor Harmonix SE was built around is still here, on its own screen.
+## What it does
 
-![The audio processing suite](docs/screenshots/editor.png)
+- **Captures system audio, not the microphone.** WASAPI loopback takes whatever
+  Windows is already playing. There is no virtual cable to install and nothing
+  to route by hand.
+- **Sends it over Wi-Fi or over a USB cable.** The same UDP path either way.
+- **Speaks the Scream wire protocol.** Documented byte for byte in
+  [docs/protocol.md](docs/protocol.md), derived from MS-PL driver source.
+- **Buffers, corrects drift and resamples in a shared core.** The jitter and
+  drift logic is one piece of Rust, compiled into both the desktop app and the
+  Android app rather than written twice.
+- **Pairs before it streams.** A six digit code shown on the phone, or a QR
+  code, so an unpaired device cannot be picked by accident.
+- **Finds devices on the network** rather than making you type an address,
+  though an address can be typed.
+- **Shows live telemetry.** Latency, buffer depth, packet loss and packets sent,
+  on their own screen.
+- **Carries an audio editor.** Convert, master, trim and modify files through a
+  bundled FFmpeg.
+- **Speaks eleven interface languages.**
+
+Read that list against [Status](#status) before trusting any of it: the parts
+that have been exercised on real hardware and the parts that have not are listed
+there separately, and the difference is large.
+
+## Running it
+
+**No release has been published yet.** There is no installer and no APK to
+download. Nothing has been tagged `release-v*`, so the only way to run Sonduit
+today is to build both ends from source.
+[docs/roadmap.md](docs/roadmap.md) lists what stands between here and a first
+release, riskiest first.
+
+From a clone of this repository, the shared core and the transport need nothing
+but Rust:
+
+```bash
+cargo test --workspace
+```
+
+The desktop app additionally needs Node.js and the Windows C++ toolchain:
+
+```bash
+cd desktop
+npm ci
+npm run tauri dev
+```
+
+The phone end is the Gradle project under `android/`. Full toolchain
+requirements for both are in [Building](#building).
+
+A physical device is required to judge anything about latency. An emulator is
+enough to prove the app starts and no more.
 
 ## Status
 
-**Both ends are built. Neither has been heard.**
+**Audio has been heard. It has not been measured since it was fixed.**
 
-What exists and is verified on a machine:
+### Heard once, and not measured since
+
+Sonduit has run on a physical Android phone over USB tethering, and sound came
+out of it. It was also wrong, in two ways that were diagnosed from that
+session: the latency the receiver reported swung between roughly 20 and 60 ms
+on a repeating cycle, and the audio crackled at the bottom of each swing. Both
+are understood, and three fixes for them are in the tree.
+
+**None of those three fixes has been run on the phone.** They are believed to
+work and are not known to work:
+
+- **The sender declares which link it is on.** Flag bit 0 of the packet header,
+  `FLAG_WIRED_LINK` in `crates/sonduit-core/src/packet.rs`. The receiver had
+  been guessing from the source address, on the assumption that USB tethering
+  means 192.168.42/24; the phone handed out 10.114.89.x, so a wired link was
+  sized as Wi-Fi and held 30 ms of buffer where 10 would do.
+- **The tethered adapter is identified properly.** The sender asks the routing
+  table rather than the address range, and the driver-name match was wrong on
+  the two commonest cases: Windows writes "Remote NDIS" with a space and
+  `UsbNcm` as one word, so the tokens being matched found nothing at all.
+- **The jitter buffer drains at the rate packets arrive.** One packet out per
+  packet in, plus a little to make up a genuinely short queue, instead of up to
+  three. Draining faster emptied the buffer; an empty buffer stops, refills to
+  its target and releases the lot in a burst, which is the swing, and the
+  starve at the bottom of each cycle fed concealment into audio that had
+  arrived intact, which is the crackle.
+
+So the swing and the crackle should be gone, and nobody has listened since.
+**No latency figure in this repository is a measurement.** Every number in
+[docs/latency-budget.md](docs/latency-budget.md) is still arithmetic, and the
+20-60 ms above describes the fault that was fixed, not the product.
+
+### What exists and is verified on a machine
 
 - **Windows capture.** WASAPI loopback with a silent render stream to keep the
   engine clocking. Three seconds of wall time produces exactly 144000 frames at
@@ -31,23 +119,30 @@ What exists and is verified on a machine:
   arrives and writes a WAV. Three seconds: 501 datagrams sent, 501 received,
   none malformed, none lost.
 - **The Android app.** Compose UI, a `mediaPlayback` foreground service, AAudio
-  output, and a receive path tested against real UDP sockets. The debug APK
-  assembles with the Rust library inside it.
+  output, and a receive path tested against real UDP sockets. It has run on a
+  device and played audio.
 - **Drift correction that works.** A simulated ten-minute session at 50 ppm,
   which empties an uncorrected buffer completely, settles within 3 ms of target
   in both directions.
 - **The audio editor.** Convert, master, trim and modify, run through a bundled
   LGPL FFmpeg. Every mode was verified against the real binary.
-- 196 Rust tests, full CI, release automation and language linting.
+- 336 Rust tests, all green on `cargo test --workspace`, plus full CI,
+  release automation and language linting.
 
-What has not been done:
+### What has not been done
 
-- **No audio has ever been played through this.** There is no Android device
-  here. Every latency figure below is a budget, not a measurement, and whether
-  AAudio grants exclusive low-latency mode on any real phone is unknown. See
+- **Nothing has been measured on hardware.** No loopback-cable timing, no
+  round-trip figure, and no record of whether AAudio granted exclusive
+  low-latency mode on the phone that played. The app reports the granted
+  sharing mode and the burst size, so the next session on a device answers most
+  of this; until then every figure below is a budget. See
   [docs/environment.md](docs/environment.md).
-- **USB tethering has never been tried.** Carrier entitlement can veto it, and
-  that is the largest risk to [ADR-004](docs/adr/ADR-004-transport.md).
+- **Wi-Fi has not been heard.** The session that produced sound was over USB
+  tethering. The Wi-Fi path shares everything but the interface it binds, and
+  that is an argument, not evidence.
+- **Tethering has been tried on one phone.** Carrier entitlement can veto USB
+  tethering, and OEM builds differ. That remains the largest risk to
+  [ADR-004](docs/adr/ADR-004-transport.md).
 - **The audio is not encrypted.** Pairing stops an unpaired device being
   chosen, so nobody receives the stream by accident. It does nothing about
   anyone who can already see the traffic: the PCM is in the clear on the wire
@@ -67,6 +162,12 @@ What has not been done:
 
 Bluetooth is explicitly out of scope as a transport.
 
+## The audio editor
+
+The editor Harmonix SE was built around is still here, on its own screen.
+
+![The audio processing suite](docs/screenshots/editor.png)
+
 ## Layout
 
 ```text
@@ -78,7 +179,7 @@ crates/
   sonduit-ffi/                UniFFI surface for the Android app
 desktop/                      Tauri v2 app: src/ React frontend, src-tauri/ Rust shell
 android/                      Gradle project: Kotlin and Compose, Rust through UniFFI
-driver/                       vendored driver and install scripts (empty, see ADR-002)
+driver/                       vendored driver and install scripts, if one ever ships (ADR-002)
 docs/                         architecture decisions, research, protocol, budget
 tools/                        linting and version derivation
 ```
