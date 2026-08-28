@@ -7,7 +7,7 @@
 //! than obviously broken, which is the worst kind of bug to find later.
 
 use sonduit_core::format::{Format, PCM_PAYLOAD_BYTES};
-use sonduit_core::packet::{ScreamPacket, SonduitPacket};
+use sonduit_core::packet::{ScreamPacket, SonduitPacket, FLAG_WIRED_LINK};
 
 use crate::{TransportError, Wire};
 
@@ -29,6 +29,8 @@ pub struct Packetizer {
     /// at 48 kHz wraps after about 25 hours.
     timestamp_frames: u32,
     packets: u64,
+    /// Header flag bits every packet carries. See [`Packetizer::on_wired_link`].
+    flags: u8,
 }
 
 impl Packetizer {
@@ -42,7 +44,24 @@ impl Packetizer {
             sequence: 0,
             timestamp_frames: 0,
             packets: 0,
+            flags: 0,
         }
+    }
+
+    /// Declare that these packets travel over a wired link.
+    ///
+    /// Only the sender knows: it chose the interface. The receiver sees an
+    /// address and nothing more, and USB tethering does not have a reserved
+    /// range to recognise. Telling it lets it hold ten milliseconds instead of
+    /// thirty.
+    ///
+    /// Scream datagrams have nowhere to carry this, so on that wire it is
+    /// accepted and dropped rather than refused: the choice of wire format is
+    /// not the caller's reason for saying which link it is on.
+    #[must_use]
+    pub const fn on_wired_link(mut self, wired: bool) -> Self {
+        self.flags = if wired { FLAG_WIRED_LINK } else { 0 };
+        self
     }
 
     /// Bytes of PCM in one packet.
@@ -94,7 +113,7 @@ impl Packetizer {
                     format: self.format,
                     sequence: self.sequence,
                     timestamp_frames: self.timestamp_frames,
-                    flags: 0,
+                    flags: self.flags,
                     pcm: payload,
                 }
                 .encode(&mut datagram)?,
@@ -290,5 +309,45 @@ mod tests {
 
         // The receiver sees a one-packet gap, which is exactly what happened.
         assert_eq!(sequences, vec![1]);
+    }
+
+    #[test]
+    fn a_wired_link_is_declared_in_every_packet() {
+        // The receiver sizes its buffer from this, and it may join at any
+        // point, so it cannot be announced once at the start of the stream.
+        let format = Format::stereo_48k();
+        let mut packetizer = Packetizer::new(format, Wire::Sonduit).on_wired_link(true);
+
+        let mut seen = 0;
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES * 3], |datagram| {
+                let packet = SonduitPacket::decode(datagram).expect("a packet we just wrote");
+                assert!(
+                    packet.wired_link(),
+                    "packet {seen} does not declare the link"
+                );
+                seen += 1;
+                Ok(())
+            })
+            .expect("encoding cannot fail for a whole number of packets");
+
+        assert_eq!(seen, 3);
+    }
+
+    #[test]
+    fn saying_nothing_is_the_default() {
+        // A receiver reads an unset flag as "not stated" and falls back to its
+        // own guess, so the default must not claim a link it does not know.
+        let format = Format::stereo_48k();
+        let mut packetizer = Packetizer::new(format, Wire::Sonduit);
+
+        packetizer
+            .push(&vec![0_u8; PCM_PAYLOAD_BYTES], |datagram| {
+                let packet = SonduitPacket::decode(datagram).expect("a packet we just wrote");
+                assert!(!packet.wired_link());
+                assert_eq!(packet.flags, 0, "no other flag bit may be set either");
+                Ok(())
+            })
+            .expect("encoding cannot fail");
     }
 }
