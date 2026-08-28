@@ -701,22 +701,13 @@ export function EditorPage({ onOpenSettings }) {
           <p className="mt-1 text-sm text-ink-soft">{t('appDesc')}</p>
         </div>
 
-        <div className="flex items-center gap-4">
-          <dl className="flex items-center gap-4 text-sm">
-            <div className="text-right">
-              <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('files')}</dt>
-              <dd className="font-mono text-ink">{sessionSummary.filesCount}</dd>
-            </div>
-            <div className="text-right">
-              <dt className="text-xs uppercase tracking-wide text-ink-faint">{t('mode')}</dt>
-              <dd className="font-mono text-ink">{sessionSummary.format}</dd>
-            </div>
-          </dl>
-
         <nav
           role="tablist"
           aria-label={t('audioSuite')}
-          className="card-sunken flex shrink-0 gap-1 p-1"
+          // A pill outside as well as in. card-sunken rounds to 16px while the
+          // active tab is a pill, so at this height the inner corner was the
+          // rounder of the two and the two curves visibly disagreed.
+          className="card-sunken flex shrink-0 gap-1 rounded-pill p-1"
         >
           {EDITOR_TABS.map((tab) => (
             <button
@@ -743,24 +734,6 @@ export function EditorPage({ onOpenSettings }) {
             </button>
           ))}
         </nav>
-
-          <button
-            type="button"
-            onClick={() => {
-              setEditorTab('run');
-              handleProcess();
-            }}
-            disabled={!canProcess}
-            className={cn(
-              'rounded-pill px-6 py-2.5 text-sm font-semibold text-white',
-              'transition-opacity duration-fast ease-out',
-              'disabled:cursor-not-allowed disabled:opacity-45',
-            )}
-            style={{ background: 'var(--accent-color)' }}
-          >
-            {converting ? t('processing') : t('processFiles')}
-          </button>
-        </div>
       </header>
 
 
@@ -894,6 +867,21 @@ export function EditorPage({ onOpenSettings }) {
               onClearAll={handleClearAll}
               onRemoveFile={handleRemoveFile}
               onReload={handleReload}
+              actions={
+                <button
+                  type="button"
+                  onClick={handleProcess}
+                  disabled={!canProcess}
+                  className={cn(
+                    'whitespace-nowrap rounded-pill px-6 py-2.5 text-sm font-semibold text-white',
+                    'transition-opacity duration-fast ease-out',
+                    'disabled:cursor-not-allowed disabled:opacity-45',
+                  )}
+                  style={{ background: 'var(--accent-color)' }}
+                >
+                  {converting ? t('processing') : t('processFiles')}
+                </button>
+              }
             />
           </section>
         </div>

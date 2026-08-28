@@ -27,7 +27,13 @@ const getStatusText = (status, t) => {
   return map[status] || status;
 };
 
-export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload }) {
+/**
+ * @param actions Rendered at the right of the panel header, before the queue's
+ *   own controls. The Run tab puts its run control here: it is the widest
+ *   header on that screen, and the narrow left column wrapped both the button
+ *   and the heading beside it onto two lines each.
+ */
+export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload, actions }) {
   const { t } = useTranslation();
   const [isReloading, setIsReloading] = useState(false);
   const [previewFileId, setPreviewFileId] = useState(null);
@@ -46,8 +52,10 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload }
           <p className="text-xs uppercase tracking-[0.18em] text-ink-faint">{t('session')}</p>
           <h3 className="text-lg font-semibold text-ink">{t('filesInQueue')}</h3>
         </div>
-        {files.length > 0 && (
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
+          {actions}
+          {files.length > 0 && (
+            <>
             <button
               type="button"
               onClick={handleReload}
@@ -66,8 +74,9 @@ export function FileListPanel({ files = [], onClearAll, onRemoveFile, onReload }
               <FiTrash2 className="h-3.5 w-3.5" />
               {t('clearAll')}
             </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* The queue is the only part of this screen that grows without bound, so
