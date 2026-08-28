@@ -4,8 +4,8 @@ import { cn } from '../../utils/cn';
 export function Card({ title, subtitle, actions, children, className, tone = 'default' }) {
   const toneClass = {
     default: 'card',
-    invert: 'rounded-card border border-line-soft bg-invert text-ink-invert shadow-card',
-    accent: 'rounded-card border border-transparent text-white shadow-card',
+    invert: 'rounded-card border border-line-soft bg-invert text-ink-invert',
+    accent: 'rounded-card border border-transparent text-white',
   }[tone];
 
   return (

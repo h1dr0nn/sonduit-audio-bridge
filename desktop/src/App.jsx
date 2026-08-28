@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CommandPalette } from './components/AppShell/CommandPalette';
+import { ToastViewport } from './components/ui/Toast';
 import { Rail } from './components/AppShell/Rail';
 import { TitleBar } from './components/AppShell/TitleBar';
 import { SettingsProvider } from './context/SettingsContext';
@@ -84,9 +85,10 @@ function Shell() {
 
       <div className="flex min-h-0 flex-1 gap-3 px-3 pb-3">
         <Rail current={page} onSelect={setPage} expanded={sidebarExpanded} t={t} />
-        {/* Scrolls for the pages that are a plain stack of cards. The editor
-          * claims the height with `h-full` and scrolls inside its own columns,
-          * so it never reaches this scrollbar. */}
+        {/* Every page now claims the height with `h-full` and scrolls inside
+          * its own containers, so this scrollbar never appears. The class
+          * stays for its gutter: it is what reserves the eight pixels the
+          * pages' own scroll areas hang their bars in. */}
         <main className="scroll-area min-w-0 flex-1">
           {page === 'connection' && <ConnectionPage />}
           {page === 'telemetry' && <TelemetryPage />}
@@ -106,6 +108,11 @@ function Shell() {
         canRescan={bridge.available}
         t={t}
       />
+
+      {/* Outside the shell's own stacking order, and portaled to <body> from
+        * there, so a message can appear over a page or a dialog without either
+        * having to make room for it. */}
+      <ToastViewport />
     </div>
   );
 }

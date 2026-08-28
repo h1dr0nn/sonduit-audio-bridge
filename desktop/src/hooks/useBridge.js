@@ -152,6 +152,18 @@ export function useBridge() {
     return device;
   }, []);
 
+  /**
+   * Stop waiting for a scan, and retire the code that was on screen.
+   *
+   * The backend holds the discovery port for the whole pairing window. Without
+   * this, closing the dialog and reopening it inside that window asked for a
+   * port the previous wait still owned, and failed.
+   */
+  const cancelPairing = useCallback(async () => {
+    if (!hasBackend()) return;
+    await invoke('bridge_cancel_pairing');
+  }, []);
+
   const start = useCallback(async (options = {}) => {
     const session = await invoke('bridge_start', {
       options: {
@@ -183,6 +195,7 @@ export function useBridge() {
     scan,
     invite,
     awaitPairing,
+    cancelPairing,
     start,
     stop,
   };

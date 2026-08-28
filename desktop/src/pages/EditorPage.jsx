@@ -10,7 +10,7 @@ import { FileListPanel } from '../components/editor/FileListPanel';
 import { FormatSelector } from '../components/editor/FormatSelector';
 import { OutputFolderChooser } from '../components/editor/OutputFolderChooser';
 import { ProgressIndicator } from '../components/editor/ProgressIndicator';
-import { ToastMessage } from '../components/editor/ToastMessage';
+import { showToast } from '../components/ui/Toast';
 import { ModeSelector } from '../components/editor/ModeSelector';
 import { MasterControls, PRESETS } from '../components/editor/MasterControls';
 import { TrimControls } from '../components/editor/TrimControls';
@@ -99,7 +99,6 @@ export function EditorPage({ onOpenSettings }) {
 
   // Error handling
   const [errorFiles, setErrorFiles] = useState([]);
-  const [toast, setToast] = useState(null);
 
   // Session summary
   const sessionSummary = {
@@ -123,6 +122,22 @@ export function EditorPage({ onOpenSettings }) {
   }, [files]);
 
   // Handle files added from drag & drop or file picker
+  /**
+   * Report something to the user.
+   *
+   * These used to render as a card at the bottom of the middle column, so
+   * every completed step shoved the content above it out of place. They go to
+   * the app's toast stack now, which floats over the page instead.
+   *
+   * One id, so a run's messages replace each other rather than stacking: the
+   * interesting one is always the latest.
+   */
+  const notify = useCallback(
+    ({ type = 'info', message }) =>
+      showToast({ id: 'editor', tone: type, titleKey: type, message }),
+    [],
+  );
+
   const handleFilesAdded = useCallback(async (newFiles) => {
     try {
       // Create minimal file objects immediately to show in UI
@@ -154,7 +169,7 @@ export function EditorPage({ onOpenSettings }) {
       if (newUniqueFiles.length === 0) {
         const duplicateCount = immediateFiles.length;
         if (duplicateCount > 0) {
-          setToast({ 
+          notify({ 
             type: 'info', 
             message: `${duplicateCount} ${t('duplicateSkipped')}` 
           });
@@ -164,7 +179,7 @@ export function EditorPage({ onOpenSettings }) {
 
       const duplicateCount = immediateFiles.length - newUniqueFiles.length;
       if (duplicateCount > 0) {
-        setToast({ 
+        notify({ 
           type: 'info', 
           message: `${duplicateCount} ${t('duplicateSkipped')}` 
         });
@@ -172,7 +187,7 @@ export function EditorPage({ onOpenSettings }) {
 
       // Add files to UI immediately
       setFiles(prev => [...prev, ...newUniqueFiles]);
-      setToast({ type: 'info', message: t('addingFiles', { count: newUniqueFiles.length }) });
+      notify({ type: 'info', message: t('addingFiles', { count: newUniqueFiles.length }) });
 
       // Auto-fill output folder if not already set
       if (!outputFolder && newUniqueFiles.length > 0) {
@@ -313,7 +328,7 @@ export function EditorPage({ onOpenSettings }) {
 
     } catch (error) {
       console.error('Error adding files:', error);
-      setToast({ type: 'error', message: t('failedToAdd') });
+      notify({ type: 'error', message: t('failedToAdd') });
     }
   }, [outputFolder, settings, setOutputFolder]);
 
@@ -451,12 +466,12 @@ export function EditorPage({ onOpenSettings }) {
   const handleSmartAnalysis = async () => {
     console.log('[HomePage] Smart Analysis started');
     if (files.length === 0) {
-      setToast({ type: 'info', message: t('pleaseAddAnalyze') });
+      notify({ type: 'info', message: t('pleaseAddAnalyze') });
       return;
     }
 
     try {
-      setToast({ type: 'info', message: t('analyzing') });
+      notify({ type: 'info', message: t('analyzing') });
       
       // Analyze the first file
       const fileToAnalyze = files[0];
@@ -489,7 +504,7 @@ export function EditorPage({ onOpenSettings }) {
           });
         }
 
-        setToast({ 
+        notify({ 
           type: 'success', 
           message: t('detectedContent', { content: suggestion }) 
         });
@@ -499,19 +514,19 @@ export function EditorPage({ onOpenSettings }) {
 
     } catch (error) {
       console.error('Analysis error:', error);
-      setToast({ type: 'error', message: t('smartAnalysisFailed') });
+      notify({ type: 'error', message: t('smartAnalysisFailed') });
     }
   };
 
   // Handle process button
   const handleProcess = async () => {
     if (files.length === 0) {
-      setToast({ type: 'error', message: t('pleaseAddProcess') });
+      notify({ type: 'error', message: t('pleaseAddProcess') });
       return;
     }
 
     if (!outputFolder) {
-      setToast({ type: 'error', message: t('pleaseSelectOutput') });
+      notify({ type: 'error', message: t('pleaseSelectOutput') });
       return;
     }
 
@@ -566,7 +581,7 @@ export function EditorPage({ onOpenSettings }) {
         }
       }
       
-      setToast({ type: 'error', message: userMessage });
+      notify({ type: 'error', message: userMessage });
     }
   };
 
@@ -613,7 +628,7 @@ export function EditorPage({ onOpenSettings }) {
               output: (outputs && outputs[i]) || null
             })));
 
-            setToast({ type: 'success', message: message || t('processingComplete') });
+            notify({ type: 'success', message: message || t('processingComplete') });
             if (settings.notifications) {
               notifySuccess(t('processingCompleteTitle'), t('filesProcessedSuccess', { count: files.length }));
             }
@@ -648,7 +663,7 @@ export function EditorPage({ onOpenSettings }) {
               userMessage = message;
             }
             
-            setToast({ type: 'error', message: userMessage });
+            notify({ type: 'error', message: userMessage });
           }
         }
       });
@@ -676,9 +691,10 @@ export function EditorPage({ onOpenSettings }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      {/* The run control lives on the header row rather than in a bar of its
-        * own: the right half of this row was empty, and a separate strip cost
-        * vertical space on every tab. */}
+      {/* Everything that steers the page is on this one row: the tabs, the
+        * session readout and the run control. They each had a strip of their
+        * own before, which cost three rows of height on every tab and left the
+        * right half of each one empty. */}
       <header className="flex shrink-0 flex-wrap items-end justify-between gap-4 px-1">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-ink">{t('audioSuite')}</h1>
@@ -696,6 +712,37 @@ export function EditorPage({ onOpenSettings }) {
               <dd className="font-mono text-ink">{sessionSummary.format}</dd>
             </div>
           </dl>
+
+        <nav
+          role="tablist"
+          aria-label={t('audioSuite')}
+          className="card-sunken flex shrink-0 gap-1 p-1"
+        >
+          {EDITOR_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={editorTab === tab.id}
+              onClick={() => setEditorTab(tab.id)}
+              className={cn(
+                'flex items-center gap-2 rounded-pill px-4 py-2 text-sm font-medium',
+                'transition-colors duration-fast ease-out',
+                editorTab === tab.id
+                  ? 'bg-card text-ink shadow-card'
+                  : 'text-ink-soft hover:text-ink',
+              )}
+            >
+              <tab.Icon className="h-4 w-4" strokeWidth={1.9} />
+              {t(tab.labelKey)}
+              {tab.id === 'files' && files.length > 0 && (
+                <span className="rounded-pill bg-accent-soft px-2 py-0.5 font-mono text-xs text-accent">
+                  {files.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
 
           <button
             type="button"
@@ -716,39 +763,6 @@ export function EditorPage({ onOpenSettings }) {
         </div>
       </header>
 
-      {/* Sub-navigation. The page used to stack every stage at once, which left
-        * the drop zone, the mode controls, the queue and the progress readout
-        * competing for the same screen. */}
-      <nav
-        role="tablist"
-        aria-label={t('audioSuite')}
-        className="card-sunken flex shrink-0 gap-1 self-start p-1"
-      >
-        {EDITOR_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={editorTab === tab.id}
-            onClick={() => setEditorTab(tab.id)}
-            className={cn(
-              'flex items-center gap-2 rounded-pill px-4 py-2 text-sm font-medium',
-              'transition-colors duration-fast ease-out',
-              editorTab === tab.id
-                ? 'bg-card text-ink shadow-card'
-                : 'text-ink-soft hover:text-ink',
-            )}
-          >
-            <tab.Icon className="h-4 w-4" strokeWidth={1.9} />
-            {t(tab.labelKey)}
-            {tab.id === 'files' && files.length > 0 && (
-              <span className="rounded-pill bg-accent-soft px-2 py-0.5 font-mono text-xs text-accent">
-                {files.length}
-              </span>
-            )}
-          </button>
-        ))}
-      </nav>
 
       {/* ---- Files: get audio in, decide where it goes ---- */}
       {editorTab === 'files' && (
@@ -870,21 +884,6 @@ export function EditorPage({ onOpenSettings }) {
               </dl>
             </section>
 
-            {toast && (
-              <div className="shrink-0">
-                <ToastMessage
-                  title={
-                    toast.type === 'success'
-                      ? t('success')
-                      : toast.type === 'error'
-                        ? t('error')
-                        : t('info')
-                  }
-                  message={toast.message}
-                  tone={toast.type}
-                />
-              </div>
-            )}
           </div>
 
           {/* The queue is on the right here as well as on Files, so per-file

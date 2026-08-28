@@ -33,7 +33,10 @@ export function StatTile({ label, value, unit, tone = 'default', className }) {
   const hasValue = value !== null && value !== undefined;
 
   return (
-    <div className={cn('card-sunken min-w-0 px-4 py-3', className)}>
+    // Centred rather than top-aligned, because a tile that stretches to fill a
+    // row would otherwise leave its reading pinned to the top with the rest of
+    // the box empty below it.
+    <div className={cn('card-sunken flex min-w-0 flex-col justify-center px-4 py-3', className)}>
       <p className="truncate text-xs font-medium uppercase tracking-wide text-ink-faint">
         {label}
       </p>
