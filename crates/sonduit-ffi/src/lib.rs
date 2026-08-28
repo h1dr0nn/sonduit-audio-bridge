@@ -26,6 +26,7 @@ use std::time::Duration;
 use sonduit_core::drift::{DriftConfig, DriftEstimator};
 use sonduit_core::format::Format;
 use sonduit_core::jitter::{JitterBuffer, JitterConfig, Transport};
+use sonduit_core::pacing::{drain_allowance, PacingConfig};
 use sonduit_core::packet::{ScreamPacket, SonduitPacket};
 use sonduit_core::ratio::{RatioConfig, RatioController};
 use sonduit_core::resample::DriftResampler;
@@ -110,6 +111,16 @@ const DRAIN_PER_PACKET: usize = 3;
 /// that knows how to reorder, conceal and retarget. Audio held in the queue is
 /// latency and nothing else.
 const QUEUE_FLOOR_PACKETS: usize = 2;
+
+/// How the hand-off from the jitter buffer into the audio queue is paced.
+///
+/// The rule itself lives in `sonduit-core` so it can be run against a
+/// synthetic timeline: it is a feedback loop, and the one that used to be
+/// written out here had no path back down. See `sonduit_core::pacing`.
+const PACING: PacingConfig = PacingConfig {
+    floor_packets: QUEUE_FLOOR_PACKETS,
+    max_per_packet: DRAIN_PER_PACKET,
+};
 
 /// Bridge lifecycle state, mirrored into the Android UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Enum)]
@@ -943,8 +954,9 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             // reads. This is the only place the jitter buffer is touched now;
             // the callback never sees it, which is the point.
             //
-            // One packet out per packet in, and more only to make up a queue
-            // that is genuinely short. Draining faster than that empties the
+            // One packet out per packet in, more only to make up a queue that
+            // is genuinely short, and none at all while it is more than a
+            // packet deep. Draining faster than the packet rate empties the
             // jitter buffer, and an empty buffer stops playing, refills to its
             // target and releases the lot in a burst -- so the latency swung
             // between roughly nothing and the full target on a cycle, and the
@@ -952,19 +964,23 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             // that had arrived perfectly intact. That is the crackle, and it
             // is why this is a rate and not a maximum.
             //
+            // Handing over nothing when the queue is already deep is the half
+            // that was missing: one in and one out stops the queue growing but
+            // holds it at whatever depth a startup burst left it, which on the
+            // measured device was 110 ms for the whole session. It cannot
+            // reintroduce the crackle, because it only ever hands over less,
+            // and only above a depth the callback is already comfortable at.
+            //
             // The ceiling stays because the loop cannot be written as "drain
             // until empty": a jitter buffer with a gap conceals it and hands
             // back audio, so it is always willing to produce another packet.
             // The first version of this spun forever on the first packet and
             // never went back to the socket.
-            let packet_ms =
-                1000.0 * source.frames_per_packet() as f64 / f64::from(format.sample_rate);
+            let packet_ms = packet_duration_ms(format);
 
             if let Ok(mut queue) = shared.queue.lock() {
                 if let Some(queue) = queue.as_mut() {
-                    let held = (queue.queued_ms() / packet_ms).floor() as usize;
-                    let allowance =
-                        (1 + QUEUE_FLOOR_PACKETS.saturating_sub(held)).min(DRAIN_PER_PACKET);
+                    let allowance = drain_allowance(queue.queued_ms(), packet_ms, PACING);
 
                     for _ in 0..allowance {
                         if !drain_packet(&mut source, &mut staging) {
@@ -1002,10 +1018,45 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             since_correction = 0;
             let drift_ppm = estimator.as_ref().and_then(DriftEstimator::drift_ppm);
 
+            // A buffer that keeps growing means nothing is draining it, which
+            // is what the audio callback is for. Reported here because it is
+            // the one symptom that distinguishes a device that never started
+            // from a link that is merely fast.
+            //
+            // Read before the controller runs and released again immediately:
+            // the drain above holds the source lock while taking this one, so
+            // taking them in the other order here would be the two halves of a
+            // deadlock.
+            //
+            // `None` on a build with no audio device, where there is no queue
+            // and therefore no stage to account for. Zero would be a claim that
+            // one exists and is empty.
+            let queued_ms = shared.queue.lock().ok().and_then(|queue| {
+                queue
+                    .as_ref()
+                    .map(sonduit_core::handoff::Producer::queued_ms)
+            });
+
+            // The floor the hand-off is paced to: the queue's share of the
+            // audio the receiver is meant to be holding. It goes on the
+            // target for the same reason the depth above goes on the depth,
+            // and only when there is a queue to hold it.
+            let queue_floor_ms = queued_ms.map_or(0.0, |_| {
+                QUEUE_FLOOR_PACKETS as f64 * packet_duration_ms(format)
+            });
+
+            // The sum, not the jitter buffer alone. Audio waiting in the queue
+            // is latency the listener hears exactly as much as audio waiting
+            // in the buffer, and the controller is the only thing that can
+            // shed either without a click. Given the depth of one half it held
+            // the other half wherever it happened to be: a session was
+            // measured carrying 110 ms in the queue for four minutes with the
+            // correction doing nothing about it, because from here it did not
+            // exist.
             if let Ok(source) = shared.source.lock() {
                 controller.update(
-                    source.buffer().depth_ms(),
-                    source.buffer().target_ms(),
+                    source.buffer().depth_ms() + queued_ms.unwrap_or(0.0),
+                    source.buffer().target_ms() + queue_floor_ms,
                     drift_ppm,
                 );
             }
@@ -1016,10 +1067,6 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                 *slot = (drift_ppm, controller.correction_ppm());
             }
 
-            // A buffer that keeps growing means nothing is draining it, which
-            // is what the audio callback is for. Reported here because it is
-            // the one symptom that distinguishes a device that never started
-            // from a link that is merely fast.
             let target_ms = shared
                 .source
                 .lock()
@@ -1029,16 +1076,24 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
             // and on the first real device it sat pinned at its 500 ppm limit
             // against 1536 ms of queued audio, which would have taken fifty
             // minutes to clear.
+            //
+            // Measured against the jitter buffer's target rather than the
+            // queue's own floor, which is deliberately the more conservative
+            // of the two: the pacing above keeps the queue near its floor
+            // without dropping anything, so by the time the queue is four
+            // times the *jitter* target deep the callback has stopped running
+            // altogether, which is what this path is for.
             let mut dropped = 0;
-            let mut queued_ms = 0.0;
             if let Ok(mut queue) = shared.queue.lock() {
                 if let Some(queue) = queue.as_mut() {
-                    queued_ms = queue.queued_ms();
                     dropped = queue.resync_if_hopeless(target_ms);
                 }
             }
             if dropped > 0 {
-                note!("resynchronised: dropped {dropped} frames from {queued_ms:.0} ms queued");
+                note!(
+                    "resynchronised: dropped {dropped} frames from {:.0} ms queued",
+                    queued_ms.unwrap_or(0.0)
+                );
             }
 
             // A stream that has gone cannot be restarted, and AAudio stops
@@ -1049,8 +1104,17 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                 open_playback(shared, format);
             }
 
+            // Both depths and both targets. The log used to print the queue's
+            // depth beside the jitter buffer's target, which reads as a queue
+            // running three times deep when the two numbers are about
+            // different buffers entirely.
             note!(
-                "queued {queued_ms:.0} ms, target {target_ms:.0} ms, drift {:?} ppm, correction {:.0} ppm, frames played {}",
+                "depth {:.0} ms + queued {:.0} ms, target {target_ms:.0} ms + {queue_floor_ms:.0} ms, drift {:?} ppm, correction {:.0} ppm, frames played {}",
+                shared
+                    .source
+                    .lock()
+                    .map_or(0.0, |source| source.buffer().depth_ms()),
+                queued_ms.unwrap_or(0.0),
                 drift_ppm.map(|ppm| ppm.round()),
                 controller.correction_ppm(),
                 playback_frames(shared)
@@ -1201,6 +1265,26 @@ fn announce_loop(
     }
 }
 
+/// Milliseconds as the tenths the feedback report is encoded in.
+///
+/// Clamped rather than wrapped, for the same reason the hold time is: a figure
+/// past the top of the range means something is wrong, and folding it back to
+/// a small number would present that as healthy.
+fn tenths_of_a_millisecond(ms: f64) -> u16 {
+    (ms * 10.0).clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+/// One packet's duration in milliseconds at `format`.
+///
+/// Zero for a format whose payload does not divide into whole frames, which is
+/// a format nothing can play. Every caller treats zero as "not known yet"
+/// rather than dividing by it.
+fn packet_duration_ms(format: Format) -> f64 {
+    format
+        .packet_duration_nanos()
+        .map_or(0.0, |nanos| nanos as f64 / 1_000_000.0)
+}
+
 /// Send one report to the sender.
 ///
 /// Failures are ignored on purpose. A report that does not arrive costs the
@@ -1218,8 +1302,21 @@ fn send_report(
         return;
     };
 
+    // The hand-off queue as well as the jitter buffer. Audio crosses both, and
+    // a report that carried only the first described a fraction of the delay
+    // it claimed to describe: a measured session held 110 ms here, behind a
+    // 42 ms buffer, and the sender was told about the 42.
+    //
     // try_lock, not lock: this runs on the receive thread and must not wait
-    // behind the audio callback for a status message.
+    // behind the audio callback for a status message. Taken and released
+    // before the source lock, never nested inside it, because the drain path
+    // holds the source and reaches for this one.
+    let queued_ms = shared.queue.try_lock().ok().and_then(|queue| {
+        queue
+            .as_ref()
+            .map(sonduit_core::handoff::Producer::queued_ms)
+    });
+
     let Ok(source) = shared.source.try_lock() else {
         return;
     };
@@ -1235,7 +1332,8 @@ fn send_report(
         hold_ms: accepted_at.elapsed().as_millis().min(u128::from(u16::MAX)) as u16,
         accepted: stats.accepted,
         lost: stats.lost,
-        depth_tenths_ms: (depth_ms * 10.0).clamp(0.0, f64::from(u16::MAX)) as u16,
+        depth_tenths_ms: tenths_of_a_millisecond(depth_ms),
+        queue_tenths_ms: queued_ms.map(tenths_of_a_millisecond),
         playing: read_state(shared) == BridgeState::Streaming,
     };
 

@@ -36,6 +36,7 @@ fn responder(hold: Duration) -> (SocketAddr, std::thread::JoinHandle<()>) {
             accepted: 97,
             lost: 3,
             depth_tenths_ms: 284,
+            queue_tenths_ms: Some(120),
             playing: true,
         };
         let mut out = [0_u8; FEEDBACK_BYTES];

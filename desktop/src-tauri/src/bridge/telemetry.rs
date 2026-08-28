@@ -357,7 +357,12 @@ impl Accumulator {
                     end_to_end_ms(
                         self.send_side_latency_ms(),
                         one_way_ms(round_trip, report.hold_ms),
-                        report.depth_ms(),
+                        // Everything the receiver holds, not the jitter buffer
+                        // alone. The hand-off queue behind it is audio the
+                        // listener waits through exactly the same way, and a
+                        // measured session carried more of it than of anything
+                        // else on this line.
+                        report.held_ms(),
                     )
                 })
             }),
@@ -424,6 +429,7 @@ mod tests {
                 accepted: 100,
                 lost: 4,
                 depth_tenths_ms: 284,
+                queue_tenths_ms: Some(120),
                 playing: true,
             },
             Some(9.0),
@@ -436,8 +442,11 @@ mod tests {
             .packet_loss_pct
             .is_some_and(|loss| (loss - 3.846).abs() < 0.01));
         assert_eq!(view.round_trip_ms, Some(9.0));
-        // Send side 16 ms, one way (9 - 2) / 2 = 3.5, receiver holding 28.4.
-        assert!(view.latency_ms.is_some_and(|ms| (ms - 47.9).abs() < 0.01));
+        // Send side 16 ms, one way (9 - 2) / 2 = 3.5, receiver holding 28.4 in
+        // its jitter buffer and 12.0 more in the hand-off queue behind it.
+        // Both are latency; counting only the first is what made a measured
+        // session read 110 ms lower than it was.
+        assert!(view.latency_ms.is_some_and(|ms| (ms - 59.9).abs() < 0.01));
     }
 
     #[test]

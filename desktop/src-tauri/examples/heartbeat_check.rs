@@ -47,6 +47,7 @@ fn main() {
                         accepted,
                         lost: 0,
                         depth_tenths_ms: 284,
+                        queue_tenths_ms: Some(120),
                         playing: true,
                     };
                     if report.encode(&mut out).is_ok() {

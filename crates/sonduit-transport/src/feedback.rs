@@ -31,6 +31,22 @@ use crate::TransportError;
 pub const FEEDBACK_MAGIC: [u8; 4] = *b"SDFB";
 
 /// Feedback format version.
+///
+/// # Why the queue depth did not bump this
+///
+/// [`Feedback::queue_tenths_ms`] was added into the two reserved bytes the
+/// first version already sent as zero, and the encoding is deliberately
+/// off-by-one: a queue of `n` tenths is written as `n + 1`, so the zero an
+/// older receiver sends decodes as `None` rather than as an empty queue. The
+/// datagram is the same length, carries the same magic and the same version,
+/// and every field before byte 30 is untouched.
+///
+/// So a sender built against version 1 reads a report from a receiver that
+/// fills the field exactly as it always did and ignores the two bytes, and a
+/// sender built against this reads a report from a version 1 receiver as a
+/// depth with no queue figure attached. Bumping the version instead would have
+/// made those two combinations refuse each other outright, over a field
+/// neither of them needs in order to play audio.
 pub const FEEDBACK_VERSION: u8 = 1;
 
 /// Encoded size of a report.
@@ -78,12 +94,31 @@ pub struct Feedback {
     /// datagrams says only what its socket refused to send.
     pub lost: u64,
 
-    /// Current buffer depth in tenths of a millisecond.
+    /// Jitter buffer depth in tenths of a millisecond.
     ///
     /// Tenths rather than a float: the whole point of this message is that it
     /// is small and unambiguous on the wire, and a tenth of a millisecond is
     /// finer than anything the UI shows.
+    ///
+    /// This is one of the two buffers audio crosses on the receiver, not all
+    /// of them. Use [`Feedback::held_ms`] for latency arithmetic.
     pub depth_tenths_ms: u16,
+
+    /// Depth of the receiver's audio hand-off queue, in tenths of a
+    /// millisecond, or `None` from a receiver that does not report it.
+    ///
+    /// The jitter buffer is not the last thing audio waits in. Downstream of
+    /// it is a ring between the receive thread and the audio callback, and a
+    /// session was measured holding a steady 110 ms there against a 36 ms
+    /// jitter buffer -- more than the entire USB latency budget, in a stage
+    /// no report carried. A sender that added `depth_ms` to its own figures
+    /// and called the result end to end was understating it by more than
+    /// everything else it had counted.
+    ///
+    /// `None` means the receiver did not say, which is not the same as a queue
+    /// that is empty: an empty queue is a receiver that is underrunning right
+    /// now. See the encoding note on [`FEEDBACK_VERSION`].
+    pub queue_tenths_ms: Option<u16>,
 
     /// True once the receiver has audio playing, as opposed to merely
     /// listening.
@@ -108,9 +143,17 @@ impl Feedback {
         out[12..20].copy_from_slice(&self.accepted.to_le_bytes());
         out[20..28].copy_from_slice(&self.lost.to_le_bytes());
         out[28..30].copy_from_slice(&self.depth_tenths_ms.to_le_bytes());
-        // Reserved, zeroed. Two spare bytes now costs nothing and saves a
+        // Off by one, so that the zero a version 1 receiver sends here is read
+        // as "did not say" rather than as an empty queue. Saturating rather
+        // than wrapping: a queue over six seconds deep is a broken session, and
+        // reporting it as a small number would hide that.
+        let queue = self
+            .queue_tenths_ms
+            .map_or(0, |tenths| tenths.saturating_add(1));
+        out[30..32].copy_from_slice(&queue.to_le_bytes());
+        // Reserved, zeroed. Two spare bytes still costs nothing and saves a
         // version bump the first time one more counter is wanted.
-        out[30..34].fill(0);
+        out[32..34].fill(0);
 
         Ok(FEEDBACK_BYTES)
     }
@@ -132,13 +175,39 @@ impl Feedback {
             accepted: u64::from_le_bytes(datagram[12..20].try_into().ok()?),
             lost: u64::from_le_bytes(datagram[20..28].try_into().ok()?),
             depth_tenths_ms: u16::from_le_bytes(datagram[28..30].try_into().ok()?),
+            queue_tenths_ms: u16::from_le_bytes(datagram[30..32].try_into().ok()?).checked_sub(1),
         })
     }
 
-    /// Buffer depth as milliseconds.
+    /// Jitter buffer depth as milliseconds.
+    ///
+    /// One stage of the receiver, not the whole of it. [`Feedback::held_ms`]
+    /// is the figure a latency estimate wants.
     #[must_use]
     pub fn depth_ms(&self) -> f64 {
         f64::from(self.depth_tenths_ms) / 10.0
+    }
+
+    /// Hand-off queue depth as milliseconds, if the receiver reported one.
+    #[must_use]
+    pub fn queue_ms(&self) -> Option<f64> {
+        self.queue_tenths_ms.map(|tenths| f64::from(tenths) / 10.0)
+    }
+
+    /// Everything the receiver is holding, in milliseconds.
+    ///
+    /// The jitter buffer plus the hand-off queue. This is what belongs in a
+    /// capture-to-ear estimate: audio waits in both, and until the queue was
+    /// reported the sender's own figure omitted a stage worth more than the
+    /// whole USB budget.
+    ///
+    /// A receiver that does not report its queue contributes only its buffer
+    /// depth, so the result understates by that receiver's queue. That is a
+    /// limitation of the peer rather than of the arithmetic, and it is exactly
+    /// what every sender showed before the field existed.
+    #[must_use]
+    pub fn held_ms(&self) -> f64 {
+        self.depth_ms() + self.queue_ms().unwrap_or(0.0)
     }
 
     /// Share of expected packets that never arrived, in percent.
@@ -178,6 +247,11 @@ pub fn one_way_ms(round_trip_ms: f64, hold_ms: u16) -> f64 {
 /// The sender's own share, plus the network, plus what the receiver is
 /// holding. It does not include the receiver's output device, which no API
 /// reports honestly; `docs/latency-budget.md` says so.
+///
+/// `receiver_depth_ms` is **everything** the receiver is holding, which is
+/// [`Feedback::held_ms`] and not [`Feedback::depth_ms`]. Passing the jitter
+/// buffer depth alone is the accounting defect this signature invites, and it
+/// cost a measured session more than a hundred milliseconds it never showed.
 #[must_use]
 pub fn end_to_end_ms(send_side_ms: f64, one_way_ms: f64, receiver_depth_ms: f64) -> f64 {
     send_side_ms + one_way_ms + receiver_depth_ms
@@ -194,6 +268,7 @@ mod tests {
             accepted: 12_345,
             lost: 12,
             depth_tenths_ms: 284,
+            queue_tenths_ms: Some(120),
             playing: true,
         }
     }
@@ -298,6 +373,107 @@ mod tests {
     #[test]
     fn end_to_end_adds_up_the_three_parts_that_are_known() {
         assert_eq!(end_to_end_ms(16.0, 4.0, 28.4), 48.4);
+    }
+
+    #[test]
+    fn a_version_1_report_decodes_with_no_queue_rather_than_an_empty_one() {
+        // Version 1 sent two zeroed reserved bytes here. Reading that as a
+        // queue holding nothing would say the receiver is underrunning, which
+        // is a different and much worse claim than saying nothing at all.
+        let mut buffer = [0_u8; FEEDBACK_BYTES];
+        report().encode(&mut buffer).unwrap();
+        buffer[30..32].fill(0);
+
+        let decoded = Feedback::decode(&buffer).unwrap();
+        assert_eq!(decoded.queue_tenths_ms, None);
+        assert_eq!(decoded.queue_ms(), None);
+        // And the report still decodes, at the same version, with every other
+        // field intact. A bumped version would have refused it outright.
+        assert_eq!(decoded.depth_ms(), 28.4);
+        assert_eq!(decoded.accepted, 12_345);
+    }
+
+    #[test]
+    fn an_empty_queue_is_reported_as_empty_and_not_as_silence() {
+        let mut buffer = [0_u8; FEEDBACK_BYTES];
+        Feedback {
+            queue_tenths_ms: Some(0),
+            ..report()
+        }
+        .encode(&mut buffer)
+        .unwrap();
+
+        assert_eq!(Feedback::decode(&buffer).unwrap().queue_ms(), Some(0.0));
+    }
+
+    #[test]
+    fn a_version_1_sender_reads_every_field_it_knows_about_unchanged() {
+        // The bytes a version 1 decoder looks at. Adding the queue must not
+        // have moved or reinterpreted any of them, or a shipped sender starts
+        // reading a loss count as a packet count.
+        let mut buffer = [0_u8; FEEDBACK_BYTES];
+        report().encode(&mut buffer).unwrap();
+
+        assert_eq!(buffer[0..4], FEEDBACK_MAGIC);
+        assert_eq!(buffer[4], 1);
+        assert_eq!(buffer[5], 1);
+        assert_eq!(
+            u32::from_le_bytes(buffer[6..10].try_into().unwrap()),
+            0xDEAD_BEEF
+        );
+        assert_eq!(u16::from_le_bytes(buffer[10..12].try_into().unwrap()), 7);
+        assert_eq!(
+            u64::from_le_bytes(buffer[12..20].try_into().unwrap()),
+            12_345
+        );
+        assert_eq!(u64::from_le_bytes(buffer[20..28].try_into().unwrap()), 12);
+        assert_eq!(u16::from_le_bytes(buffer[28..30].try_into().unwrap()), 284);
+        // Still 34 bytes, still two bytes spare for the next counter.
+        assert_eq!(buffer[32..34], [0, 0]);
+    }
+
+    #[test]
+    fn what_the_receiver_holds_is_both_buffers_and_not_one_of_them() {
+        // The defect this field exists for: a session held 110 ms in the queue
+        // behind a 42 ms buffer, and every figure the sender showed came from
+        // the 42.
+        let report = Feedback {
+            depth_tenths_ms: 420,
+            queue_tenths_ms: Some(1_100),
+            ..report()
+        };
+        assert_eq!(report.depth_ms(), 42.0);
+        assert_eq!(report.held_ms(), 152.0);
+        assert_eq!(end_to_end_ms(16.0, 4.0, report.held_ms()), 172.0);
+    }
+
+    #[test]
+    fn a_receiver_that_does_not_report_its_queue_counts_only_what_it_said() {
+        // Understated, exactly as before the field existed, rather than
+        // guessed at. A number invented here would be indistinguishable from a
+        // measurement.
+        let report = Feedback {
+            depth_tenths_ms: 420,
+            queue_tenths_ms: None,
+            ..report()
+        };
+        assert_eq!(report.held_ms(), 42.0);
+    }
+
+    #[test]
+    fn a_deep_queue_saturates_rather_than_wrapping_to_a_small_number() {
+        // The off-by-one encoding must not turn the deepest reportable queue
+        // into an absent one.
+        let mut buffer = [0_u8; FEEDBACK_BYTES];
+        Feedback {
+            queue_tenths_ms: Some(u16::MAX),
+            ..report()
+        }
+        .encode(&mut buffer)
+        .unwrap();
+
+        let decoded = Feedback::decode(&buffer).unwrap().queue_tenths_ms;
+        assert_eq!(decoded, Some(u16::MAX - 1), "wrapped to {decoded:?}");
     }
 
     #[test]
