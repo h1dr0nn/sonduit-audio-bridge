@@ -6,6 +6,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -286,32 +288,47 @@ private fun AboutCard() {
         Spacer(Modifier.height(8.dp))
         AboutRow(stringResource(R.string.settings_author), AUTHOR)
         Spacer(Modifier.height(8.dp))
-        SectionTitle(stringResource(R.string.settings_repository))
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = REPOSITORY,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        AboutRow(stringResource(R.string.settings_repository), REPOSITORY)
     }
 }
 
+/**
+ * A label and its value on one line, the value against the right edge.
+ *
+ * FlowRow rather than Row, and the difference is what happens when the pair
+ * stops fitting. A Row hands the value whatever width is left over and the
+ * value breaks inside itself, mid-name; this moves the whole value down to a
+ * line of its own instead, and only once label and value genuinely cannot
+ * share one. On a 411 dp phone that is a font scale of about 1.3 for the
+ * repository, which is the longest of the three values by a distance.
+ *
+ * Shrinking the value to fit was the alternative, and it is the wrong trade
+ * here: a reader who has asked the system for large text has not asked this
+ * one line to opt out of it. Truncating was never an option, because the whole
+ * point of the line is a name whose exact spelling is easy to get wrong.
+ */
+// FlowRow is behind an opt-in on the Compose this project pins, and stable
+// from 1.8. The opt-in is to the layout's parameter names changing, not to it
+// misbehaving, and the two used here are the two it has always had.
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AboutRow(label: String, value: String) {
-    Row(
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
+        maxItemsInEachRow = 2,
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
             color = LocalSonduitColors.current.faint,
+            modifier = Modifier.align(Alignment.CenterVertically),
         )
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.align(Alignment.CenterVertically),
         )
     }
 }
