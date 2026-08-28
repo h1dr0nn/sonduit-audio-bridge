@@ -12,7 +12,7 @@ members = [
 # The version lives here and nowhere else. Gradle and Tauri read it from this
 # file through tools/version.mjs; never edit a version in two places.
 [workspace.package]
-version = "1.2.0"
+version = "1.2.76"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -22,10 +22,10 @@ authors = ["Sonduit contributors"]
 [workspace.dependencies]
 # A version alongside the path is required: a path-only dependency is a "*"
 # requirement, which cargo-deny rejects under [bans] wildcards = "deny".
-sonduit-core = { path = "crates/sonduit-core", version = "1.2.0" }
-sonduit-transport = { path = "crates/sonduit-transport", version = "1.2.0" }
-sonduit-capture-win = { path = "crates/sonduit-capture-win", version = "1.2.0" }
-sonduit-playback-android = { path = "crates/sonduit-playback-android", version = "1.2.0" }
+sonduit-core = { path = "crates/sonduit-core", version = "1.2.76" }
+sonduit-transport = { path = "crates/sonduit-transport", version = "1.2.76" }
+sonduit-capture-win = { path = "crates/sonduit-capture-win", version = "1.2.76" }
+sonduit-playback-android = { path = "crates/sonduit-playback-android", version = "1.2.76" }
 
 thiserror = "2"
 tracing = "0.1"

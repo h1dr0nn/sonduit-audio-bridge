@@ -1,17 +1,19 @@
 # ADR-008: Versioning, changelogs and release flow
 
 - Status: accepted, with **one correction to the proposed formula**; the branch
-  model, the develop version string and **when the tree version moves** were
-  all **amended on 2026-08-28**
+  model, the develop version string, **when the tree version moves** and
+  **what the third component counts** were all **amended on 2026-08-28**
 - Date: 2026-08-27
 - Amended: 2026-08-28, see [Branches](#branches)
 - Amended: 2026-08-28, see [Version strings](#version-strings)
 - Amended: 2026-08-28, see
   [When the tree version moves](#when-the-tree-version-moves)
+- Amended: 2026-08-28, see [The counter lives in c](#the-counter-lives-in-c)
 - Supersedes: this ADR's own three-branch model, `main` / `develop` /
   short-lived branches into `develop`; its own commit-implied develop
-  version; and its own rule that the version in the tree moves only when a
-  release is cut
+  version; its own rule that the version in the tree moves only when a
+  release is cut; and its own `a.b.c-dev.N` develop version string, whose
+  counter now lives in `c`
 
 ## Context
 
@@ -37,6 +39,14 @@ branch existed git refused to push such a tag at all.
 
 `N` is the number of commits since the last release; see below for why not the
 CI run number. The `a.b.c` in front of it was amended.
+
+**Superseded 2026-08-28 by [The counter lives in c](#the-counter-lives-in-c).**
+The develop row of that table is the record of what was decided, not what is
+built: there is no `-dev.N` suffix any more, and a develop build carries the
+plain `a.b.c` of the release row, with the counter in `c`. What still stands
+here is the rolling `develop-build` tag, the reason the prerelease tag was
+never called `develop`, and the rule the second amendment established -- that
+the base is the version in the tree and not what the commits imply.
 
 **Amended 2026-08-28.** What was decided on 2026-08-27 is kept below rather
 than overwritten, for the same reason as under [Branches](#branches): an ADR is
@@ -182,6 +192,192 @@ down did change and are corrected in place with a pointer back here: what the
 resets on, and what a version that moves upward mid-development does to the
 [versionCode](#lowering-the-version-forces-a-reinstall-on-every-phone).
 
+### The counter lives in c
+
+**Amended 2026-08-28.** The fourth amendment of the day, in the same shape as
+the three above: the original is kept legible, because what went wrong with it
+is only visible next to it.
+
+As originally decided:
+
+> The version is `a.b.c` -- major, minor, **patch** -- and a develop build is
+> told apart by a prerelease counter appended to it, `1.2.0-dev.74+9f316eda`,
+> where `N` is commits since the last release. `N` is packed into the low field
+> of the Android versionCode, which reserves 999 for "this is the release".
+
+As amended, and as it stands:
+
+> The version is `a.b.c` where **a is major, b is minor, and c is the develop
+> build counter**. `c` advances by one per commit and **rolls into `b` at 100**.
+> There is no prerelease suffix and no build metadata: a develop build and a
+> release cut from the same commit carry the same string, `1.2.76`.
+
+**Why it changed**, in the maintainer's terms: *a.b.c, a la major, b la
+minor/develop, c la develop.* The number they want to read is `1.2.74`, not
+`1.2.0-dev.74`.
+
+The third amendment above had already moved the tree version during
+development, so that the number on screen said something about what was in the
+build. It left the *rate* wrong: the number moved when somebody decided to move
+it, and the thing that actually advanced on every commit was hidden in a
+suffix. `c` is where that count belongs. The suffix is deleted rather than
+demoted, because two counters -- one in `c` and one in `-dev.N` -- would be two
+numbers to keep in agreement, and one of them redundant.
+
+**This gives something up, and it is worth naming.** The [Context](#context) at
+the top of this ADR says a develop build must not be mistakable for a release,
+and the `-dev.N` suffix was how the version string said so. It no longer does.
+The distinction moved to the tag, the release object, the artifact name and the
+versionCode slot; see
+[Telling a release apart from a develop build](#telling-a-release-apart-from-a-develop-build)
+below. What is lost is that a bare version string, quoted with no context, no
+longer says which kind of build it came from. That is the maintainer's call, and
+it buys the thing they asked for: one number, visible, that moves.
+
+#### What c counts from
+
+**The commit that last wrote the version into the tree.** Not the last release.
+
+```text
+c = the c written at the last bump + commits since that bump commit
+```
+
+The version records its own anchor. `git log -- Cargo.toml`, newest first, and
+the anchor is the oldest commit of the newest unbroken run carrying the version
+now in the tree. A bump still sitting in the working tree anchors to HEAD, which
+is what makes `bump` idempotent: running it twice writes the same number.
+
+Anchoring to the last *release* tag, which is what the old `-dev.N` counter did,
+**cannot work once `c` rolls**, and the reason is the one the third amendment
+recorded: there has never been a release tag, so that counter has never reset,
+and a tree bump does not reset it. Walk it through. At 100 commits the counter
+rolls the version to 1.3.0 and `bump` writes that into the tree. The next commit
+asks the same question and gets the same answer -- 101 commits since
+`harmonix-final` -- so it rolls 1.3.0 to 1.4.0. And again on the next. The
+version would climb a minor per commit until `b` reached 99 and the tooling
+threw.
+
+So this amendment **solves the anchor problem that amendment named**. Where it
+says *no command computes a "since the last bump" range, and nothing records
+where the last bump was*, both halves are now false: `version.mjs anchor` prints
+that range, and the version in the tree is the record. Corrected in place under
+[The dev counter](#the-dev-counter-is-commits-since-the-last-release-not-the-ci-run-number).
+
+The release range has not gone away. `version.mjs range` still computes it, and
+the changelog and the commit-message lint still use it. It is simply not what
+the build counter is measured over any more.
+
+#### The rollover
+
+`c` cannot pass 99, because `patch * 1_000` has to stay inside the 100_000
+minor multiplier of the versionCode. So it carries:
+
+```text
+1.2.99 + 1 commit   ->  1.3.0        10_299_999  ->  10_300_999
+1.2.99 + 2 commits  ->  1.3.1
+1.2.0  + 250        ->  1.4.50
+```
+
+It is a **carry, not a reset**: the counter keeps advancing by one per commit
+across the boundary whether or not anybody bumped the tree in between, and the
+versionCode rises across it, which is the property that is not negotiable.
+
+Two alternatives were considered and rejected:
+
+1. **Throw at 99 and demand a manual minor bump.** This is what the old
+   `devCounter` did at 998. It stops every build for a limit ordinary work
+   reaches -- roughly every hundred commits -- and the fix it demands is exactly
+   the carry, performed by hand.
+2. **Widen the field so `c` can hold more.** Any widening divides the
+   multipliers above it, which lowers every code the layout produces.
+   `10_200_999` is installed on a phone right now. A scheme producing anything
+   below it would not install, and a code that has been accepted is never
+   reusable. The field widths are load-bearing and were not touched.
+
+Rolling past `b = 99` throws, and that is correct: raising the major is a
+decision, and the tooling does not make it.
+
+#### What became of the dev field and the release slot
+
+The layout is **unchanged**, for the reason in (2) above. What changed is what
+the low field means. It was a counter with a reserved top value; it is now two
+named slots with nothing in between:
+
+| Slot | Value | Meaning |
+| --- | --- | --- |
+| `DEVELOP_SLOT` | 0 | a develop build of this a.b.c |
+| unused | 1..998 | reserved, spent by nothing |
+| `RELEASE_SLOT` | 999 | the release of this a.b.c |
+
+`RELEASE_SLOT` survives and still earns its place. The version string no longer
+distinguishes a develop build from a release, so if the code did not either,
+`develop-v1.2.76` and `release-v1.2.76` -- a plausible pair, test it and then
+ship it with no commit in between -- would produce two APKs with one code. The
+release keeps the top of its block, so it outranks the develop build it follows
+and installs over it. That is the reason the slot was invented, applied to the
+one case that survives.
+
+The 998 values in the middle are left unspent rather than reclaimed. Reclaiming
+them means narrowing the field, which is alternative (2), which is refused.
+Codes are spent and never reused, and the ceiling is 209 majors away.
+
+`devCounter()` and `MAX_DEV` are gone with the suffix that used them. The
+ceiling they guarded is now `c <= 99`, enforced by the carry rather than by an
+exception.
+
+#### Telling a release apart from a develop build
+
+Four things say it. The version string is not one of them:
+
+| Where | Develop | Release |
+| --- | --- | --- |
+| Tag | `develop-vX.Y.Z` | `release-vX.Y.Z` |
+| GitHub | the rolling `develop-build` prerelease | a release object of its own |
+| Artifact name | `sonduit_android_1.2.76-dev_universal.apk` | `sonduit_android_1.2.76_universal.apk` |
+| versionCode | `10_276_000` | `10_276_999` |
+
+The tag is the source of all four: it is what triggers the workflow, and the
+workflow is what passes `--develop` to `version.mjs code` and `version.mjs
+sync`. Nothing sniffs the version string for a suffix, because there is none to
+sniff, and a check that did would be comparing a string with itself.
+
+`develop.yml` had exactly such a check -- it verified that the computed develop
+version had the shape `$declared-dev.*` -- and under this scheme it would have
+passed unconditionally. It is replaced by `node tools/version.mjs check`, which
+verifies that every derived file agrees with the tag, not only the one file the
+tag was compared against.
+
+#### What the tooling looks like now
+
+| Command | Was | Is |
+| --- | --- | --- |
+| `read` | the tree version | unchanged |
+| `anchor` | -- | the commit `c` counts from, and the count |
+| `advance` | -- | the version HEAD implies; read-only |
+| `bump [minor, major, version]` | -- | writes that version and syncs |
+| `next` | the commit-implied version, from the last **release** | the commit-implied version, from the last **bump** |
+| `dev` | `X.Y.Z-dev.N+sha` | **removed**; a develop build is `read` |
+| `last-release` | the last release tag | **removed**; nothing called it, and `range` prints what it was for |
+| `range`, `code`, `sync`, `check` | | unchanged, except that `code` and `sync` take `--develop` |
+
+**`next` is an answer again.** The third amendment recorded it as a prompt,
+because its range was "since the last release" and it therefore re-counted
+commits an earlier mid-development bump had already accounted for. Its range is
+now "since the last bump", a range that exists for the first time, so the
+double-counting is gone. Its `patch` case returns the version unchanged -- `c`
+has already moved, and there is no third number left to bump -- so what it
+answers is the only question left: is this a minor, is it a major. The two
+harmless `!` markers that amendment names sit behind the current anchor and no
+longer reach it.
+
+**A release with features but no `b` bump gets no changelog.** `release.yml`
+classifies a release by comparing `a.b` against the previous release tag, so
+1.2.76 following 1.2.40 is a patch release and its notes point at the commit
+history. That is unchanged behaviour, and it stays correct under this scheme for
+the same reason it was correct before: `b` is the minor **decision**, and a
+maintainer who has accumulated a minor's worth of features bumps it. A release
+that did not is one where that decision was not made.
+
 ### The version lives in exactly one place
 
 `[workspace.package] version` in the root `Cargo.toml`. Four things are
@@ -231,6 +427,12 @@ code = major * 10_000_000 + minor * 100_000 + patch * 1_000 + dev
   dev = 999      the release
 ```
 
+**Corrected 2026-08-28.** The arithmetic and every field width below are
+unchanged and are the reason nothing here could be widened. The low field is no
+longer a counter: `dev = 0` means a develop build and `dev = 999` the release,
+1..998 are spent by nothing, and the count that used to live there is `c`. See
+[What became of the dev field and the release slot](#what-became-of-the-dev-field-and-the-release-slot).
+
 Every field must fit strictly inside the one above it:
 
 | Field | Range | Must stay below | Because |
@@ -262,6 +464,12 @@ bump:
 1.3.1-dev.1   -> 10301001
 2.0.0         -> 20000999
 ```
+
+The `-dev.N` names above cannot be produced any more, and the sequence they
+walk is now the one in [The rollover](#the-rollover): 1.2.99 develop, 1.2.99
+release, 1.3.0 develop, 1.3.0 release, which is `10299000`, `10299999`,
+`10300000`, `10300999`. The tests walk both, in both slots, either side of the
+carry.
 
 **Ceiling:** Play Store caps versionCode at 2,100,000,000. The largest code a
 given major can produce is `major*10_000_000 + 9_999_999`, so **major may go up
@@ -324,7 +532,32 @@ layout working as designed -- the release slot is the top of its version block
 -- and a tree bump clears it, because the next block begins above the whole of
 the last one.
 
+**Restated 2026-08-28 for the counter in `c`.** The `-dev.N` codes above are no
+longer produced; the shape of the argument is unchanged and the wrinkle is
+unchanged with it, now between slot 0 and slot 999 of the same block:
+
+```text
+1.2.0   tree, before this amendment  -> 10200999
+1.2.76  tree, release slot           -> 10276999
+1.2.76  develop build, slot 0        -> 10276000
+1.2.77  develop build, slot 0        -> 10277000
+```
+
+Every code the counter produces from here is above the `10200999` a phone is
+carrying, so the bump installs over it with nothing to uninstall. A develop
+build of 1.2.76 still will not install over a local build of 1.2.76, for the
+same reason as before, and the next commit clears it.
+
 ### The dev counter is commits since the last release, not the CI run number
+
+**Superseded 2026-08-28 by [What c counts from](#what-c-counts-from).** The
+heading is kept so the links to it still resolve, and the section is kept
+because the argument in it is still the argument: a counter must reset against
+something, and a CI run number resets against nothing. What changed is what it
+resets against. The counter is `c`, it counts from the commit that last wrote
+the version into the tree, and the paragraph below about it never resetting is
+the problem the fourth amendment exists to fix -- read it as the statement of a
+defect, not as current behaviour. `version.mjs dev` no longer exists.
 
 The obvious choice, `github.run_number`, is wrong twice over. It grows without
 bound across the life of the repository, so it eventually reaches **999 and
@@ -489,19 +722,23 @@ integration branch is gone too now, for the reason above; the workflow, the
   point of the amendment and it is the consequence that matters: a build's
   version moves with what went into it, instead of being frozen at the last
   release -- which here was none.
-- **998 is a commit budget, not a build budget, and nothing has reset it yet.**
-  `devCounter` in `tools/version.mjs` counts commits since the last *release*
-  tag and throws with a clear message rather than wrapping into the release
-  slot. There is no release tag, so the range is `harmonix-final..HEAD` and the
-  count stands at 75. A mid-development version bump does **not** reset it;
-  only cutting a release does. 998 is still far off, but it is being spent by
-  ordinary commits rather than by deliberate build tags, which is faster than
-  this document originally assumed.
-- **`version.mjs next` is now a prompt rather than an answer.** Its range is
-  "since the last release", so after a mid-development bump it re-counts
-  commits that bump already accounted for, and it reads the two harmless
-  breaking-change markers in the current range as a major. Left alone
-  deliberately: the version is a decision, not a computation.
+- **The budget was 998 commits and never reset; it is now 99 and it carries.**
+  The third amendment recorded the defect: `devCounter` counted commits since
+  the last *release* tag, there is no such tag, a mid-development bump did not
+  reset it, and the count stood at 75 of 998, spent by ordinary commits rather
+  than by deliberate build tags. The fourth amendment removes that counter
+  entirely. `c` counts from the last bump, its ceiling is 99, and reaching it
+  rolls into `b` instead of throwing. See [The rollover](#the-rollover).
+- **`version.mjs next` is an answer again.** The third amendment left it a
+  prompt because its range was "since the last release", so after a
+  mid-development bump it re-counted commits that bump had already accounted
+  for, and it read the two harmless breaking-change markers in that range as a
+  major. Both follow from the range, and the range is now "since the last
+  bump". The version is still a decision: `next` reports what the commits imply
+  for `a` and `b`, and returns the version unchanged when they imply neither.
+- **The number on screen now moves on its own.** `c` advances with every commit
+  and `node tools/version.mjs bump` writes it. The version is 1.2.76 and its
+  versionCode is 10276999.
 - **A version that goes down cannot be installed over one that went up.** The
   versionCode follows the version, Android refuses a downgrade, and the fix is
   a manual uninstall on every device holding the higher build -- not a change

@@ -2,7 +2,7 @@
 
 Low latency system audio bridge from Windows to Android.
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Version](https://img.shields.io/badge/version-1.2.0-brightgreen)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Version](https://img.shields.io/badge/version-1.2.76-brightgreen)
 
 Sonduit turns an Android phone into an output device for a Windows PC. What the
 PC is playing goes to a phone on the same network, over Wi-Fi or over a USB

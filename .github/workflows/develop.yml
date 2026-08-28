@@ -22,11 +22,12 @@ env:
 
 jobs:
   version:
-    name: compute dev version
+    name: check the tag and the version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.compute.outputs.version }}
       code: ${{ steps.compute.outputs.code }}
+      label: ${{ steps.compute.outputs.label }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,7 +37,7 @@ jobs:
           node-version: 22
 
       - id: compute
-        name: Derive the develop version from the version in the tree
+        name: Check the tag against the version in the tree
         run: |
           set -e
           # The tag says which version this is a test build of, so it must
@@ -50,34 +51,36 @@ jobs:
             exit 1
           fi
 
-          # version.mjs excludes the Harmonix tags by reachability from
-          # harmonix-final; a plain git describe would pick up v1.0.4 and
-          # compute the next release as 1.1.0. See ADR-008.
-          range=$(node tools/version.mjs range)
-          echo "range: $range"
+          # There is no separate develop version string any more: the third
+          # component IS the build counter, so a develop build is the tree
+          # version verbatim. See ADR-008.
+          #
+          # What stood here was a second check that the computed version had
+          # the shape "$declared-dev.N". There is no such shape now, and the
+          # check as written would compare "$declared" with itself and pass
+          # always, which is worse than no check at all. This is the
+          # belt-and-braces check worth having in its place: that every file
+          # the artifacts are built from agrees with the tag, and not only the
+          # one file the tag was compared against.
+          node tools/version.mjs check
 
-          # The range is read for its length only. The base is $declared, the
-          # version in the tree -- NOT the version the commits imply, which
-          # one breaking-change commit would push to the next major. The
-          # counter is commits since the last release, not the run number: a
-          # run number grows without bound and would eventually hit the
-          # reserved release slot. Both amended/decided in ADR-008.
-          version=$(node tools/version.mjs dev "$range")
+          version="$declared"
 
-          # Belt and braces: the check above is on the tag, this one is on the
-          # artifact name the tag produces.
-          case "$version" in
-            "$declared"-dev.*) ;;
-            *)
-              echo "::error::develop version $version is not a build of $declared"
-              exit 1
-              ;;
-          esac
-          code=$(node tools/version.mjs code "$version")
+          # A develop build takes the bottom slot of its version's block, so
+          # the release of the same a.b.c outranks it and installs over it.
+          # The version string no longer says which kind of build this is --
+          # the tag does -- and this flag is how the tag tells the tooling.
+          code=$(node tools/version.mjs code "$version" --develop)
+
+          # And the label is how it tells a human. Both kinds of build carry
+          # the same version now, so without this a develop APK and a released
+          # APK of 1.2.76 would be two different files with one name.
+          label="${version}-dev"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "### Develop build \`$version\` (versionCode $code)" >> "$GITHUB_STEP_SUMMARY"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "### Develop build $label (version $version, versionCode $code)" >> "$GITHUB_STEP_SUMMARY"
 
   windows:
     name: windows debug artifact
@@ -94,7 +97,7 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
 
       - name: Stamp the version
-        run: node tools/version.mjs sync "${{ needs.version.outputs.version }}"
+        run: node tools/version.mjs sync "${{ needs.version.outputs.version }}" --develop
 
       - run: npm ci
         working-directory: desktop
@@ -126,10 +129,15 @@ jobs:
       # the binary anyway. Staged together here so the published file is a
       # folder that works rather than one file that half does.
       #
-      # No installer on develop. The develop version carries a prerelease and a
-      # build suffix -- 1.1.0-dev.54+e59ed654 -- and MSI version fields are
-      # four numbers and nothing else, so bundling would fail on the version
-      # before it failed on anything real.
+      # No installer on develop. The reason used to be mechanical -- the
+      # develop version carried a prerelease and a build suffix,
+      # 1.1.0-dev.54+e59ed654, and MSI version fields are four numbers and
+      # nothing else, so bundling would have failed on the version before it
+      # failed on anything real. That reason is gone: a develop version is now
+      # a plain 1.2.76 an MSI would take. The remaining reason is the one that
+      # mattered anyway -- this is an unsigned debug build, and an installer
+      # invites somebody to install it as though it were a release.
+
       - name: Stage the portable build
         shell: bash
         run: |
@@ -142,7 +150,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sonduit-windows-${{ needs.version.outputs.version }}
+          name: sonduit-windows-${{ needs.version.outputs.label }}
           path: portable/
           retention-days: 14
           if-no-files-found: error
@@ -167,7 +175,7 @@ jobs:
       - uses: android-actions/setup-android@v3
 
       - name: Stamp the version
-        run: node tools/version.mjs sync "${{ needs.version.outputs.version }}"
+        run: node tools/version.mjs sync "${{ needs.version.outputs.version }}" --develop
 
       - name: Install NDK and cargo-ndk
         run: |
@@ -191,7 +199,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sonduit-android-${{ needs.version.outputs.version }}
+          name: sonduit-android-${{ needs.version.outputs.label }}
           path: |
             target/aarch64-linux-android/release/libsonduit_ffi.so
             android/app/build/outputs/apk/debug/*.apk
@@ -226,15 +234,24 @@ jobs:
           git push --delete origin refs/tags/develop 2>/dev/null || true
 
       # No changelog here on purpose. Changelogs are generated for minor and
-      # major releases only; a per-push develop build has nothing worth
-      # summarising and would only create noise. See ADR-008.
-      # The same naming as a real release, so a tester downloading both does
-      # not have to work out which file is which. The version carries the
-      # develop build number, so two develop builds never share a name.
+      # major releases only; a develop build has nothing worth summarising and
+      # would only create noise. See ADR-008.
+      #
+      # Nearly the same naming as a real release, so a tester downloading both
+      # does not have to work out which file is which -- but not identical.
+      # Since the build counter moved into the version itself there is no
+      # `-dev.N` suffix to tell the two apart, and a develop build and a
+      # release of 1.2.76 would otherwise produce two different files under one
+      # name. The `-dev` label is that distinction, and the versionCode carries
+      # it too: a develop build sits at the bottom of its version's block and
+      # the release at the top. Two develop builds still never share a name,
+      # because the counter moves with every commit.
+
       - name: Name the artifacts for humans
         run: |
           set -e
           version="${{ needs.version.outputs.version }}"
+          label="${{ needs.version.outputs.label }}"
           mkdir -p upload
           find artifacts -type f -print
 
@@ -251,13 +268,13 @@ jobs:
           }
 
           exe=$(need 'sonduit.exe')
-          zip="upload/sonduit_windows_${version}_x86_64_portable.zip"
+          zip="upload/sonduit_windows_${label}_x86_64_portable.zip"
           ( cd "$(dirname "$exe")" && zip -qr - . ) > "$zip"
-          echo "named sonduit_windows_${version}_x86_64_portable.zip"
+          echo "named sonduit_windows_${label}_x86_64_portable.zip"
 
-          cp "$(need '*.apk')" "upload/sonduit_android_${version}_universal.apk"
-          echo "named sonduit_android_${version}_universal.apk"
-          ( cd upload && sha256sum * > "sonduit_${version}_SHA256SUMS.txt" )
+          cp "$(need '*.apk')" "upload/sonduit_android_${label}_universal.apk"
+          echo "named sonduit_android_${label}_universal.apk"
+          ( cd upload && sha256sum * > "sonduit_${label}_SHA256SUMS.txt" )
           ls -l upload
 
       - name: Publish prerelease
@@ -266,6 +283,7 @@ jobs:
         run: |
           set -e
           version="${{ needs.version.outputs.version }}"
+          label="${{ needs.version.outputs.label }}"
 
           {
             echo "# Sonduit v${version}"
@@ -276,7 +294,9 @@ jobs:
             echo "---"
             echo ""
             echo "Built from \`${{ github.sha }}\`. Debug artifacts, unsigned, for testing only."
-            echo "The \`develop-build\` tag is rolling: every push to develop overwrites it."
+            echo "The version is \`${version}\`; the files are labelled \`${label}\`, because a"
+            echo "develop build and a release now carry the same version. See ADR-008."
+            echo "The \`develop-build\` tag is rolling: every \`develop-v\` tag overwrites it."
             echo ""
             echo "No changelog is generated for develop builds. See ADR-008."
             echo ""
@@ -285,12 +305,12 @@ jobs:
             echo "## Download Options"
             echo ""
             echo "### Windows"
-            echo "- **Portable ZIP:** \`sonduit_windows_${version}_x86_64_portable.zip\` (no install; unzip and run)"
+            echo "- **Portable ZIP:** \`sonduit_windows_${label}_x86_64_portable.zip\` (no install; unzip and run)"
             echo ""
             echo "### Android"
-            echo "- **APK:** \`sonduit_android_${version}_universal.apk\`"
+            echo "- **APK:** \`sonduit_android_${label}_universal.apk\`"
             echo ""
-            echo "Checksums are in \`sonduit_${version}_SHA256SUMS.txt\`."
+            echo "Checksums are in \`sonduit_${label}_SHA256SUMS.txt\`."
           } > notes.md
 
           gh release delete develop-build --yes --cleanup-tag=false 2>/dev/null || true
