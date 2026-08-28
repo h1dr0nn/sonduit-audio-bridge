@@ -9,6 +9,7 @@ import {
 } from 'react-icons/fi';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import { showToast } from '../components/ui/Toast';
 import { Dialog } from '../components/ui/Dialog';
 import { QrCode } from '../components/ui/QrCode';
 import { StatTile } from '../components/ui/StatTile';
@@ -45,6 +46,7 @@ export function ConnectionPage() {
     scan,
     invite,
     awaitPairing,
+    cancelPairing,
     start,
     stop,
   } = useBridge();
@@ -57,7 +59,6 @@ export function ConnectionPage() {
   const [pairingState, setPairingState] = useState('idle');
   const [expiresIn, setExpiresIn] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState(null);
 
   const running = status === 'connected' || status === 'connecting';
 
@@ -67,13 +68,42 @@ export function ConnectionPage() {
     return t('connection.multicast');
   }, [target, typed, t]);
 
+  /**
+   * A phone that has been found is the phone the user meant.
+   *
+   * Without this, finding a device left the target on the multicast group and
+   * said nothing about it: the session started, packets went out, and the
+   * phone on screen received none of them, because it was never joined to that
+   * group. Six hundred packets sent with no latency and no loss reported is
+   * what that looks like, and it reads as the app being broken.
+   *
+   * Only ever fills in a blank. A user who has picked a device, typed an
+   * address, or deliberately chosen the group keeps their choice; this fires
+   * once, on the first device to appear, and not again.
+   */
+  useEffect(() => {
+    if (devices.length === 0) return;
+    setTarget((current) =>
+      current.kind === 'multicast' && current.value === null
+        ? { kind: 'device', value: devices[0].address }
+        : current,
+    );
+  }, [devices]);
+
+  // The bridge can fail long after the button that started it has returned --
+  // the capture thread dying, the receiver going away. Raised here because
+  // there is no call to attach it to.
+  useEffect(() => {
+    if (!error) return;
+    showToast({ id: 'bridge', tone: 'error', titleKey: 'connection.bridgeError', detail: String(error) });
+  }, [error]);
+
   const handleScan = useCallback(async () => {
     setScanning(true);
-    setFailure(null);
     try {
       await scan(pairing);
     } catch (reason) {
-      setFailure(String(reason));
+      showToast({ id: 'scan', tone: 'error', titleKey: 'connection.scanFailed', detail: String(reason) });
     } finally {
       setScanning(false);
     }
@@ -88,7 +118,6 @@ export function ConnectionPage() {
    * that does nothing.
    */
   const handleShowInvite = useCallback(async () => {
-    setFailure(null);
     setPairingState('waiting');
     setExpiresIn(PAIRING_WINDOW_SECONDS);
     try {
@@ -97,6 +126,7 @@ export function ConnectionPage() {
       const device = await awaitPairing();
       if (device) {
         setPairingState('paired');
+        showToast({ id: 'pair', tone: 'success', titleKey: 'connection.paired', message: device.name });
         // Selected as well as listed. The user asked for this phone by
         // pointing a camera at the screen; making them click it again would be
         // asking the same question twice.
@@ -105,7 +135,7 @@ export function ConnectionPage() {
         setPairingState('timeout');
       }
     } catch (reason) {
-      setFailure(String(reason));
+      showToast({ id: 'pair', tone: 'error', titleKey: 'connection.pairFailed', detail: String(reason) });
       setPairingState('idle');
       setInvitation(null);
     } finally {
@@ -125,7 +155,12 @@ export function ConnectionPage() {
     setInvitation(null);
     setPairingState('idle');
     setExpiresIn(null);
-  }, []);
+    // Tells the backend as well as the screen. It holds the discovery port for
+    // the whole window, and until it lets go, showing a second code fails.
+    cancelPairing().catch(() => {
+      // Nothing useful to say: the window closes on its own regardless.
+    });
+  }, [cancelPairing]);
 
   // Counts the window down so the user can see the code is not permanent.
   // Purely a display: the backend stops listening on its own.
@@ -146,12 +181,11 @@ export function ConnectionPage() {
 
   const handleStart = useCallback(async () => {
     setBusy(true);
-    setFailure(null);
     try {
       const address = target.kind === 'manual' ? typed.trim() : target.value;
       await start({ target: address || null });
     } catch (reason) {
-      setFailure(String(reason));
+      showToast({ id: 'session', tone: 'error', titleKey: 'connection.startFailed', detail: String(reason) });
     } finally {
       setBusy(false);
     }
@@ -162,13 +196,11 @@ export function ConnectionPage() {
     try {
       await stop();
     } catch (reason) {
-      setFailure(String(reason));
+      showToast({ id: 'session', tone: 'error', titleKey: 'connection.stopFailed', detail: String(reason) });
     } finally {
       setBusy(false);
     }
   }, [stop]);
-
-  const shown = failure ?? error;
 
   return (
     // Full height with the columns scrolling their own contents, matching the
@@ -202,15 +234,15 @@ export function ConnectionPage() {
         </div>
       </header>
 
-      {shown && (
-        <div className="card-sunken border border-line-soft px-4 py-3 text-sm text-ink">
-          {shown}
-        </div>
-      )}
-
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,1fr)_minmax(300px,380px)] gap-4">
-        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4">
+        {/* One card, so it takes the whole column rather than sitting at the
+          * top of a taller box. min-h-0 all the way down: a flex child
+          * defaults to min-height auto and refuses to shrink below its
+          * content, which is what stops an inner scroll area from ever
+          * scrolling. */}
+        <div className="flex min-h-0 min-w-0 flex-col gap-4">
         <Card
+          className="min-h-0 flex-1"
           title={t('connection.devices')}
           actions={
             <div className="flex items-center gap-2">
@@ -233,8 +265,9 @@ export function ConnectionPage() {
             </div>
           }
         >
+          <div className="scroll-area min-h-0 flex-1">
           {devices.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-8 text-center">
+            <div className="flex h-full flex-col items-center justify-center gap-2 py-8 text-center">
               <FiSmartphone className="h-7 w-7 text-ink-faint" strokeWidth={1.5} />
               <p className="text-sm text-ink-soft">{t('connection.noDevices')}</p>
               {!available && <p className="text-xs text-ink-faint">{t('connection.captureOnly')}</p>}
@@ -265,8 +298,9 @@ export function ConnectionPage() {
               })}
             </ul>
           )}
+          </div>
 
-          <div className="mt-4 flex flex-col gap-4 border-t border-line-soft pt-4">
+          <div className="mt-4 flex flex-none flex-col gap-4 border-t border-line-soft pt-4">
             <TextField
               id="pairing-code"
               label={t('connection.pairingCode')}
@@ -294,8 +328,11 @@ export function ConnectionPage() {
 
         </div>
 
-        <div className="scroll-area flex min-h-0 min-w-0 flex-col gap-4">
-        <Card tone="accent" title={t('connection.session')}>
+        {/* Session keeps its natural height -- it is a fixed set of facts --
+          * and telemetry takes whatever is left, so the column reaches the
+          * bottom without either card being stretched out of proportion. */}
+        <div className="flex min-h-0 min-w-0 flex-col gap-4">
+        <Card className="flex-none" tone="accent" title={t('connection.session')}>
           <div className="mt-auto flex flex-col gap-3">
             <div className="flex items-center gap-2 opacity-90">
               <FiSpeaker className="h-5 w-5" strokeWidth={1.75} />
@@ -326,15 +363,23 @@ export function ConnectionPage() {
             </dl>
           </div>
         </Card>
-        <Card title={t('telemetry.title')} subtitle={t('telemetry.subtitle')}>
-        <div className="grid grid-cols-2 gap-3">
+        <Card
+          className="min-h-0 flex-1"
+          title={t('telemetry.title')}
+          subtitle={t('telemetry.subtitle')}
+        >
+        {/* The tiles share the card's spare height between them rather than
+          * sitting in a band at the top of an empty card. */}
+        <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-3">
           <StatTile label={t('telemetry.latency')} value={telemetry.latencyMs} unit="ms" />
           <StatTile label={t('telemetry.bufferDepth')} value={telemetry.bufferDepthMs} unit="ms" />
           <StatTile label={t('telemetry.packetLoss')} value={telemetry.packetLossPct} unit="%" />
           <StatTile label={t('telemetry.packetsSent')} value={telemetry.packetsSent} />
         </div>
         {!running && (
-          <p className="mt-4 text-center text-xs text-ink-faint">{t('telemetry.noData')}</p>
+          <p className="mt-4 flex-none text-center text-xs text-ink-faint">
+            {t('telemetry.noData')}
+          </p>
         )}
         </Card>
         </div>

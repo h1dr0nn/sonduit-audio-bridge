@@ -340,10 +340,18 @@ body {
 
 /* ---- Reusable surfaces ---- */
 
+/* No outer shadow.
+ *
+ * A card's shadow is drawn outside its box, so a card inside a scrolling
+ * column gets its shadow sliced off at both edges where the column clips. The
+ * result was a dark band down each side of every column that appeared and
+ * disappeared as the page scrolled. Cards sit on the window's own blurred
+ * backdrop, which already separates them from what is behind, so the border
+ * alone is enough and there is nothing left to clip. Floating surfaces --
+ * menus, dialogs, toasts -- keep their shadow: nothing clips those. */
 .card {
   background: var(--surface-card);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
   border: 1px solid var(--line-soft);
 }
 
