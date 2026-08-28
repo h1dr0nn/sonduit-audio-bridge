@@ -811,6 +811,11 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
     let mut sender_frames = 0_u64;
     let mut previous_timestamp: Option<u32> = None;
     let mut since_correction = 0_u32;
+    // Packets shed since the last report. Accumulated rather than logged where
+    // it happens: the bound is checked on every arrival, and a device that has
+    // stopped calling back would otherwise produce a line every six
+    // milliseconds about the one thing that is already obvious.
+    let mut shed_packets = 0_u64;
     // Decided from the first packet's source address. Wi-Fi until then,
     // because holding too much audio is recoverable and holding too little is
     // heard immediately.
@@ -980,6 +985,17 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
 
             if let Ok(mut queue) = shared.queue.lock() {
                 if let Some(queue) = queue.as_mut() {
+                    // What the two buffers hold together is what the listener
+                    // waits through, and the pacing rule below decides only
+                    // which of them holds it. The bound on the sum is checked
+                    // here because here is the one place both depths are known
+                    // at once, and on every arrival because a bound that is
+                    // sampled four times a second is a bound the depth can
+                    // overshoot forty packets before anyone looks. It costs
+                    // two comparisons on a thread that has just done a socket
+                    // read; the audio callback is not involved and cannot be.
+                    shed_packets += source.buffer_mut().shed_over_budget(queue.queued_ms());
+
                     let allowance = drain_allowance(queue.queued_ms(), packet_ms, PACING);
 
                     for _ in 0..allowance {
@@ -1094,6 +1110,19 @@ fn receive_loop(socket: &UdpSocket, stop: &AtomicBool, shared: &Arc<Shared>) {
                     "resynchronised: dropped {dropped} frames from {:.0} ms queued",
                     queued_ms.unwrap_or(0.0)
                 );
+            }
+
+            // The same emergency, reported from the other buffer. The pacing
+            // rule holds the queue within a packet of its floor, so the queue
+            // can no longer reach four times the jitter target and the
+            // backstop above can no longer see this failure at all: the
+            // surplus collects in the jitter buffer now, and the bound on the
+            // drain path is what catches it there.
+            if shed_packets > 0 {
+                note!(
+                    "shed {shed_packets} packets: the receiver was holding past what this link allows"
+                );
+                shed_packets = 0;
             }
 
             // A stream that has gone cannot be restarted, and AAudio stops

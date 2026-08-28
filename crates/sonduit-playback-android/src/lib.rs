@@ -310,9 +310,17 @@ mod tests {
 
     fn push(source: &mut JitterSource, sequence: u16, value: i16) {
         let frames = (PCM_PAYLOAD_BYTES / 4) as u32;
-        source
-            .buffer_mut()
-            .push(sequence, u32::from(sequence) * frames, 0, packet(value));
+        // Arriving when the audio it carries was produced. These tests are
+        // about concealment and offsets rather than about timing, but an
+        // arrival of zero for every packet is a stream delivered infinitely
+        // fast, and the buffer reads that as a backlog and sheds it.
+        let arrival = u64::from(sequence) * u64::from(frames) * 1_000_000_000 / 48_000;
+        source.buffer_mut().push(
+            sequence,
+            u32::from(sequence) * frames,
+            arrival,
+            packet(value),
+        );
     }
 
     #[test]

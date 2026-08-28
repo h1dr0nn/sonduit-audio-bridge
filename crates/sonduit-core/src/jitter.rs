@@ -6,6 +6,19 @@
 //!
 //! Nothing here reads a clock. Arrival times are passed in, which is what
 //! makes the whole module testable against a synthetic timeline.
+//!
+//! # It discards audio, in two cases
+//!
+//! Absorbing is the job, but only up to a point: audio held is latency, and a
+//! buffer with no way of giving depth back keeps whatever a bad moment put in
+//! it for the rest of the session. So the front of the buffer is discarded
+//! when it arrived faster than it was produced -- see [`JitterBuffer::push`],
+//! which is the socket backlog a slow device open leaves behind -- and when
+//! the receiver as a whole is holding past its configured ceiling, which is
+//! [`JitterBuffer::shed_over_budget`]. Neither is routine and neither is
+//! silent: both are counted in [`JitterStats::shed`], and both stop at the
+//! target rather than emptying the buffer, because a buffer shed below the
+//! depth it starts playing at re-arms, and re-arming is audible.
 
 use std::collections::BTreeMap;
 
@@ -20,6 +33,17 @@ const SEQUENCE_WRAP_HALF: i32 = 32_768;
 /// The RFC fixes this at 1/16: "the gain parameter 1/16 gives a good noise
 /// reduction ratio while maintaining a reasonable rate of convergence".
 const JITTER_GAIN: f64 = 1.0 / 16.0;
+
+/// How much faster than its own duration a packet has to arrive before it is
+/// read as backlog rather than as jitter.
+///
+/// Four means a six-millisecond packet must turn up within a millisecond and a
+/// half of the one before it. Ordinary jitter does not reach that, and the
+/// bursts Wi-Fi aggregation produces do not sustain it; a socket buffer being
+/// emptied at wire speed does nothing else. The comparison is against the
+/// packet's *own* timestamp delta, so it holds at any packet size or rate
+/// without a second constant to keep in step.
+const WIRE_SPEED_RATIO: i64 = 4;
 
 /// Rebuilds a monotonic 64-bit counter from wrapping 16-bit sequence numbers.
 ///
@@ -225,6 +249,15 @@ pub struct JitterStats {
     pub starved: u64,
     /// Packets that arrived out of order but early enough to be reordered.
     pub reordered: u64,
+    /// Packets discarded from the front: either a backlog arrived at wire
+    /// speed, or the receiver was holding past what the link allows.
+    ///
+    /// Not loss and not concealed: see [`JitterBuffer::push`] for the first
+    /// and [`JitterBuffer::shed_over_budget`] for the second. A handful once,
+    /// at the start of a session, is the case this exists for. A count that
+    /// keeps climbing means the sender is genuinely producing faster than the
+    /// device plays, which is drift and belongs to the resampler.
+    pub shed: u64,
 }
 
 /// Reorders, conceals and paces incoming audio packets.
@@ -407,9 +440,15 @@ impl JitterBuffer {
     /// `D(i-1,i) = (Rj - Ri) - (Sj - Si)`, the change in transit time between
     /// consecutive packets, then `J += (|D| - J)/16`. Both terms are converted
     /// to frames so the units cancel.
-    fn observe_arrival(&mut self, timestamp_frames: u32, arrival_nanos: u64) {
+    ///
+    /// Returns whether this packet arrived faster than the sender could have
+    /// produced it, which is the same two deltas read a different way and is
+    /// why it is answered here rather than measured a second time.
+    fn observe_arrival(&mut self, timestamp_frames: u32, arrival_nanos: u64) -> bool {
         let arrival_frames =
             (arrival_nanos as i128 * i128::from(self.format.sample_rate) / 1_000_000_000) as i64;
+
+        let mut wire_speed = false;
 
         if let Some((previous_arrival, previous_timestamp)) = self.previous_observation {
             let arrival_delta = arrival_frames - previous_arrival;
@@ -423,9 +462,47 @@ impl JitterBuffer {
 
             let d = (arrival_delta - sender_delta).abs() as f64;
             self.jitter_frames += (d - self.jitter_frames) * JITTER_GAIN;
+
+            // Sender time ran on and receiver time did not. A packet cannot be
+            // early against its own clock, so the only way this reads true is
+            // that the packet was already waiting somewhere when this thread
+            // got round to asking for it.
+            //
+            // Both deltas have to be forward. A packet the network reordered
+            // arrives with time running backwards on one clock or both, and
+            // the ratio alone would read a pair of negative deltas as the
+            // fastest delivery there has ever been.
+            wire_speed = sender_delta > 0
+                && arrival_delta >= 0
+                && arrival_delta.saturating_mul(WIRE_SPEED_RATIO) < sender_delta;
         }
 
         self.previous_observation = Some((arrival_frames, timestamp_frames));
+        wire_speed
+    }
+
+    /// Throw away the oldest audio held, down to the target depth.
+    ///
+    /// `next` moves with it, so nothing discarded here is later reported lost
+    /// or handed to the concealer: this is a deliberate discard and not a gap.
+    /// The loop stops at the target and never below it, so the buffer cannot
+    /// be emptied from here and the starve-refill cycle that produced the
+    /// crackle has no way in.
+    fn shed_to_target(&mut self) {
+        let target = self.target_packets();
+        while self.entries.len() > target {
+            let Some((oldest, _)) = self.entries.pop_first() else {
+                break;
+            };
+            // Only when playback has already latched onto a slot. Before that
+            // `next` is deliberately unset so that `pop` can start at the
+            // lowest sequence still held, which after shedding is the right
+            // one for free.
+            if let Some(next) = self.next.as_mut() {
+                *next = oldest + 1;
+            }
+            self.stats.shed += 1;
+        }
     }
 
     /// Offer a packet to the buffer.
@@ -465,7 +542,7 @@ impl JitterBuffer {
         // Only packets the buffer actually keeps may move the jitter estimate.
         // Observing rejected ones lets a single stale or duplicate datagram
         // pin the target at max_ms for hundreds of packets.
-        self.observe_arrival(timestamp_frames, arrival_nanos);
+        let wire_speed = self.observe_arrival(timestamp_frames, arrival_nanos);
 
         // Arriving behind a packet already held means the network reordered it.
         if self
@@ -484,6 +561,33 @@ impl JitterBuffer {
         // the jitter estimate only changes when a packet arrives, so a buffer
         // being drained by a silent sender has nothing new to act on.
         self.retarget();
+
+        // A backlog, not a buffer. Audio arriving faster than it was produced
+        // was already sitting somewhere -- on a real session, in the kernel's
+        // socket buffer while the receive thread was blocked inside AAudio's
+        // open -- and every packet of it is audio that can no longer be played
+        // on time. Holding it makes it permanent latency: the depth stays
+        // wherever the burst left it, and the only thing that sheds it
+        // afterwards is the resampler at 500 ppm, which needs minutes for a
+        // tenth of a second.
+        //
+        // So the burst is not allowed to become depth. Above the target, and
+        // only while audio is still arriving faster than real time, the oldest
+        // packet goes. Both halves matter:
+        //
+        // - the rate test alone would shed a Wi-Fi catch-up burst, which is
+        //   the buffer doing its job after a stall;
+        // - the depth test alone would shed on ordinary jitter, and shedding
+        //   is not free.
+        //
+        // Together they name one condition: more audio than the buffer is for,
+        // arriving faster than anything could play it. A link that is merely
+        // jittery never satisfies the first and a link that is catching up
+        // from a stall is below target and never satisfies the second, so on a
+        // session that starts cleanly this does nothing at all.
+        if wire_speed {
+            self.shed_to_target();
+        }
 
         PushOutcome::Accepted
     }
@@ -548,6 +652,69 @@ impl JitterBuffer {
         self.previous_observation = None;
         self.jitter_frames = 0.0;
         self.playing = false;
+    }
+
+    /// Shed the oldest audio while the receiver is holding more than the link
+    /// is allowed to hold.
+    ///
+    /// `downstream_ms` is audio that has already left this buffer and has not
+    /// been played yet, which on a real session is the [`crate::handoff`]
+    /// ring. It is counted because the listener waits through the sum: which
+    /// of the two buffers a millisecond is sitting in does not change how late
+    /// it is.
+    ///
+    /// Returns the packets discarded, which is zero in the ordinary case.
+    ///
+    /// # Why the bound is `max_ms`
+    ///
+    /// [`JitterConfig::max_ms`] is already the most this link should ever
+    /// hold, and it only ever clamped the adaptive *target*. Nothing bounded
+    /// what the buffer actually contained except `max_packets`, which is 256,
+    /// and at 6 ms a packet that is 1536 ms -- the depth a real USB session
+    /// was measured pinned at, dropping every newly arrived packet to keep a
+    /// second and a half of stale audio, with the drift controller at its
+    /// 500 ppm limit and fifty minutes of resampling ahead of it.
+    ///
+    /// So the budget is read as a bound on the total. The ring's occupancy is
+    /// spent out of it first, because that audio has already been handed to
+    /// the callback and only the callback could give it back, which is a
+    /// decision that does not belong at realtime priority. What is left is
+    /// this buffer's share, and the share is never less than the target the
+    /// adaptation settled on: shedding below the target is what starves
+    /// playback, and the starve-refill cycle is the crackle both this and the
+    /// pacing rule exist to avoid.
+    ///
+    /// # Why this is not routine
+    ///
+    /// It throws audio away and the listener hears the join, so it is the same
+    /// last resort as [`crate::handoff::Producer::resync_if_hopeless`] -- the
+    /// backstop that used to catch this case by accident, back when the
+    /// surplus collected in the ring it watches. It fires only above the
+    /// budget, it lands on the target rather than on the budget so that one
+    /// shed buys back the whole difference instead of a packet at a time, and
+    /// the packet of slack keeps whole-packet granularity from tripping it.
+    /// A session inside its budget never reaches any of that.
+    pub fn shed_over_budget(&mut self, downstream_ms: f64) -> u64 {
+        let packet_ms = self
+            .format
+            .packet_duration_nanos()
+            .map_or(0.0, |nanos| nanos as f64 / 1_000_000.0);
+        let budget = f64::from(self.config.max_ms);
+
+        // A caller that has not configured a ceiling is not asking for one,
+        // and a degenerate format has no packet to measure the slack in.
+        if packet_ms <= 0.0 || budget <= 0.0 || !downstream_ms.is_finite() {
+            return 0;
+        }
+
+        let share = (budget - downstream_ms.max(0.0)).max(self.target_ms());
+        if self.depth_ms() <= share + packet_ms {
+            return 0;
+        }
+
+        let before = self.stats.shed;
+        self.shed_to_target();
+        self.stats.shed - before
     }
 }
 
@@ -934,7 +1101,7 @@ mod tests {
         let mut buffer = buffer();
         let skew_nanos_per_packet = 60_u64; // 10 ppm at 6 ms per packet
 
-        for n in 0..200_u16 {
+        for n in 0..60_u16 {
             let arrival = u64::from(n) * PACKET_NANOS + u64::from(n) * skew_nanos_per_packet;
             buffer.push(n, u32::from(n) * PACKET_FRAMES, arrival, pcm(0));
             let _ = buffer.pop();
@@ -1138,5 +1305,230 @@ mod tests {
             assert!(target.is_finite(), "target must stay a real number");
             assert!((50.0..=100.0).contains(&target), "got {target}");
         }
+    }
+
+    /// Push packet `n` as arriving `arrival` nanoseconds into the session,
+    /// whatever its timestamp says it should have been.
+    fn push_at(buffer: &mut JitterBuffer, n: u16, arrival: u64) -> PushOutcome {
+        buffer.push(n, u32::from(n) * PACKET_FRAMES, arrival, pcm(n as u8))
+    }
+
+    /// The measured session: one packet on time, then the socket buffer
+    /// emptying at wire speed while nothing pops, because on the device
+    /// nothing could -- the audio callback had not started.
+    fn after_a_startup_burst(packets: u16) -> JitterBuffer {
+        let mut buffer = buffer();
+        push_on_time(&mut buffer, 0);
+        for n in 1..packets {
+            // Twenty microseconds apart, carrying six milliseconds each.
+            push_at(&mut buffer, n, PACKET_NANOS + u64::from(n) * 20_000);
+        }
+        buffer
+    }
+
+    #[test]
+    fn a_backlog_arriving_at_wire_speed_does_not_become_the_depth() {
+        let buffer = after_a_startup_burst(19);
+
+        // Eighteen packets of backlog, and what is left is what the buffer is
+        // for. Before this the whole hundred and eight milliseconds stayed,
+        // and one packet in for one packet out meant it stayed for good.
+        assert!(
+            buffer.depth_ms() <= buffer.target_ms() + 6.0,
+            "held {:.1} ms against a {:.1} ms target",
+            buffer.depth_ms(),
+            buffer.target_ms()
+        );
+        assert_eq!(
+            buffer.depth_packets() + buffer.stats().shed as usize,
+            19,
+            "packets went missing that were neither held nor shed"
+        );
+    }
+
+    #[test]
+    fn a_backlog_is_shed_from_the_front_and_not_reported_as_loss() {
+        let mut buffer = after_a_startup_burst(19);
+        let popped = drain(&mut buffer);
+
+        // What survives is the newest audio, contiguous. Shedding the front is
+        // what makes the join a single step forward through the stream rather
+        // than a hole in the middle of it.
+        let tags: Vec<u8> = popped
+            .iter()
+            .filter_map(|outcome| match outcome {
+                PopOutcome::Packet(pcm) => Some(pcm[0]),
+                _ => None,
+            })
+            .collect();
+        assert!(!tags.is_empty(), "nothing was left to play");
+        assert_eq!(tags.last(), Some(&18), "the newest audio was not kept");
+        for pair in tags.windows(2) {
+            assert_eq!(pair[1], pair[0] + 1, "a hole was left at {}", pair[0]);
+        }
+
+        // And none of it is concealed. Audio deliberately discarded is not
+        // audio that failed to arrive, so nothing here should be asking the
+        // concealer to invent a replacement for it.
+        assert_eq!(buffer.stats().lost, 0, "shed packets were reported lost");
+        assert!(
+            !popped.contains(&PopOutcome::Lost),
+            "the shed packets were handed to concealment"
+        );
+    }
+
+    #[test]
+    fn shedding_leaves_enough_to_start_playing() {
+        // The failure this must not reintroduce is a buffer that empties,
+        // re-arms and then releases the lot in a burst. Shedding stops at the
+        // target, so playback starts on the next pop rather than waiting to
+        // refill.
+        let mut buffer = after_a_startup_burst(19);
+        assert!(
+            matches!(buffer.pop(), PopOutcome::Packet(_)),
+            "the buffer was shed below the depth it starts playing at"
+        );
+    }
+
+    #[test]
+    fn a_link_that_is_merely_jittery_is_not_read_as_a_backlog() {
+        // Two milliseconds either side of a six millisecond spacing, which is
+        // heavy jitter for a wire and unremarkable for a radio. Nothing pops,
+        // so the depth is far past the target the whole time: if the rate test
+        // were not doing the work here, this would shed on every packet.
+        let mut buffer = buffer();
+        let mut arrival = 0;
+        for n in 0..60_u16 {
+            push_at(&mut buffer, n, arrival);
+            arrival += if n % 2 == 0 { 4_000_000 } else { 8_000_000 };
+        }
+
+        assert_eq!(
+            buffer.stats().shed,
+            0,
+            "shed audio from a link that was only jittery"
+        );
+        assert_eq!(buffer.depth_packets(), 60, "packets went missing");
+    }
+
+    #[test]
+    fn a_reordered_packet_is_not_read_as_a_backlog() {
+        // Arriving out of order runs time backwards on both clocks at once,
+        // and a ratio test that did not insist on forward deltas would read
+        // that pair of negatives as the fastest delivery there has ever been.
+        let mut buffer = buffer();
+        for n in [0_u16, 2, 1, 4, 3, 6, 5] {
+            push_on_time(&mut buffer, n);
+        }
+
+        assert_eq!(buffer.stats().shed, 0, "reordering was read as a backlog");
+        assert_eq!(buffer.depth_packets(), 7);
+    }
+
+    #[test]
+    fn a_receiver_inside_its_budget_is_left_alone() {
+        // Ten packets is sixty milliseconds against a two hundred millisecond
+        // ceiling. Shedding here would be throwing audio away to fix nothing.
+        let mut buffer = buffer();
+        for n in 0..10 {
+            push_on_time(&mut buffer, n);
+        }
+
+        assert_eq!(buffer.shed_over_budget(0.0), 0);
+        assert_eq!(buffer.stats().shed, 0);
+        assert_eq!(buffer.depth_packets(), 10);
+    }
+
+    #[test]
+    fn a_receiver_past_its_budget_comes_back_to_the_target() {
+        // Forty packets is two hundred and forty milliseconds, past the two
+        // hundred this link is allowed. Nothing else in the receiver bounds
+        // it: the pacing rule holds the ring near its floor, so the surplus
+        // collects here and the ring's own backstop never sees it.
+        let mut buffer = buffer();
+        for n in 0..40 {
+            push_on_time(&mut buffer, n);
+        }
+
+        let shed = buffer.shed_over_budget(0.0);
+        assert!(shed > 0, "nothing was shed from a buffer over its budget");
+        assert!(
+            buffer.depth_ms() <= buffer.target_ms() + 6.0,
+            "came back only to {:.1} ms",
+            buffer.depth_ms()
+        );
+
+        // One step, not a slow bleed: a second call has nothing left to do.
+        assert_eq!(buffer.shed_over_budget(0.0), 0);
+    }
+
+    #[test]
+    fn the_ring_is_spent_out_of_the_budget_before_this_buffer_is() {
+        // The same depth, judged twice. Audio already handed to the callback
+        // counts against the ceiling exactly as much as audio still held here,
+        // because the listener waits through both.
+        let mut buffer = buffer();
+        for n in 0..30 {
+            push_on_time(&mut buffer, n);
+        }
+
+        assert_eq!(
+            buffer.shed_over_budget(0.0),
+            0,
+            "shed while the receiver as a whole was inside its budget"
+        );
+        assert!(
+            buffer.shed_over_budget(150.0) > 0,
+            "ignored a hundred and fifty milliseconds sitting in the ring"
+        );
+    }
+
+    #[test]
+    fn shedding_to_a_budget_never_goes_below_the_target() {
+        // A ring so full that this buffer's share of the budget is negative.
+        // The share is floored at the target, because a buffer shed below the
+        // depth it starts playing at re-arms, and re-arming is the crackle.
+        let mut buffer = buffer();
+        for n in 0..40 {
+            push_on_time(&mut buffer, n);
+        }
+
+        buffer.shed_over_budget(10_000.0);
+        assert!(
+            buffer.depth_ms() >= buffer.target_ms() - f64::EPSILON,
+            "left {:.1} ms against a {:.1} ms target",
+            buffer.depth_ms(),
+            buffer.target_ms()
+        );
+        assert!(matches!(buffer.pop(), PopOutcome::Packet(_)));
+    }
+
+    #[test]
+    fn a_budget_that_cannot_be_read_sheds_nothing() {
+        // A caller with no ceiling configured is not asking for one, and a
+        // depth reported as not-a-number is not a depth. Neither is a reason
+        // to throw audio away.
+        let mut unbounded = JitterBuffer::new(
+            Format::stereo_48k(),
+            JitterConfig {
+                target_ms: 12,
+                min_ms: 6,
+                max_ms: 0,
+                jitter_multiplier: 3.0,
+                max_packets: 64,
+                ..JitterConfig::default()
+            },
+        );
+        for n in 0..40 {
+            push_on_time(&mut unbounded, n);
+        }
+        assert_eq!(unbounded.shed_over_budget(0.0), 0);
+
+        let mut buffer = buffer();
+        for n in 0..40 {
+            push_on_time(&mut buffer, n);
+        }
+        assert_eq!(buffer.shed_over_budget(f64::NAN), 0);
+        assert_eq!(buffer.shed_over_budget(f64::INFINITY), 0);
     }
 }
