@@ -1,8 +1,11 @@
 name: develop
 
+# Work happens on main, so the test build is cut from main. The tag it
+# publishes under is still `develop-build`: it names what the build is for,
+# not the branch it came from.
 on:
   push:
-    branches: [develop]
+    branches: [main]
 
 concurrency:
   group: develop
@@ -91,10 +94,29 @@ jobs:
       - name: Build unsigned desktop binary
         run: cargo build -p sonduit-desktop --features custom-protocol
 
+      # The executable alone is not something a tester can run: it spawns
+      # ffmpeg from beside itself, and the licence notices have to travel with
+      # the binary anyway. Staged together here so the published file is a
+      # folder that works rather than one file that half does.
+      #
+      # No installer on develop. The develop version carries a prerelease and a
+      # build suffix -- 2.0.0-dev.38+bd4b3acd -- and MSI version fields are
+      # four numbers and nothing else, so bundling would fail on the version
+      # before it failed on anything real.
+      - name: Stage the portable build
+        shell: bash
+        run: |
+          set -e
+          mkdir -p portable
+          cp target/debug/sonduit.exe portable/
+          cp desktop/src-tauri/binaries/ffmpeg.exe portable/
+          cp desktop/src-tauri/binaries/*.txt portable/
+          ls -l portable
+
       - uses: actions/upload-artifact@v4
         with:
           name: sonduit-windows-${{ needs.version.outputs.version }}
-          path: target/debug/sonduit.exe
+          path: portable/
           retention-days: 14
           if-no-files-found: error
 
@@ -189,19 +211,25 @@ jobs:
           mkdir -p upload
           find artifacts -type f -print
 
-          take() {
+          # Strict. A rename rule that silently matches nothing drops the
+          # artifact from the release and says so nowhere, which is how a
+          # develop build could ship with no Windows download at all.
+          need() {
             found=$(find artifacts -type f -name "$1" | head -n 1)
-            if [ -n "$found" ]; then cp "$found" "upload/$2"; echo "named $2"; fi
+            if [ -z "$found" ]; then
+              echo "::error::no artifact matched $1"
+              exit 1
+            fi
+            echo "$found"
           }
 
-          take '*.msi' "sonduit_windows_${version}_x86_64.msi"
-          take '*-setup.exe' "sonduit_windows_${version}_x86_64.exe"
-          take '*.apk' "sonduit_android_${version}_universal.apk"
+          exe=$(need 'sonduit.exe')
+          zip="upload/sonduit_windows_${version}_x86_64_portable.zip"
+          ( cd "$(dirname "$exe")" && zip -qr - . ) > "$zip"
+          echo "named sonduit_windows_${version}_x86_64_portable.zip"
 
-          if [ -z "$(ls -A upload)" ]; then
-            echo "::error::no artifacts to attach"
-            exit 1
-          fi
+          cp "$(need '*.apk')" "upload/sonduit_android_${version}_universal.apk"
+          echo "named sonduit_android_${version}_universal.apk"
           ( cd upload && sha256sum * > "sonduit_${version}_SHA256SUMS.txt" )
           ls -l upload
 
@@ -230,8 +258,7 @@ jobs:
             echo "## Download Options"
             echo ""
             echo "### Windows"
-            echo "- **MSI Installer:** \`sonduit_windows_${version}_x86_64.msi\`"
-            echo "- **NSIS Installer:** \`sonduit_windows_${version}_x86_64.exe\`"
+            echo "- **Portable ZIP:** \`sonduit_windows_${version}_x86_64_portable.zip\` (no install; unzip and run)"
             echo ""
             echo "### Android"
             echo "- **APK:** \`sonduit_android_${version}_universal.apk\`"
