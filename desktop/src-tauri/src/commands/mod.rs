@@ -1,8 +1,7 @@
 //! IPC commands exposed to the frontend layer.
 
 use crate::bridge::{
-    self, BridgeError, BridgeSnapshot, BridgeState, DiscoveredDevice, PairingInvite, SessionInfo,
-    StartOptions,
+    self, BridgeSnapshot, BridgeState, DiscoveredDevice, PairingInvite, SessionInfo, StartOptions,
 };
 use crate::convert::{self, BackendResult, ConvertPayload};
 use crate::core::window::apply_backdrop;
@@ -82,20 +81,31 @@ pub fn bridge_invite(state: State<'_, BridgeState>) -> Result<PairingInvite, Str
 /// Wait for the phone that scanned the invite to announce itself.
 ///
 /// Blocks for as long as the pairing window, so it runs off the async runtime.
-/// The invite is read out of the state before the wait starts: a Tauri `State`
-/// borrows, and the blocking task outlives the borrow.
+/// Everything the wait needs is taken out of the state before it starts: a
+/// Tauri `State` borrows, and the blocking task outlives the borrow.
 ///
-/// `Ok(None)` means nobody scanned in time, which is not an error.
+/// `Ok(None)` means nobody scanned in time, or that the dialog was closed.
+/// Neither is an error.
 #[tauri::command]
 pub async fn bridge_await_pairing(
     state: State<'_, BridgeState>,
 ) -> Result<Option<DiscoveredDevice>, String> {
-    let invite = state.invite().ok_or(BridgeError::NoInvite)?;
+    let session = state.pairing_session()?;
 
-    tauri::async_runtime::spawn_blocking(move || bridge::await_pairing(&invite))
+    tauri::async_runtime::spawn_blocking(move || bridge::await_pairing(&session))
         .await
         .map_err(|error| format!("background task failed: {error}"))?
         .map_err(Into::into)
+}
+
+/// Stop waiting, and retire the code that was on screen.
+///
+/// Called when the pairing dialog closes. Without it the wait would run for
+/// the rest of its window against a dialog the user has dismissed, and the
+/// code would still pair a device they are no longer expecting.
+#[tauri::command]
+pub fn bridge_cancel_pairing(state: State<'_, BridgeState>) {
+    state.cancel_pairing();
 }
 
 /// Start capturing system audio and sending it.

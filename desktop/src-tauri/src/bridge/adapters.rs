@@ -74,7 +74,19 @@ pub fn looks_like_tether(description: &str) -> bool {
 
     lowered
         .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|token| TETHER_TOKENS.contains(&token))
+        .any(is_tether_token)
+}
+
+/// Whether one word out of a description names a tethering protocol.
+///
+/// Also accepts the bus glued on the front, because drivers do that and the
+/// space is not always there: Windows reports one common device as "UsbNcm
+/// Host Device", whose only word of interest tokenises as `usbncm` and matched
+/// nothing at all. Stripping a leading `usb` is enough, and it is checked
+/// against the same list rather than a second one, so the two cannot drift.
+fn is_tether_token(token: &str) -> bool {
+    let bare = token.strip_prefix("usb").unwrap_or(token);
+    TETHER_TOKENS.contains(&token) || TETHER_TOKENS.contains(&bare)
 }
 
 /// Whether an address is in the range Android hands out when tethering.
@@ -416,6 +428,11 @@ mod tests {
         // whatever the driver author felt like.
         assert!(looks_like_tether("REMOTE NDIS DEVICE"));
         assert!(looks_like_tether("remote ndis device"));
+        // Windows writes this one with no separator at all, so the bus and
+        // the protocol arrive as a single word.
+        assert!(looks_like_tether("UsbNcm Host Device"));
+        assert!(looks_like_tether("Samsung USB RNDIS Adapter"));
+        assert!(!looks_like_tether("USB Serial Device"));
     }
 
     #[test]
