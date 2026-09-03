@@ -142,6 +142,48 @@ pub struct TelemetryView {
     /// a bug or somebody on the network sending forged status datagrams. It is
     /// shown for that reason: it is the only evidence of the second.
     pub refused_reports: Option<u64>,
+    /// Datagrams the socket refused, over the whole session.
+    ///
+    /// The record of every send failure, including the ones that healed
+    /// before anybody could see them. [`Accumulator::last_error`] retires a
+    /// message the moment a datagram gets through, which is the honest thing
+    /// to say about a fault that is over; this is what stops that being the
+    /// same as pretending it never happened. Zero on a healthy session.
+    pub send_failures: Option<u64>,
+    /// Reads the capture device refused, over the whole session.
+    ///
+    /// Counted separately from [`Self::send_failures`] and never added to it:
+    /// one is the audio device and the other is the network, they recover in
+    /// completely different ways, and a single total would say neither.
+    pub capture_failures: Option<u64>,
+}
+
+/// What has to happen before a recorded failure stops being true.
+///
+/// A failure is not news for as long as it lasts and not news once it is
+/// over; the only question is which success ends it. A socket that refuses a
+/// datagram is answered by a datagram getting through, and a capture device
+/// that refuses a read is answered by a read succeeding. Neither answers the
+/// other: audio still arriving from the sound card says nothing about whether
+/// the network came back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recovery {
+    /// A block of datagrams leaving the machine.
+    Sent,
+    /// A block read from the capture device.
+    Read,
+}
+
+/// A failure, and what it is waiting to be superseded by.
+#[derive(Debug, Clone)]
+struct Fault {
+    /// What to tell the user while it is still true.
+    message: String,
+    /// Which counter ends it.
+    recovery: Recovery,
+    /// That counter's value when this happened. While it has not moved,
+    /// nothing of the kind that would disprove this fault has happened.
+    at: u64,
 }
 
 /// A complete view of the bridge, as the webview receives it.
@@ -291,7 +333,17 @@ pub struct Accumulator {
     /// `None` on a session with no key: nothing is being checked, so there is
     /// nothing to count. Zero would say a check is running and passing.
     refused_reports: Option<u64>,
-    last_error: Option<String>,
+    /// Capture blocks whose datagrams all left the machine.
+    ///
+    /// Only ever compared against itself, so it does not matter that a block
+    /// is a different amount of work from one session to the next: what is
+    /// being asked is "has anything gone out since that failure", and any
+    /// monotonic count of successes answers it.
+    sends: u64,
+    /// Blocks read from the capture device without error.
+    reads: u64,
+    /// The failure that is currently true, if one is.
+    last_error: Option<Fault>,
     /// The receiver's most recent report, and when it arrived.
     ///
     /// Everything about the far end and the network comes from here. Nothing
@@ -316,6 +368,8 @@ impl Accumulator {
             capture_failures: 0,
             reopens: 0,
             refused_reports: None,
+            sends: 0,
+            reads: 0,
             last_error: None,
             latest: None,
             round_trip_ms: None,
@@ -326,12 +380,26 @@ impl Accumulator {
     pub fn record_sent(&mut self, frames: usize, packets_total: u64) {
         self.frames += frames as u64;
         self.packets = packets_total;
+        self.sends += 1;
+    }
+
+    /// Record a block read from the capture device without error.
+    ///
+    /// Separate from [`Self::record_sent`] because a block can be read and
+    /// then fail to send, and because a silent moment reads frames that never
+    /// become a datagram. Both are the capture device working.
+    pub fn record_read(&mut self) {
+        self.reads += 1;
     }
 
     /// Record a datagram the socket refused.
     pub fn record_send_error(&mut self, message: &str) {
         self.send_failures += 1;
-        self.last_error = Some(message.to_string());
+        self.last_error = Some(Fault {
+            message: message.to_string(),
+            recovery: Recovery::Sent,
+            at: self.sends,
+        });
     }
 
     /// Declare that this session's reports are authenticated.
@@ -357,7 +425,11 @@ impl Accumulator {
     /// Record a failed read from the capture device.
     pub fn record_capture_error(&mut self, message: &str) {
         self.capture_failures += 1;
-        self.last_error = Some(message.to_string());
+        self.last_error = Some(Fault {
+            message: message.to_string(),
+            recovery: Recovery::Read,
+            at: self.reads,
+        });
     }
 
     /// Fold in a report from the receiver.
@@ -395,10 +467,50 @@ impl Accumulator {
         self.reopens
     }
 
-    /// The most recent error, if one has happened.
+    /// The failure that is still true, if one is.
+    ///
+    /// # The rule
+    ///
+    /// A failure is reported for exactly as long as nothing has disproved it,
+    /// and not one tick longer. A send failure is disproved by a datagram
+    /// getting through; a capture failure is disproved by a read succeeding.
+    /// Until that happens the message stands, however many telemetry ticks
+    /// that takes; the moment it happens the message is gone, without waiting
+    /// for a timer and without anything having to remember to call a clearer.
+    ///
+    /// # Why it is not simply cleared somewhere
+    ///
+    /// It was, once, from the capture-reopen path and nowhere else, and the
+    /// send path had no equivalent at all. A session that retreated from a
+    /// pulled cable onto Wi-Fi went on reporting
+    /// `socket error ... (os error 10049)` for sixty-six seconds after it had
+    /// migrated back onto the cable and was demonstrably sending, because
+    /// nothing on that path had a reason to call the clearer. Deriving the
+    /// answer from the counters instead means there is no path that can
+    /// forget: a fault ends because the thing that would end it happened, not
+    /// because somebody remembered to say so.
+    ///
+    /// # What this does to the three cases
+    ///
+    /// A **transient** failure -- one datagram refused, the next accepted --
+    /// is true for one capture block, about ten milliseconds. The telemetry
+    /// tick is four times a second, so it is usually never published at all,
+    /// and when a tick does land inside that window it is published for that
+    /// one tick, which is true. A **persistent** failure is not suppressed by
+    /// any of this: while every send is refused, `sends` never moves and the
+    /// message stands on every tick until it does. And an **unseen** failure
+    /// is not thrown away: every one of them is counted, and
+    /// [`TelemetryView::send_failures`] and
+    /// [`TelemetryView::capture_failures`] carry those counts to the user
+    /// whether or not the message was ever on screen.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+        let fault = self.last_error.as_ref()?;
+        let succeeded = match fault.recovery {
+            Recovery::Sent => self.sends,
+            Recovery::Read => self.reads,
+        };
+        (succeeded == fault.at).then_some(fault.message.as_str())
     }
 
     /// A view, if enough time has passed since the last one.
@@ -457,6 +569,13 @@ impl Accumulator {
             packets_sent: Some(self.packets),
             audio_seconds: Some(self.frames as f64 / f64::from(self.format.sample_rate)),
             refused_reports: self.refused_reports,
+            // Always a number, never a blank: a send is either attempted or
+            // the session is not running, so zero here means "none refused"
+            // rather than "nothing was counted". That is the opposite of
+            // `refused_reports` above, where a blank is the honest answer for
+            // a session with no key to check anything against.
+            send_failures: Some(self.send_failures),
+            capture_failures: Some(self.capture_failures),
         }
     }
 
@@ -715,6 +834,99 @@ mod tests {
         snapshot.mark_error("the capture device disappeared");
         snapshot.clear_error();
         assert_eq!(snapshot.status, "connecting");
+    }
+
+    #[test]
+    fn a_send_failure_stops_being_reported_once_a_datagram_gets_through() {
+        // The sixty-six second lie. A session retreated from a pulled cable
+        // onto Wi-Fi, migrated back onto the cable, and went on displaying the
+        // socket error from the moment the cable came out for the rest of its
+        // life, while audio was arriving at the phone the whole time.
+        let mut counters = accumulator();
+        counters.record_sent(288, 1);
+        counters.record_send_error(
+            "socket error: The requested address is not valid in its context. (os error 10049)",
+        );
+        assert!(
+            counters.last_error().is_some(),
+            "a failure that has just happened is the truth about this session"
+        );
+
+        counters.record_sent(288, 2);
+
+        assert_eq!(
+            counters.last_error(),
+            None,
+            "a session that is sending is not a session that is broken"
+        );
+    }
+
+    #[test]
+    fn a_failure_that_is_still_happening_is_not_suppressed() {
+        // The other half of the rule, and the one it would be dangerous to
+        // get wrong: nothing here may quieten a fault that is still true.
+        // Twenty telemetry ticks' worth of refusals with no send in between.
+        let mut counters = accumulator();
+        counters.record_sent(288, 1);
+        for _ in 0..20 {
+            counters.record_send_error("network is down");
+            assert_eq!(counters.last_error(), Some("network is down"));
+        }
+    }
+
+    #[test]
+    fn a_failure_that_healed_unseen_is_still_counted() {
+        // A transient refusal between two telemetry ticks is not worth a
+        // message: by the time anybody could read it, it is no longer true.
+        // It is still worth a number, because "this link refused four hundred
+        // datagrams and recovered from every one" is a thing about the
+        // session the user can act on and cannot otherwise find out.
+        let mut counters = accumulator();
+        counters.record_sent(288, 1);
+        counters.record_send_error("no buffer space available");
+        counters.record_sent(288, 2);
+        counters.record_send_error("no buffer space available");
+        counters.record_sent(288, 3);
+
+        assert_eq!(counters.last_error(), None);
+        let view = counters.view_now();
+        assert_eq!(view.send_failures, Some(2));
+        assert_eq!(view.capture_failures, Some(0));
+    }
+
+    #[test]
+    fn audio_still_arriving_does_not_prove_the_network_came_back() {
+        // The two faults are not interchangeable and neither retires the
+        // other. A capture device that is happily handing over blocks says
+        // nothing at all about a socket that is refusing them.
+        let mut counters = accumulator();
+        counters.record_send_error("network unreachable");
+        for _ in 0..50 {
+            counters.record_read();
+        }
+        assert_eq!(counters.last_error(), Some("network unreachable"));
+
+        // And the reverse: a datagram going out says nothing about a capture
+        // device that has been pulled.
+        let mut counters = accumulator();
+        counters.record_capture_error("device invalidated");
+        counters.record_sent(288, 1);
+        assert_eq!(counters.last_error(), Some("device invalidated"));
+    }
+
+    #[test]
+    fn a_capture_failure_stops_being_reported_once_a_block_is_read() {
+        // The same rule on the other path. Before this, the reopen path
+        // called a clearer on the snapshot and the very next telemetry tick
+        // put the message straight back, because the accumulator still held
+        // it and republished it four times a second.
+        let mut counters = accumulator();
+        counters.record_capture_error("the capture device disappeared");
+        assert!(counters.last_error().is_some());
+
+        counters.record_read();
+
+        assert_eq!(counters.last_error(), None);
     }
 
     #[test]

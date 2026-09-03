@@ -32,6 +32,12 @@ export const EMPTY_TELEMETRY = {
   // Feedback reports that arrived and did not authenticate. Null on a session
   // with no key, where nothing is being checked and a zero would claim it was.
   refusedReports: null,
+  // Faults counted over the whole session, including the ones that healed
+  // before a telemetry tick could show them. The message on the status line
+  // only ever states a failure that is still true, so these are the only
+  // record that a transient one happened at all.
+  sendFailures: null,
+  captureFailures: null,
 };
 
 export const EMPTY_SESSION = {

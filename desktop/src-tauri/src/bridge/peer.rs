@@ -75,6 +75,23 @@ const PROBES: u32 = 3;
 pub struct Peer {
     /// Where it answered from when it was paired or scanned.
     pub address: SocketAddr,
+    /// Other addresses this same device answered from during that pairing.
+    ///
+    /// A phone that is tethered and on Wi-Fi at once holds an address on both
+    /// networks, and the QR pairing path already puts both in front of this
+    /// desktop: the invite offers every local address, the phone unicasts its
+    /// announcement to all of them, and one copy arrives over each link with
+    /// that link's source address on it. Only the first was ever kept.
+    ///
+    /// **These are hints about where to look, and nothing more.** No address
+    /// in here is a reason to send audio anywhere or to believe anything that
+    /// answers there. Every one of them is probed exactly as a broadcast
+    /// candidate is, and accepted only if what answers produces the pairing
+    /// tag under [`Self::code`] and announces the same name and audio port --
+    /// which is the check [`is_the_same_device`] and
+    /// [`sonduit_transport::discovery::decode_announce`] were already doing.
+    /// A stale address costs one unanswered datagram.
+    pub elsewhere: Vec<SocketAddr>,
     /// The name it announced. Covered by the tag, so it cannot be rewritten.
     pub name: String,
     /// The pairing code that proved it. This is the credential every later
@@ -94,6 +111,29 @@ impl Peer {
     #[must_use]
     pub const fn audio_port(&self) -> u16 {
         self.address.port()
+    }
+
+    /// Every address worth asking, best first, without repeats.
+    ///
+    /// The paired address leads because it is the one this session was set up
+    /// against and the one most likely to still answer. The rest follow in
+    /// the order they were learned.
+    ///
+    /// Deliberately includes the paired address even when the caller is
+    /// looking for somewhere else to go: whether an address is "somewhere
+    /// else" is decided by what link its answer classifies as, not by which
+    /// list it came out of. A session that started on Wi-Fi and moved onto a
+    /// cable has its wireless route sitting in exactly this field.
+    #[must_use]
+    pub fn addresses(&self) -> Vec<SocketAddr> {
+        let mut all = Vec::with_capacity(1 + self.elsewhere.len());
+        all.push(self.address);
+        for address in &self.elsewhere {
+            if !all.contains(address) {
+                all.push(*address);
+            }
+        }
+        all
     }
 }
 
@@ -160,11 +200,38 @@ fn verify_at(route: &Route, peer: &Peer, nonce: &[u8; NONCE_BYTES], port: u16) -
 
 /// Find the peer somewhere that is not a cable.
 ///
-/// Broadcast, because the phone's address on the wireless network is not
-/// something this machine can look up: it changes with the DHCP lease and a
-/// session that started over USB may never have been told it. Answers that
-/// classify as wired are rejected, since the point of asking is to have
-/// somewhere to retreat to when the cable goes.
+/// Answers that classify as wired are rejected, since the point of asking is
+/// to have somewhere to retreat to when the cable goes.
+///
+/// # Why this asks twice
+///
+/// It broadcasts, because the phone's address on the wireless network can
+/// change with the DHCP lease and the address this session knows may have
+/// expired. **And it asks every address the phone has ever answered from**,
+/// because a limited broadcast does not cross a subnet boundary and on a
+/// routed network that is the only question that gets an answer.
+///
+/// Measured on a network where the desktop sits on `10.10.0.0/22` and the
+/// phone's Wi-Fi lease is on `10.10.20.0/22`: `255.255.255.255` leaves by
+/// whichever interface the routing table prefers and is answered by nothing
+/// at all, while a unicast probe to the phone's wireless address is answered
+/// in four milliseconds. With only the broadcast, a session that started on
+/// the cable had nowhere to retreat to, and the standby was armed onto
+/// nothing -- which is the failure this function exists to prevent.
+///
+/// # Why remembering an address does not weaken anything
+///
+/// Nothing here trusts an address. A remembered address decides only where a
+/// probe is sent; what may be migrated onto is still decided by the answer,
+/// and the answer still has to carry an HMAC over this probe's fresh nonce,
+/// keyed by the pairing code, and announce the same name and audio port. That
+/// is the identical bar a broadcast reply has to clear. See [`Peer::elsewhere`].
+///
+/// # Cost
+///
+/// One socket and one reply window, whatever the number of candidates: every
+/// probe goes out before anything is listened for. Three datagrams per
+/// candidate, and a candidate that has gone is a datagram nobody answers.
 ///
 /// `classify` is passed in rather than called, so the caller supplies the
 /// adapter list it already walked this poll instead of walking it again, and
@@ -174,15 +241,40 @@ pub fn find_elsewhere<F>(peer: &Peer, nonce: &[u8; NONCE_BYTES], classify: F) ->
 where
     F: Fn(SocketAddr) -> LinkKind,
 {
+    find_elsewhere_at(peer, nonce, classify, discovery::DISCOVERY_PORT)
+}
+
+/// [`find_elsewhere`], with the discovery port named rather than assumed.
+///
+/// Exists for the same reason [`verify_at`] does: a stand-in receiver in a
+/// test cannot bind the protocol's port without colliding with a live phone.
+#[must_use]
+fn find_elsewhere_at<F>(
+    peer: &Peer,
+    nonce: &[u8; NONCE_BYTES],
+    classify: F,
+    port: u16,
+) -> Option<Route>
+where
+    F: Fn(SocketAddr) -> LinkKind,
+{
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).ok()?;
     socket.set_broadcast(true).ok()?;
     socket.set_read_timeout(Some(READ_SLICE)).ok()?;
 
-    if !probe(
+    let mut sent = probe(
         &socket,
-        SocketAddr::from((Ipv4Addr::BROADCAST, discovery::DISCOVERY_PORT)),
+        SocketAddr::from((Ipv4Addr::BROADCAST, port)),
         nonce,
-    ) {
+    );
+    for address in peer.addresses() {
+        sent |= probe(&socket, SocketAddr::new(address.ip(), port), nonce);
+    }
+    // False means not one probe left the machine, which is an interface that
+    // has gone rather than a peer that is not there. Waiting out the reply
+    // window for an answer to a question nobody was asked is the one case
+    // worth short-circuiting.
+    if !sent {
         return None;
     }
 
@@ -192,7 +284,10 @@ where
     //
     // No `asked` address to hold an answer to, because a broadcast was not
     // addressed to anybody; the pairing tag is what stands in for it, and it
-    // is the check that was doing the work in the first place.
+    // is the check that was doing the work in the first place. The unicast
+    // probes are held to the same rule rather than to their own: a reply is
+    // taken on the strength of its tag, so it does not matter which of the
+    // several probes on this socket provoked it.
     let found = listen(
         &socket,
         peer,
@@ -295,6 +390,7 @@ mod tests {
     fn peer() -> Peer {
         Peer {
             address: "192.168.1.42:4010".parse().unwrap(),
+            elsewhere: Vec::new(),
             name: "Pixel 7a".to_string(),
             code: PairingCode::parse("482913").unwrap(),
             secret: agreed_secret(),
@@ -396,6 +492,7 @@ mod tests {
         // network and touches nothing on this machine's real interfaces.
         let peer = Peer {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 4010)),
+            elsewhere: Vec::new(),
             name: "Pixel 7a".to_string(),
             code: PairingCode::parse("482913").unwrap(),
             secret: agreed_secret(),
@@ -445,11 +542,134 @@ mod tests {
     }
 
     #[test]
+    fn the_addresses_to_ask_lead_with_the_one_the_session_was_paired_against() {
+        let mut peer = peer();
+        peer.elsewhere = vec![
+            from("10.10.22.160:4010"),
+            // A repeat of the paired address, which the pairing window can
+            // produce when the phone announces twice over the same link.
+            from("192.168.1.42:4010"),
+        ];
+
+        assert_eq!(
+            peer.addresses(),
+            vec![from("192.168.1.42:4010"), from("10.10.22.160:4010")],
+        );
+    }
+
+    /// A stand-in phone that answers probes the way the receiver's announce
+    /// loop does, tagging its reply with `code`.
+    ///
+    /// Returns the port it is listening on. It answers until the deadline
+    /// rather than once, because these tests send several probes.
+    fn stand_in_phone(code: PairingCode, name: &'static str) -> (u16, std::thread::JoinHandle<()>) {
+        let responder = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("an ephemeral loopback socket");
+        let port = responder.local_addr().unwrap().port();
+        responder
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let mut datagram = [0_u8; 256];
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                let Ok((length, from)) = responder.recv_from(&mut datagram) else {
+                    continue;
+                };
+                let Some(nonce) = discovery::probe_nonce(&datagram[..length]) else {
+                    continue;
+                };
+                let reply = discovery::encode_announce(name, 4010, &nonce, &code);
+                let _ = responder.send_to(&reply, from);
+            }
+        });
+
+        (port, handle)
+    }
+
+    #[test]
+    fn a_peer_the_broadcast_cannot_reach_is_found_where_it_was_last_seen() {
+        // The defect, in one test. The paired address is on a network this
+        // machine cannot reach and the broadcast is answered by nobody, which
+        // is exactly what a routed network looks like from here: the session
+        // had nowhere to retreat to and the standby was armed onto nothing.
+        // The address the phone answered from during the pairing is the whole
+        // of the new information, and it is enough.
+        let (port, phone) = stand_in_phone(PairingCode::parse("482913").unwrap(), "Pixel 7a");
+
+        let peer = Peer {
+            // TEST-NET-2, which is guaranteed to route nowhere, standing in
+            // for a lease that has expired or a subnet across a router.
+            address: from("198.51.100.7:4010"),
+            elsewhere: vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 4010))],
+            name: "Pixel 7a".to_string(),
+            code: PairingCode::parse("482913").unwrap(),
+            secret: agreed_secret(),
+        };
+
+        let found = find_elsewhere_at(&peer, &[0x33; NONCE_BYTES], |_| LinkKind::Wireless, port);
+        let _ = phone.join();
+
+        assert_eq!(
+            found.map(|route| route.target),
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 4010))),
+            "the phone answered where it was last seen and was not taken"
+        );
+    }
+
+    #[test]
+    fn a_remembered_address_is_where_to_look_and_never_who_to_believe() {
+        // The whole safety argument for remembering an address at all. The
+        // address is right, something is listening on it, and it answers
+        // promptly with the correct name and port -- and it does not hold the
+        // pairing code, so the audio must not follow it. Nothing about having
+        // been remembered gets a device past the check.
+        let (port, stranger) = stand_in_phone(PairingCode::parse("000001").unwrap(), "Pixel 7a");
+
+        let peer = Peer {
+            address: from("198.51.100.7:4010"),
+            elsewhere: vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 4010))],
+            name: "Pixel 7a".to_string(),
+            code: PairingCode::parse("482913").unwrap(),
+            secret: agreed_secret(),
+        };
+
+        let found = find_elsewhere_at(&peer, &[0x44; NONCE_BYTES], |_| LinkKind::Wireless, port);
+        let _ = stranger.join();
+
+        assert!(found.is_none(), "audio would have followed a stranger");
+    }
+
+    #[test]
+    fn a_remembered_address_that_answers_over_the_cable_is_still_not_a_retreat() {
+        // The point of asking is somewhere to go when the cable fails, so an
+        // answer that classifies as the cable is no answer at all -- however
+        // it was found. Remembering addresses must not become a way round
+        // that rule.
+        let (port, phone) = stand_in_phone(PairingCode::parse("482913").unwrap(), "Pixel 7a");
+
+        let peer = Peer {
+            address: from("198.51.100.7:4010"),
+            elsewhere: vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 4010))],
+            name: "Pixel 7a".to_string(),
+            code: PairingCode::parse("482913").unwrap(),
+            secret: agreed_secret(),
+        };
+
+        let found = find_elsewhere_at(&peer, &[0x55; NONCE_BYTES], |_| LinkKind::Wired, port);
+        let _ = phone.join();
+
+        assert!(found.is_none(), "the fallback is the link that just failed");
+    }
+
+    #[test]
     fn a_device_that_does_not_hold_the_pairing_code_is_not_migrated_onto() {
         // The stranger. It answers, promptly and well-formed, and it must not
         // be enough: the audio would follow it.
         let peer = Peer {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 4010)),
+            elsewhere: Vec::new(),
             name: "Pixel 7a".to_string(),
             code: PairingCode::parse("482913").unwrap(),
             secret: agreed_secret(),

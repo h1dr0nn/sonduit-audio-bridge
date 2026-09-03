@@ -399,6 +399,24 @@ export function ConnectionPage() {
               </p>
             )}
 
+            {/* The record of faults that healed. The status line above states
+              * a failure only while it is still true -- a send error stops
+              * being shown the moment a datagram gets through -- so without
+              * these counts a link that refused four hundred datagrams and
+              * recovered from every one would look identical to one that
+              * never faltered. Absent while zero: a healthy session should
+              * not have to read two zeroes to learn that nothing is wrong. */}
+            {telemetry.sendFailures > 0 && (
+              <p className="-mt-1 text-xs opacity-80">
+                {t('telemetry.sendFailures')}: {telemetry.sendFailures}
+              </p>
+            )}
+            {telemetry.captureFailures > 0 && (
+              <p className="-mt-1 text-xs opacity-80">
+                {t('telemetry.captureFailures')}: {telemetry.captureFailures}
+              </p>
+            )}
+
             <dl className="mt-2 grid grid-cols-3 gap-2 border-t border-white/20 pt-3 text-xs">
               <div>
                 <dt className="opacity-70">{t('connection.sampleRate')}</dt>

@@ -143,6 +143,26 @@ const KEY_OFFERS: u32 = 3;
 /// nothing is ever played.
 const KEY_ACCEPT_GRACE: Duration = Duration::from_millis(50);
 
+/// Longest a pairing spends collecting the phone's other addresses.
+///
+/// A ceiling and not a wait. The phone sends one announcement per address in
+/// a single pass, so on a machine with two live interfaces the second copy is
+/// in the receive buffer before the first has been decoded, and
+/// [`also_announced_from`] returns as soon as the buffer runs dry. This only
+/// bites if a copy is lost on the radio, and the answer there is to stop
+/// rather than to wait for the phone's next repeat: an address that is not
+/// collected costs a retreat that has to fall back on the broadcast, and a
+/// pairing that visibly stalls costs the user's confidence in the whole
+/// exchange.
+const ALTERNATE_WINDOW: Duration = Duration::from_millis(300);
+
+/// How long one read waits while draining those announcements.
+///
+/// Short, because the read that ends the drain is the one that finds nothing,
+/// and that read is on the path of every pairing including the ones with only
+/// one interface to announce over.
+const ALTERNATE_SLICE: Duration = Duration::from_millis(40);
+
 /// Consecutive capture blocks whose send failed before the session retreats.
 ///
 /// Five, so about fifty milliseconds at a ten millisecond capture period.
@@ -179,6 +199,16 @@ pub struct PairedDevice {
     pub device: DiscoveredDevice,
     /// What audio to this device is keyed from.
     secret: SessionSecret,
+    /// Other addresses this same device answered from, as audio addresses.
+    ///
+    /// A phone that is tethered and on Wi-Fi at once answers on both, and
+    /// both answers carry the same tag under the same code. Kept because a
+    /// limited broadcast does not cross a subnet boundary, so an address the
+    /// phone has already been reached at is the only thing that will find it
+    /// again on a routed network. Not shown to the user and not serialised:
+    /// picking a device is picking one address, and the rest are hints for
+    /// the link watcher. See [`Peer::elsewhere`].
+    elsewhere: Vec<SocketAddr>,
 }
 
 /// A pairing invite, as the QR panel needs it.
@@ -458,9 +488,16 @@ impl BridgeState {
             let Ok(address) = paired.device.id.parse::<SocketAddr>() else {
                 continue;
             };
-            known.retain(|peer| peer.address != address);
+            // Dropped by every address this pairing covers, not only the one
+            // it is filed under. A record left over at one of the alternates
+            // holds the key the phone has just replaced, and a session keyed
+            // from it is a session the receiver refuses every packet of.
+            known.retain(|peer| {
+                peer.address != address && !paired.elsewhere.contains(&peer.address)
+            });
             known.push(Peer {
                 address,
+                elsewhere: paired.elsewhere.clone(),
                 name: paired.device.name.clone(),
                 code: code.clone(),
                 secret: paired.secret.clone(),
@@ -805,6 +842,12 @@ pub fn await_pairing(session: &PairingSession) -> Result<Option<PairedDevice>, B
         // desktop can stream to, so it is not offered: the receiver refuses
         // anything not sealed under a key it holds, and a device in the list
         // that cannot be sent audio is a device that looks broken later.
+        // Before the key agreement, because that reads the same socket and
+        // throws away everything that is not an accept. The phone's other
+        // announcements are already in the receive buffer at this point and
+        // agreeing first would consume them unread.
+        let elsewhere = also_announced_from(session, &announcement, from);
+
         let Some(secret) = agree_key(&session.socket, from, &invite.nonce, &invite.code)? else {
             continue;
         };
@@ -817,10 +860,94 @@ pub fn await_pairing(session: &PairingSession) -> Result<Option<PairedDevice>, B
                 id,
             },
             secret,
+            elsewhere,
         }));
     }
 
     Ok(None)
+}
+
+/// The other addresses the phone that just announced itself can be reached at.
+///
+/// # Why there is anything to collect
+///
+/// The invite offers every address this machine holds and the phone unicasts
+/// its announcement to all of them, because it cannot tell which interface it
+/// shares with this desktop. A phone that is tethered *and* on Wi-Fi therefore
+/// answers over both links, and each copy arrives carrying that link's source
+/// address. The desktop was keeping the first and dropping the rest.
+///
+/// That discarded address is the entire fix for a session with nowhere to
+/// retreat to. `peer::find_elsewhere` broadcasts, and a limited broadcast does
+/// not cross a subnet boundary; on a network where the phone's Wi-Fi lease is
+/// on another subnet from this machine, nothing answers and a session that
+/// started on the cable is armed onto nothing. Unicast to an address the phone
+/// has already answered from does cross, and this is where that address
+/// already was.
+///
+/// # What is being claimed about them
+///
+/// That the same device answered there, on this pairing's nonce and code, and
+/// announced the same name and audio port -- which is exactly what makes the
+/// first announcement acceptable, applied unchanged to the rest. It is not a
+/// claim that the address will still work later: they are re-probed and
+/// re-authenticated every time they are used. See [`Peer::elsewhere`].
+///
+/// # Cost
+///
+/// The copies are sent back to back by one phone and are queued by the time
+/// the first has been read, so this normally returns as fast as the socket can
+/// be drained. The read timeout is shortened for the drain and restored after
+/// it, or a pairing on a machine with one interface would pay the caller's
+/// whole timeout to learn there is nothing else.
+fn also_announced_from(
+    session: &PairingSession,
+    announcement: &discovery::Announcement,
+    first: SocketAddr,
+) -> Vec<SocketAddr> {
+    let invite = &session.invite;
+    let restore = session.socket.read_timeout().ok().flatten();
+    if session
+        .socket
+        .set_read_timeout(Some(ALTERNATE_SLICE))
+        .is_err()
+    {
+        return Vec::new();
+    }
+
+    let deadline = Instant::now() + ALTERNATE_WINDOW;
+    let mut datagram = [0_u8; 256];
+    let mut found: Vec<SocketAddr> = Vec::new();
+
+    while Instant::now() < deadline {
+        // Any failed read ends the drain. A timeout means the buffer is empty
+        // and the phone has said everything it is going to say in this round,
+        // which is the ordinary way out of here.
+        let Ok((length, from)) = session.socket.recv_from(&mut datagram) else {
+            break;
+        };
+        let Some(other) =
+            discovery::decode_announce(&datagram[..length], &invite.nonce, &invite.code)
+        else {
+            continue;
+        };
+        // The same device on another link, and not a second device that also
+        // holds the code. Both fields are inside the tag, so this cannot be
+        // rewritten by anything in the middle.
+        if other.name != announcement.name || other.audio_port != announcement.audio_port {
+            continue;
+        }
+        let address = discovery::audio_address(from, &other);
+        // The repeat the phone sends while it waits for the key offer arrives
+        // from the address already in hand and is not another link.
+        if from.ip() == first.ip() || found.contains(&address) {
+            continue;
+        }
+        found.push(address);
+    }
+
+    let _ = session.socket.set_read_timeout(restore);
+    found
 }
 
 /// Broadcast a discovery probe and collect the replies that prove they know
@@ -884,7 +1011,7 @@ pub fn discover(code: &str) -> Result<Vec<PairedDevice>, BridgeError> {
         ));
     }
 
-    let mut answered: Vec<(SocketAddr, DiscoveredDevice)> = Vec::new();
+    let mut answered: Vec<(SocketAddr, DiscoveredDevice, Vec<SocketAddr>)> = Vec::new();
     let deadline = Instant::now() + DISCOVERY_TIMEOUT;
     let mut datagram = [0_u8; 256];
 
@@ -897,12 +1024,35 @@ pub fn discover(code: &str) -> Result<Vec<PairedDevice>, BridgeError> {
             continue;
         };
         let address = discovery::audio_address(from, &announcement);
-        let id = address.to_string();
-        // The same device answers every probe, so replies are deduplicated by
-        // address rather than shown three times.
-        if answered.iter().any(|(_, device)| device.id == id) {
+
+        // One device, however many links it answered over.
+        //
+        // A tethered phone that is also on Wi-Fi is reached by the broadcast
+        // and by the gateway probe, and answers both from different addresses.
+        // It used to appear in the picker twice, as two devices with the same
+        // name, and the user had no way to tell which was which. Grouped by
+        // the name and audio port inside the tag, which is the same pair
+        // `peer::is_the_same_device` uses to decide that a phone answering
+        // over another link is this phone.
+        //
+        // The address the device is offered at is the one that answered first
+        // -- over a cable, the cable -- and the rest are kept as the places to
+        // look for it later. Nothing about being grouped makes any of them
+        // trusted: see `Peer::elsewhere`.
+        if let Some((_, _, elsewhere)) = answered.iter_mut().find(|(_, device, _)| {
+            device.name == announcement.name
+                && device
+                    .id
+                    .parse::<SocketAddr>()
+                    .is_ok_and(|known| known.port() == announcement.audio_port)
+        }) {
+            if !elsewhere.contains(&address) {
+                elsewhere.push(address);
+            }
             continue;
         }
+
+        let id = address.to_string();
         answered.push((
             from,
             DiscoveredDevice {
@@ -910,6 +1060,7 @@ pub fn discover(code: &str) -> Result<Vec<PairedDevice>, BridgeError> {
                 address: id.clone(),
                 id,
             },
+            Vec::new(),
         ));
     }
 
@@ -918,9 +1069,13 @@ pub fn discover(code: &str) -> Result<Vec<PairedDevice>, BridgeError> {
     // in the collection loop would spend the scan window waiting on the first
     // phone instead of hearing the second.
     let mut found = Vec::with_capacity(answered.len());
-    for (from, device) in answered {
+    for (from, device, elsewhere) in answered {
         match agree_key(&socket, from, &nonce, &code)? {
-            Some(secret) => found.push(PairedDevice { device, secret }),
+            Some(secret) => found.push(PairedDevice {
+                device,
+                secret,
+                elsewhere,
+            }),
             // Dropped in silence, exactly as an announcement that does not
             // verify is: it is either a device running an older build or one
             // that is not what it claims, and naming the second would make it
@@ -1625,6 +1780,11 @@ pub fn capture_and_follow(
         pcm.clear();
         let frames = match capture.read(&mut pcm) {
             Ok(frames) => {
+                // The device working, recorded whether or not the block has
+                // any audio in it. It is what retires a capture fault: see
+                // `Accumulator::last_error` for why the retiring is derived
+                // from this rather than done by hand on the recovery path.
+                counters.record_read();
                 if consecutive_failures > 0 {
                     // Reading again after a run of failures means the device
                     // came back. Clearing the error matters as much as
@@ -2113,6 +2273,114 @@ mod tests {
     }
 
     #[test]
+    fn a_phone_that_announces_over_two_links_is_remembered_at_both_addresses() {
+        // The invite offers every address this machine holds and the phone
+        // sends its announcement to all of them, so a phone that is tethered
+        // and on Wi-Fi at once answers over both links and each copy carries
+        // that link's source address. Keeping only the first is what left a
+        // cable session with nowhere to retreat to on a routed network.
+        //
+        // Two loopback addresses stand in for the two links: they are the
+        // only way to give one stand-in phone two source addresses without a
+        // second machine, and the source address is the entire point here.
+        use sonduit_transport::invite::Invite;
+        use std::net::Ipv4Addr;
+
+        const PORT: u16 = 45_014;
+        const LINKS: [Ipv4Addr; 2] = [Ipv4Addr::new(127, 0, 0, 1), Ipv4Addr::new(127, 0, 0, 2)];
+
+        let nonce = scan_nonce();
+        let invite = Invite::new(
+            &[Ipv4Addr::new(10, 10, 0, 61)],
+            PORT,
+            PairingCode::from_seed(seed_from(&nonce)),
+            nonce,
+        )
+        .expect("a routable address makes a valid invite");
+
+        let payload = invite.to_payload();
+        // One thread per link, each a complete responder: which of them the
+        // desktop treats as the primary is a race between two datagrams, and
+        // a stand-in that could only answer on one of them would make this
+        // test flaky rather than failing.
+        let phones: Vec<_> = LINKS
+            .iter()
+            .map(|link| {
+                let payload = payload.clone();
+                let link = *link;
+                std::thread::spawn(move || {
+                    use sonduit_transport::handshake;
+                    use sonduit_transport::session::SEED_BYTES;
+
+                    let scanned = Invite::parse(&payload).expect("the phone reads its own invite");
+                    let mut responder = handshake::Responder::new();
+                    let socket = UdpSocket::bind(SocketAddr::from((link, 0)))
+                        .expect("a loopback address is bindable");
+                    socket
+                        .set_read_timeout(Some(Duration::from_millis(25)))
+                        .expect("a fresh socket takes a timeout");
+                    let datagram =
+                        discovery::encode_announce("Pixel 7a", 4010, &scanned.nonce, &scanned.code);
+                    let mut buffer = [0_u8; 256];
+                    let mut answered = 0_u8;
+
+                    for _ in 0..80 {
+                        let _ = socket.send_to(
+                            &datagram,
+                            SocketAddr::from((Ipv4Addr::LOCALHOST, scanned.port)),
+                        );
+                        let Ok((length, from)) = socket.recv_from(&mut buffer) else {
+                            continue;
+                        };
+                        answered += 1;
+                        if let Some(answer) = responder.answer(
+                            &buffer[..length],
+                            &[scanned.nonce],
+                            &scanned.code,
+                            [0x2C + answered; SEED_BYTES],
+                        ) {
+                            let _ = socket.send_to(&answer.accept, from);
+                            if answered == 3 {
+                                return;
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        let state = BridgeState::default();
+        *state.invite.lock().expect("a fresh state is not poisoned") = Some(invite);
+
+        let session = state.pairing_session().expect("the listener must bind");
+        let found = await_pairing(&session).expect("the wait itself cannot fail");
+        for phone in phones {
+            let _ = phone.join();
+        }
+
+        let paired = found.expect("an announcement keyed by the invite must be accepted");
+        let code = session.code();
+        state.remember(std::slice::from_ref(&paired), &code);
+
+        let primary: SocketAddr = paired.device.id.parse().expect("an address was reported");
+        let peer = state.peer_at(primary).expect("the pairing was remembered");
+        let mut reachable = peer.addresses();
+        reachable.sort();
+
+        // Which link answered first is a race and does not matter. That both
+        // survived the pairing is the whole point: one of them is the way
+        // back when the other fails.
+        assert_eq!(
+            reachable,
+            vec![
+                "127.0.0.1:4010".parse::<SocketAddr>().unwrap(),
+                "127.0.0.2:4010".parse::<SocketAddr>().unwrap(),
+            ],
+            "an address the phone announced from was thrown away"
+        );
+    }
+
+    #[test]
     fn a_second_invite_does_not_collide_with_the_first() {
         // Showing the code, closing the dialog and showing it again used to
         // fail with "only one usage of each socket address": the first wait
@@ -2268,6 +2536,11 @@ mod tests {
     /// The secret comes from a real handshake with fixed seeds, so what is
     /// stored is the shape a session is actually keyed from.
     fn paired_at(id: &str, name: &str) -> PairedDevice {
+        paired_across(id, name, &[])
+    }
+
+    /// The same, for a device that answered on more than one link.
+    fn paired_across(id: &str, name: &str, elsewhere: &[&str]) -> PairedDevice {
         PairedDevice {
             device: DiscoveredDevice {
                 id: id.to_string(),
@@ -2275,6 +2548,10 @@ mod tests {
                 address: id.to_string(),
             },
             secret: peer::agreed_secret(),
+            elsewhere: elsewhere
+                .iter()
+                .map(|address| address.parse().expect("a test address"))
+                .collect(),
         }
     }
 
@@ -2330,6 +2607,66 @@ mod tests {
             1,
             "one address collected two credentials"
         );
+    }
+
+    #[test]
+    fn a_pairing_that_answered_on_two_links_remembers_both_addresses() {
+        // The QR path already sees both: the invite offers every local
+        // address, the phone unicasts to all of them, and one copy arrives
+        // over each link. Keeping the second is what gives a cable session
+        // somewhere to retreat to on a network where a broadcast finds
+        // nothing.
+        let state = BridgeState::default();
+        state.remember(
+            &[paired_across(
+                "10.79.127.35:4010",
+                "Pixel 7a",
+                &["10.10.22.160:4010"],
+            )],
+            &PairingCode::parse("482913").unwrap(),
+        );
+
+        let peer = state
+            .peer_at("10.79.127.35:4010".parse().unwrap())
+            .expect("the device that was just paired");
+        assert_eq!(
+            peer.addresses(),
+            vec![
+                "10.79.127.35:4010".parse().unwrap(),
+                "10.10.22.160:4010".parse().unwrap(),
+            ],
+        );
+    }
+
+    #[test]
+    fn re_pairing_retires_the_record_filed_under_an_address_it_now_covers() {
+        // The stale key problem, one address further out. A pairing over the
+        // cable leaves a record at the tether address; pairing again by QR
+        // covers that address as an alternate and replaces the key. Left
+        // behind, the old record would key a session from a pairing that is
+        // over, and the receiver would refuse every packet of it.
+        let state = BridgeState::default();
+        state.remember(
+            &[paired_at("10.79.127.35:4010", "Pixel 7a")],
+            &PairingCode::parse("111111").unwrap(),
+        );
+        state.remember(
+            &[paired_across(
+                "10.10.22.160:4010",
+                "Pixel 7a",
+                &["10.79.127.35:4010"],
+            )],
+            &PairingCode::parse("222222").unwrap(),
+        );
+
+        assert_eq!(
+            state.peers.lock().unwrap().len(),
+            1,
+            "one device kept two credentials"
+        );
+        assert!(state
+            .peer_at("10.79.127.35:4010".parse().unwrap())
+            .is_none());
     }
 
     #[test]
