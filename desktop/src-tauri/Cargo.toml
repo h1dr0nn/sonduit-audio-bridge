@@ -17,6 +17,41 @@ path = "src/lib.rs"
 name = "sonduit"
 path = "src/main.rs"
 
+# Hardware verification drivers. They exercise the product path headlessly,
+# which is how the key-agreement defect was found and how the recovery and
+# reachability fixes were shown to work on a real phone. Behind a feature so
+# an ordinary `cargo build --workspace` does not carry five extra binaries.
+#
+# They are bins rather than examples because tauri-build emits its link
+# arguments with `cargo:rustc-link-arg-bins`, which never reaches an example
+# target: an example that builds a Tauri app links, then dies at load with
+# 0xC0000139 before main runs.
+
+[[bin]]
+name = "verify_follow"
+path = "src/bin/verify_follow.rs"
+required-features = ["verify"]
+
+[[bin]]
+name = "verify_reach"
+path = "src/bin/verify_reach.rs"
+required-features = ["verify"]
+
+[[bin]]
+name = "verify_recover"
+path = "src/bin/verify_recover.rs"
+required-features = ["verify"]
+
+[[bin]]
+name = "verify_seal"
+path = "src/bin/verify_seal.rs"
+required-features = ["verify"]
+
+[[bin]]
+name = "verify_session"
+path = "src/bin/verify_session.rs"
+required-features = ["verify"]
+
 [dependencies]
 sonduit-core.workspace = true
 sonduit-transport.workspace = true
@@ -51,6 +86,8 @@ windows = { version = "0.62", features = [
 [features]
 # Used for production builds, or when devPath points at the filesystem.
 custom-protocol = ["tauri/custom-protocol"]
+# The hardware verification drivers above. Not built by default.
+verify = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
