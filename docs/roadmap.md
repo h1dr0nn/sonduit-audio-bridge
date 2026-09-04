@@ -65,6 +65,8 @@ not as everything there ever was.
 | The tethered phone had to be typed in | Adapter enumeration reads the gateway from the routing table; probes go to it directly |
 | Tether detection matched no real device | "Remote NDIS" is two words and `UsbNcm` is one; the tokens now match both |
 | The buffer target chased the jitter estimate | Asymmetric retargeting with a 1.7x shrink threshold and cooldowns |
+| The target could grow and never shrink | The 1.7 was compared against a suggestion the configuration had already floored, so no target below 51 ms on Wi-Fi could satisfy it. The floor is on the target now, as it is in roc, and a shrink steps down by roc's factor rather than jumping |
+| A Wi-Fi receiver could hold 200 ms | 80 ms, the top of the band `latency-budget.md` targets. Underrun was identical at every ceiling from 200 down to 60, so the difference was latency that protected nothing; see ADR-004 |
 | Drift history survived a sleep or a route change | A gap of two seconds discards it, and the correction with it |
 | The installer left the firewall shut | Withdrawn rather than cleared. The NSIS hook is deleted: a per-user install has no rights for `netsh`, and a port-scoped rule cannot suppress a prompt Windows raises per program. Windows asks once on first run; see ADR-004 |
 | The audio callback took a mutex | The handoff is lock-free; the callback holds one half and takes no lock at all |
@@ -84,6 +86,8 @@ Honest list of things that exist but are not finished.
 | The bundled FFmpeg is 110 MB installed, about 35 MB inside the LZMA installer; no smaller LGPL build is published | `tools/fetch-ffmpeg.mjs` |
 | `driver/` does not exist in the tree at all | ADR-002 |
 | The About screen names FFmpeg and points at `FFMPEG-LICENSE.txt` only; `THIRD-PARTY-LICENSES.txt` is installed but not signposted | `docs/licensing.md` section 5.1 |
+| **Buffer depth past the hand-off ring protects nothing.** The ring is refilled on arrival, so during a stall the callback drains its five packets and then plays silence however deep the jitter buffer is. Measured: underrun identical at ceilings of 200, 120, 80 and 60 ms | `sonduit-core::pacing`, `research/jitter-and-drift.md` |
+| **The target is close to blind to the failure Wi-Fi has.** RFC 3550's estimator is a mean absolute first difference, and a stall is one large difference followed by a run of small ones: 120 ms stalls every 12 s moved the estimate to 9.3 ms and the target to 34. roc's `MAX(peak * 1.2, mean * 3.0)` has a peak term for this and Sonduit has only the mean | `sonduit-core::jitter`, `research/jitter-and-drift.md` |
 
 ---
 

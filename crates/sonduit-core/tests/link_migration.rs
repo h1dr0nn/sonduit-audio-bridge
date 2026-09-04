@@ -230,11 +230,23 @@ fn wifi_to_usb_gives_the_wasted_depth_back_immediately() {
 
 #[test]
 fn a_target_outside_the_new_range_is_brought_inside_it() {
-    // A Wi-Fi session that had a bad few seconds grows its target past
-    // anything USB permits -- USB's ceiling is 80 ms and Wi-Fi's is 200 --
-    // so after the migration the buffer would be aiming for a depth its own
-    // `shed_over_budget` bound calls an emergency.
-    let mut buffer = buffer(WIFI);
+    // A session whose link permits a deeper buffer than USB does grows its
+    // target past anything USB permits, so after the migration the buffer
+    // would be aiming for a depth its own `shed_over_budget` bound calls an
+    // emergency.
+    //
+    // The ceiling here is written into the test rather than taken from a
+    // shipped link, because both shipped links now stop at 80 ms and neither
+    // can produce a target the other refuses. That makes this a property of
+    // `retune` and not of any particular pair of constants, which is what it
+    // was always meant to be: nothing stops a future link being configured
+    // deeper, and a clamp that is only exercised by today's numbers is a clamp
+    // nobody will notice losing.
+    let deep = JitterConfig {
+        max_ms: 200,
+        ..WIFI
+    };
+    let mut buffer = buffer(deep);
     // Long enough to clear Wi-Fi's grow cooldown, which is 2500 packets: the
     // first growth happens on an estimate that has barely converged, and the
     // target only reaches what the link really costs on the growth after it.

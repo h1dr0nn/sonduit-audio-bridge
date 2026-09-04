@@ -73,6 +73,82 @@ roc also switches profile at 30 ms: below that it uses a "responsive" profile
 because *"gradual profile could cause oscillations comparable with the latency
 and break playback"* — directly relevant to Sonduit's 40-80 ms target.
 
+#### Correction, 2026-09-04: the 1.7 was read without its other half
+
+The paragraph above is accurate and incomplete, and the incompleteness cost a
+defect. `latency_tuner.cpp` was re-read against the complaint that Wi-Fi
+latency climbs and does not come back.
+
+**The threshold and the step are one mechanism.** roc does not set the target
+to the estimate. It moves it by a fraction derived from the same constant:
+
+```c
+lat_update_dec_step_(upper_coef_to_step_lat_update(
+    latency_config.latency_decrease_relative_threshold))
+// upper_coef_to_step_lat_update(x) = (x + 1.f) / (x * 2.f)
+```
+
+At 1.7 that is 0.794, so a decrease takes 21% off the current target and the
+next one is 5 s later. A target far above the estimate walks down to it over
+several cooldowns; it never arrives in one move. The increase is the mirror,
+`(x + 1) / 2` = 1.35, applied to the estimate rather than to the target, so a
+growth deliberately overshoots what was measured.
+
+Sonduit transplanted the 1.7 and set the target straight to the estimate on
+both sides. With no step, 1.7 stops being hysteresis and becomes a switch:
+below the ratio nothing happens at all, above it the whole difference is
+applied at once.
+
+**roc's minimum is a clamp on the target, not a floor under the estimate.**
+`min_target_latency` bounds the result of the tuner. Sonduit applied its
+equivalent, `JitterConfig::target_ms`, inside the estimate, which made the
+ratio test compare the held target against a number that could not go below
+30 ms on Wi-Fi. No target under 51 ms could satisfy it, and 51 ms is above
+anything the estimator produces on an ordinary radio, so the target could grow
+and could not shrink. Driven over five minutes of jittery arrivals the grow
+counter reached eighteen and the shrink counter stayed at zero, in every
+pattern tried.
+
+**The peak term was not transplanted either, and its absence is visible.**
+roc's estimate is `MAX(peak * 1.2, mean * 3.0)`; Sonduit has only the mean
+term. RFC 3550's estimator is a mean absolute *first difference*, and a
+station that loses the medium for 120 ms and is then handed its backlog
+produces one large difference followed by a run of small ones. Over a 300 s
+timeline with a 120 ms stall every 12 s the estimate peaked at 9.3 ms and the
+target never left 34 ms. **The buffer is close to blind to the failure Wi-Fi
+actually has.** Growing it would not currently help -- see the note on the
+hand-off below -- so this is recorded rather than acted on.
+
+`crates/sonduit-core/examples/jitter_timeline.rs` is the harness those figures
+come from. It drives the shipped `JitterBuffer` through the same calls
+`sonduit-ffi`'s receive loop makes, over an arrival timeline it generates from
+the distributions in this section, and prints the estimate, the suggestion, the
+held target, both counters and what the receiver holds.
+
+#### What depth is worth on a stalling link: nothing, past the hand-off ring
+
+Measured on that harness, and the reason the Wi-Fi ceiling moved from 200 ms to
+80 in `JitterConfig::for_transport`.
+
+Audio reaches the callback through `crate::handoff`, and the receive thread
+refills that ring **on arrival**. During a stall nothing arrives, so nothing is
+handed over, and the callback drains the ring -- at most five packets, 30 ms --
+and then plays silence, however much the jitter buffer is holding behind it.
+
+Underrun was therefore identical at ceilings of 200, 120, 80 and 60 ms, to the
+millisecond, in every arrival pattern tried:
+
+| Ceiling | Held, median | Held, p95 | Underrun over 300 s |
+| --- | --- | --- | --- |
+| 200 ms | 122 ms | 194 ms | 2496 ms |
+| 120 ms | 90 ms | 121 ms | 2496 ms |
+| **80 ms** | **67 ms** | **83 ms** | **2496 ms** |
+| 60 ms | 59 ms | 65 ms | 2496 ms |
+
+120 ms stalls every 12 s, backlog released at 2 ms a packet, three seeds, all
+agreeing. **145 ms of latency bought nothing.** Depth past the ring is not a
+buffer against anything; it is only late audio waiting its turn.
+
 ### WebRTC NetEq
 
 NetEq does **not** use mean+k*variance. It builds a **forgetting histogram** of
@@ -232,6 +308,7 @@ Fallback if it proves too expensive on low-end Android:
 - https://raw.githubusercontent.com/webrtc-mirror/webrtc/main/modules/audio_coding/neteq/time_stretch.cc
 - https://roc-streaming.org/toolkit/docs/internals/fe_resampler.html
 - https://raw.githubusercontent.com/roc-streaming/roc-toolkit/develop/src/internal_modules/roc_audio/latency_config.h
+- https://raw.githubusercontent.com/roc-streaming/roc-toolkit/develop/src/internal_modules/roc_audio/latency_tuner.cpp
 - https://raw.githubusercontent.com/roc-streaming/roc-toolkit/develop/src/internal_modules/roc_audio/freq_estimator.cpp
 - https://raw.githubusercontent.com/pulseaudio/pulseaudio/master/src/modules/module-loopback.c
 - https://raw.githubusercontent.com/badaix/snapcast/develop/client/stream.cpp
@@ -263,3 +340,9 @@ Fallback if it proves too expensive on low-end Android:
 7. The claim that `setBufferCapacityInFrames` inflates `framesPerBurst` rests
    on one issue report plus a Google engineer confirming intent; not verified
    in AOSP source.
+8. **The 2026-09-04 correction is a reading of roc's `develop` branch and a
+   run of this project's own code against a generated timeline.** No packet
+   arrival on the reporter's access point was captured, and none of the delay
+   figures driving the harness came from it: the phone could not be reached
+   from this machine over Wi-Fi and there was no cable. The buffer's response
+   to those inputs is measured; the inputs are assumed.

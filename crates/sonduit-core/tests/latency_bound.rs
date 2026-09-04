@@ -312,15 +312,15 @@ fn the_bound_comes_from_the_configuration() {
         },
     );
 
-    for sequence in 0..20_u32 {
+    for sequence in 0..10_u32 {
         let timestamp = sequence.wrapping_mul(FRAMES_PER_PACKET);
         let arrival = u64::from(sequence) * PACKET_NANOS;
         generous.push(sequence as u16, timestamp, arrival, packet());
         strict.push(sequence as u16, timestamp, arrival, packet());
     }
 
-    // 120 ms held: inside 200 ms and well outside 40 ms.
-    assert!((generous.depth_ms() - 120.0).abs() < 0.01);
+    // 60 ms held: inside the Wi-Fi ceiling and well outside 40 ms.
+    assert!((generous.depth_ms() - 60.0).abs() < 0.01);
     assert_eq!(generous.shed_over_budget(12.0), 0);
     assert!(strict.shed_over_budget(12.0) > 0);
 }

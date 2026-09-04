@@ -69,7 +69,7 @@ fully controls**, and it is 47% of the Wi-Fi budget and 29% of the USB budget.
 
 This is why ADR-004's conclusion that **buffer depth must be transport-aware**
 matters: a single constant either wastes 18 ms on USB or underruns on Wi-Fi.
-The current implementation does not do this yet.
+`JitterConfig::for_transport` does this.
 
 ### Why not simply make it smaller
 
@@ -81,6 +81,24 @@ Measured Wi-Fi latency has a long tail. A campus WLAN study measured 3 / 20 /
 buffer is sized near p95 and the tail is concealed, not absorbed. Forcing 5 GHz
 and disabling Wi-Fi power save on the phone move the distribution more than any
 amount of buffering.
+
+### What the receiver may hold at all
+
+The 30 ms above is the depth the adaptation aims for. What bounds the depth it
+can actually reach is `JitterConfig::max_ms`, applied by `shed_over_budget` to
+the jitter buffer **and** the hand-off ring together, because the listener
+waits through the sum.
+
+That bound is **80 ms on Wi-Fi and 80 ms on USB**. The Wi-Fi figure was 200 ms
+until 2026-09-04, which is two and a half times the whole band this document
+targets, and on a stalling link it was where the depth settled rather than a
+limit it approached. Cutting it costs nothing measurable: audio held past the
+hand-off ring cannot reach the callback during a stall, so underrun was
+identical at every ceiling from 200 ms down to 60. See
+[ADR-004](adr/ADR-004-transport.md) and `research/jitter-and-drift.md`.
+
+**No line in the table above moves.** This is a bound on the worst case, not
+on the budgeted case, and it only ever lowers what stage 7 can reach.
 
 ## 4. Where the numbers are weakest
 
@@ -143,6 +161,14 @@ Three things follow, and none of them is a validation of the table.
    and never once shrank. A number still climbing when the observer stops
    watching is not an operating point, and quoting its lowest reading would be
    dishonest.
+
+   *Added 2026-09-04.* "Never once shrank" was literally true of the code as
+   well as of this session. The adaptive target could not shrink at all until
+   the retargeting fix of that date: the shrink rule compared the held target
+   against a suggestion the configuration had already floored, so no target
+   below 1.7 times the configured depth could satisfy it, and no target the
+   estimator produces on either link gets above that. This session is the only
+   direct observation of it there is.
 2. **The panel's figure is stages 1 to 7 and nothing else.** It is the sender's
    own 16 ms, plus a halved round trip, plus the depth the receiver reports.
    Stages 8 and 9 are not in it. Neither is the buffer described below.

@@ -264,7 +264,32 @@ impl JitterConfig {
             Transport::WiFi => Self {
                 target_ms: 30,
                 min_ms: 10,
-                max_ms: 200,
+                // The top of the Wi-Fi band in docs/latency-budget.md, and not
+                // a number the adaptation is expected to reach: the largest
+                // target the estimator produces on a bad radio is about 50 ms,
+                // and the hand-off ring downstream cannot hold more than five
+                // packets, so 80 leaves the ceiling inert on any session that
+                // is behaving.
+                //
+                // It was 200, and 200 was not a ceiling, it was the operating
+                // point. `shed_over_budget` is the only thing that bounds what
+                // the receiver holds once a burst has got past the wire-speed
+                // test in `push` -- which any access point draining its
+                // backlog slower than four times real time does -- so the
+                // depth walks up to this number and sits there. Driven over a
+                // 300 s timeline with 120 ms stalls every 12 s, the receiver
+                // held a median of 122 ms and a 95th percentile of 194 ms, and
+                // the same run at 80 ms held 67 and 83.
+                //
+                // Nothing was bought with the difference. Underrun was
+                // identical at 200, 120, 80 and 60 ms, to the millisecond, in
+                // every arrival pattern tried: audio the buffer holds past the
+                // hand-off ring cannot reach the audio callback during a
+                // stall, because the hand-off is driven by arrivals and during
+                // a stall there are none. Depth beyond the ring is latency
+                // that protects nothing. See the example named in
+                // docs/research/jitter-and-drift.md.
+                max_ms: 80,
                 jitter_multiplier: 3.0,
                 max_packets: 256,
                 shrink_threshold: 1.7,
@@ -473,8 +498,23 @@ impl JitterBuffer {
 
     /// The depth the current jitter estimate on its own would suggest.
     ///
-    /// What the target was before hysteresis; kept public because it is the
-    /// only way to see how far the held target has been allowed to lag.
+    /// One packet, plus `jitter_multiplier` times the estimate, clamped to the
+    /// configured range. What the target was before hysteresis; kept public
+    /// because it is the only way to see how far the held target has been
+    /// allowed to lag.
+    ///
+    /// # Why the configured depth is not applied here
+    ///
+    /// [`JitterConfig::target_ms`] is the depth this link runs at, and it is a
+    /// floor on the *target*, not on the estimate. It used to be applied to
+    /// the estimate as well, and that is what made shrinking unreachable: the
+    /// shrink rule below asks whether the held target is `shrink_threshold`
+    /// times what the estimate suggests, and an estimate that can never read
+    /// below 30 ms cannot answer yes for any target under 51. Every target the
+    /// adaptation actually produces on Wi-Fi lands in that band, so the
+    /// counter for shrinking read zero in every measured run. roc, which is
+    /// where the 1.7 came from, applies its own `min_target_latency` to the
+    /// result and not to the estimate, for this reason.
     #[must_use]
     pub fn suggested_target_ms(&self) -> f64 {
         let packet_ms = self
@@ -482,17 +522,33 @@ impl JitterBuffer {
             .packet_duration_nanos()
             .map_or(0.0, |nanos| nanos as f64 / 1_000_000.0);
 
-        // JitterConfig is a plain public struct with no validation, and
-        // f64::clamp panics outright when min > max. Order the bounds here
-        // rather than trusting the caller; this runs near the audio path and
-        // must not be able to panic.
+        let adaptive = packet_ms + self.config.jitter_multiplier * self.jitter_ms();
+        self.in_range(adaptive)
+    }
+
+    /// A depth brought inside [`JitterConfig::min_ms`] and
+    /// [`JitterConfig::max_ms`], whichever way round the caller wrote them.
+    ///
+    /// JitterConfig is a plain public struct with no validation, and
+    /// `f64::clamp` panics outright when min > max. The bounds are ordered
+    /// here rather than trusted; this runs near the audio path and must not be
+    /// able to panic.
+    fn in_range(&self, depth_ms: f64) -> f64 {
         let low = f64::from(self.config.min_ms.min(self.config.max_ms));
         let high = f64::from(self.config.min_ms.max(self.config.max_ms));
+        depth_ms.clamp(low, high)
+    }
 
-        let adaptive = packet_ms + self.config.jitter_multiplier * self.jitter_ms();
-        adaptive
-            .max(f64::from(self.config.target_ms))
-            .clamp(low, high)
+    /// The depth the adaptation is allowed to settle on right now.
+    ///
+    /// The estimate, held up to the link's configured depth, and inside the
+    /// configured range. This is what the target moves to, in either
+    /// direction.
+    fn permitted_target_ms(&self) -> f64 {
+        self.in_range(
+            self.suggested_target_ms()
+                .max(f64::from(self.config.target_ms)),
+        )
     }
 
     /// Move the held target towards what jitter now suggests, if allowed.
@@ -509,8 +565,20 @@ impl JitterBuffer {
     /// RFC 3550's own text says its estimator "is not intended to be taken
     /// quantitatively", which is the other half of the reason not to follow it
     /// closely.
+    ///
+    /// # Why a shrink is a step and not a jump
+    ///
+    /// The threshold and the step are one mechanism and were transplanted as
+    /// half of one. roc pairs `latency_decrease_relative_threshold` with a
+    /// decrease of `(x + 1) / (2x)` of the current target -- about 79% of it
+    /// at 1.7 -- so a target far above the estimate walks down towards it over
+    /// several cooldowns instead of arriving in one move. Setting the target
+    /// straight to the estimate is a step change in latency the listener hears
+    /// as a jump, and it is the whole difference between hysteresis and a
+    /// switch. The step is derived from the threshold rather than written down
+    /// beside it, because the two only make sense together.
     fn retarget(&mut self) {
-        let suggested = self.suggested_target_ms();
+        let permitted = self.permitted_target_ms();
 
         // Growing is always allowed to start immediately in one case: a target
         // that has never moved is still the configured default, and waiting a
@@ -520,8 +588,8 @@ impl JitterBuffer {
             return;
         }
 
-        if suggested > self.target_ms {
-            self.target_ms = suggested;
+        if permitted > self.target_ms {
+            self.target_ms = permitted;
             self.retarget_allowed_at = self
                 .accepted_ticks
                 .saturating_add(self.config.grow_cooldown_packets);
@@ -532,14 +600,30 @@ impl JitterBuffer {
         // Shrinking needs the link to look not merely better but much better.
         // A threshold at or below one disables the hysteresis, which is a
         // legitimate choice for a caller that wants the raw estimate.
+        //
+        // Measured against the estimate rather than against `permitted`: the
+        // question is how much better the link now looks than the depth being
+        // held, and a comparison against a figure the configuration has
+        // already floored answers a different one. See `suggested_target_ms`.
         let threshold = self.config.shrink_threshold.max(1.0);
-        if suggested > 0.0 && self.target_ms / suggested >= threshold {
-            self.target_ms = suggested;
-            self.retarget_allowed_at = self
-                .accepted_ticks
-                .saturating_add(self.config.shrink_cooldown_packets);
-            self.stats.target_shrank += 1;
+        if permitted >= self.target_ms || self.suggested_target_ms() * threshold >= self.target_ms {
+            return;
         }
+
+        let step = (threshold + 1.0) / (threshold * 2.0);
+        let stepped = (self.target_ms * step).max(permitted);
+        // A threshold of exactly one gives a step of one, which would move
+        // nothing while still counting a shrink. That case is the caller
+        // asking for no hysteresis at all, so it gets the estimate outright.
+        self.target_ms = if stepped < self.target_ms {
+            stepped
+        } else {
+            permitted
+        };
+        self.retarget_allowed_at = self
+            .accepted_ticks
+            .saturating_add(self.config.shrink_cooldown_packets);
+        self.stats.target_shrank += 1;
     }
 
     fn target_packets(&self) -> usize {

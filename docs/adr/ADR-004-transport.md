@@ -1,9 +1,11 @@
 # ADR-004: One transport for Wi-Fi and USB
 
 - Status: accepted, assumption **confirmed** with corrections; the firewall
-  consequence was **amended on 2026-08-28**
+  consequence was **amended on 2026-08-28** and the transport-aware depth
+  consequence on **2026-09-04**
 - Date: 2026-08-27
 - Amended: 2026-08-28, see [Windows Firewall blocks the return path](#consequences-and-the-assumptions-that-were-wrong)
+- Amended: 2026-09-04, see [Buffer depth is transport-aware](#additional-consequences)
 
 ## Context
 
@@ -97,6 +99,42 @@ Additional consequences:
 - The tether link is essentially lossless, so **jitter buffer depth must be
   transport-aware**, not a single constant. That is where the 25-50 ms USB
   target is actually won, and the current buffer does not do it yet.
+
+  **Amended 2026-09-04.** It does it now, in
+  `JitterConfig::for_transport`, and one of the two links was carrying a
+  number that did not belong to it. As originally shipped: *Wi-Fi holds up to
+  200 ms and USB up to 80.* As amended, and as it stands: **both stop at
+  80 ms.**
+
+  The ceiling is not the depth the buffer aims for. It is the bound
+  `shed_over_budget` applies to everything the receiver holds, and on Wi-Fi it
+  was the only thing bounding the depth at all: `push` sheds an arriving
+  backlog only when it comes in faster than a quarter of real time, so an
+  access point that hands over its queue after a stall at any gentler rate
+  leaves the surplus in the buffer. The depth therefore walked up to the
+  ceiling and stayed near it. Over a 300 s timeline with a 120 ms stall every
+  twelve seconds the receiver held a median of 122 ms and a 95th percentile of
+  194 ms, against a link whose whole mouth-to-ear band in `latency-budget.md`
+  is 40 to 80 ms. **200 ms was not a ceiling; it was the operating point.**
+
+  It was cut to the top of that band rather than lower because a ceiling must
+  stay clear of the depth a healthy session reaches: the largest target the
+  estimator produces on a bad radio is about 50 ms and the hand-off ring
+  downstream holds up to 30 ms, so anything under 80 would fire on sessions
+  that are behaving and chop audio for no reason.
+
+  Nothing was given up for it. Underrun was identical at 200, 120, 80 and
+  60 ms, to the millisecond, in every arrival pattern tried, because audio held
+  past the hand-off ring cannot reach the audio callback during a stall -- the
+  hand-off is refilled on arrival and during a stall there are no arrivals.
+  The evidence, the harness and the limits of both are in
+  `research/jitter-and-drift.md`.
+
+  That both links now stop at the same figure is a coincidence of two
+  different arguments -- 80 ms is the top of the Wi-Fi band and was already
+  USB's headroom for a phone stalling its own USB stack -- and not a return to
+  one constant for both. The depths that matter, `target_ms` and `min_ms`,
+  still differ by link, and that is what this consequence was about.
 
 ## Risks
 
