@@ -3,6 +3,12 @@
 Researched 2026-08-27. This one **confirms** the project's assumptions and
 supplies the constants.
 
+Two corrections have been added to section A since. The first, 2026-09-04, is a
+re-reading of roc plus a simulation; the second, later the same day, is a
+measurement on the access point the complaint came from, and it contradicts
+parts of the first. Both are kept, in order, so the superseded reading stays
+legible.
+
 ---
 
 ## A. RFC 3550 inter-arrival jitter
@@ -109,13 +115,19 @@ and could not shrink. Driven over five minutes of jittery arrivals the grow
 counter reached eighteen and the shrink counter stayed at zero, in every
 pattern tried.
 
+> Measured later the same day, the last sentence is wrong about the real link:
+> the shipped build shrank three times in fifteen minutes on the reporter's
+> access point. See *Measured on the access point*, below.
+
 **The peak term was not transplanted either, and its absence is visible.**
 roc's estimate is `MAX(peak * 1.2, mean * 3.0)`; Sonduit has only the mean
 term. RFC 3550's estimator is a mean absolute *first difference*, and a
 station that loses the medium for 120 ms and is then handed its backlog
 produces one large difference followed by a run of small ones. Over a 300 s
 timeline with a 120 ms stall every 12 s the estimate peaked at 9.3 ms and the
-target never left 34 ms. **The buffer is close to blind to the failure Wi-Fi
+target never left 34 ms. (On the real access point the estimate runs 3.2 to
+6.4 ms, median 3.9, so the generated timeline is about twice as hostile as the
+radio it stood in for.) **The buffer is close to blind to the failure Wi-Fi
 actually has.** Growing it would not currently help -- see the note on the
 hand-off below -- so this is recorded rather than acted on.
 
@@ -148,6 +160,115 @@ millisecond, in every arrival pattern tried:
 120 ms stalls every 12 s, backlog released at 2 ms a packet, three seeds, all
 agreeing. **145 ms of latency bought nothing.** Depth past the ring is not a
 buffer against anything; it is only late audio waiting its turn.
+
+> **Nothing in that table is a link measurement, and two of its columns cannot
+> be reproduced on hardware.** The "held" figures describe the harness on a
+> generated timeline whose backlog release, 2 ms a packet, is 125 times slower
+> than the access point that has since been measured; the real link held 30 ms
+> at p50 with the 200 ms ceiling in place. The underrun column cannot be
+> checked at all: no build reports a frame count for it. See *Measured on the
+> access point*, below.
+
+#### Measured on the access point, 2026-09-04, later the same day
+
+The correction above rests on two things: a reading of roc's source, which is
+unaffected by anything here, and a simulation, which stood in for an access
+point that could not be reached. It can be reached now. The cable is in **for
+adb only, with tethering deliberately off**, so the audio stayed on Wi-Fi and
+the radio under test is the one the complaint came from.
+
+Three runs of 300 s on the build before the change (`max_ms` 200) and five runs
+after it (`max_ms` 80). The first 60 s of each is discarded. Figures are sampled
+from the phone's own log line and from the sender's telemetry snapshot.
+
+| | before, `max_ms` 200 | after, `max_ms` 80 |
+| --- | --- | --- |
+| jitter-buffer depth, p50 / p95 / max | 30 / 60 / 78 ms | 30 / 36 / 84 ms |
+| depth + hand-off queue, p50 / p95 | 48 / 80 ms | 48 / 56 ms |
+| sender end-to-end, p50 / p95 / max | 70.8 / 100.6 / 123.7 ms | 67.8 / 79.2 / 166.4 ms |
+| target moves downward | 3 in 15 min | 48, against 44 upward |
+| median held target | 35 ms | 31 ms |
+| receiver loss, p50 | 0.02% | 0.01% |
+
+Per-run p95 depth was 66 / 36 / 66 before and 36 / 72 / 36 / 36 / 36 after.
+**The p95 depth difference between the builds is inside the run-to-run spread**
+and must not be quoted as a depth reduction.
+
+Two figures moved the wrong way and are not explained here: the maximum
+end-to-end reading rose from 123.7 to 166.4 ms and the maximum depth from 78 to
+84 ms. Five runs have more chances to produce an extreme reading than three, but
+that is a reason to distrust the comparison, not an account of it.
+
+##### What the earlier correction gets wrong about this link
+
+1. **"122 ms median, 194 ms p95 with a 200 ms ceiling" does not describe this
+   access point.** Those are the harness's numbers on a generated timeline. On
+   the radio, the 200 ms build held p50 30 ms, p95 60 ms and a maximum of 78 ms,
+   and never came within 120 ms of its ceiling. **200 was never the operating
+   point here.** The table under *What depth is worth on a stalling link* stands
+   as a description of the harness and of nothing else.
+2. **The mechanism the change was reasoned from is not what this radio does.**
+   "An access point releasing its queue slower than four times real time leaves
+   the surplus as permanent depth" was the argument; measurement says the
+   premise is absent. An aarch64 probe timestamping every datagram with
+   `CLOCK_MONOTONIC`, 60 bursts of 32 packets, run twice an hour apart, puts the
+   release of a backlog at **p50 0.016 ms per packet** -- about 375 times real
+   time, and roughly 90 times on the safe side of the 1.5 ms gap
+   `WIRE_SPEED_RATIO` tests for. The wire-speed test fires and a burst never
+   becomes depth. The AP does hold packets for tens of milliseconds: under a
+   paced 6 ms stream the arrival gaps are p50 5.89 / p95 9.75 / p99 18.7 ms,
+   with relative one-way delay at p99 of 24 to 62 ms. It just empties at wire
+   speed when it lets go. **Its failure is delay, not backlog.**
+3. **"`target_shrank` read zero in every run" and "structurally zero" are false
+   of this link.** The old build shrank three times in fifteen minutes, from
+   held targets of 66 and 69 ms -- both above the 51 ms the old floor demanded,
+   so the estimator does reach past it on a real radio. The defect is real, and
+   it is **rarity and violence**: a single 36 ms jump rather than a walk, three
+   times in a quarter of an hour. It is not impossibility.
+4. **"The largest target the estimator produces on a bad radio is about 50 ms"
+   is wrong,** and it was half the argument for choosing 80. The new build
+   reached exactly 80 and was clamped there. The ceiling is live, not inert: it
+   was reached once in 25 minutes.
+
+**RFC 3550 estimate on this link: 3.2 to 6.4 ms, median 3.9.** The simulation
+produced 9.3.
+
+##### What the measurement supports
+
+- **The proportional shrink works and is visible.** One run recorded a target
+  walking `80 -> 64 -> 50 -> 40 -> 32 -> 30`, which is the roc step this
+  project had transplanted without.
+- **The target now tracks continuously**, in a 30 to 35 ms band, with 48
+  downward moves against 44 upward, instead of three violent jumps; the median
+  held target is 4 ms lower.
+- **Sender end-to-end p95 improved from 100.6 ms to 79.2 ms**, which is the
+  figure on the maintainer's screen.
+
+Those three are the justification for the change. The simulated one -- that
+200 ms was the depth the link settled at -- is withdrawn.
+
+##### What underrun did is still unknown
+
+Nothing above measures underrun, and nothing on the phone can.
+`PlaybackCounters::frames_underrun` is incremented in
+`crates/sonduit-playback-android/src/aaudio.rs` and **read by nothing**: not the
+FFI telemetry, not the log line, not the phone's UI. Every underrun claim in
+this project, "underrun is unchanged" included, is either a harness figure or a
+reading of `depth 0 + queued 0` in a log line printed every 40 packets, which is
+240 ms. That is a proxy for an empty queue sampled four times a second, not a
+frame count.
+
+##### What this measurement is not
+
+- One access point, one phone, one machine, one afternoon.
+- Not paired: three runs before against five after, on different builds at
+  different times, not interleaved.
+- Sampled from the phone's log at 240 ms and from a sender snapshot, so both
+  ends are the software's own account of itself. No loopback cable is involved
+  and nothing here times the analogue path.
+- Silent on stalls of the kind the harness models. Nothing in these eight runs
+  produced a 120 ms medium loss, so this measurement neither confirms nor
+  refutes what the buffer would do in one.
 
 ### WebRTC NetEq
 
@@ -346,3 +467,12 @@ Fallback if it proves too expensive on low-end Android:
    figures driving the harness came from it: the phone could not be reached
    from this machine over Wi-Fi and there was no cable. The buffer's response
    to those inputs is measured; the inputs are assumed.
+
+   **Superseded the same day.** The link has since been measured, in *Measured
+   on the access point* above, and four of that correction's claims do not hold
+   on it. The roc reading is unaffected; the delay model behind the harness is
+   the part that was wrong.
+9. **The eight measured runs are the only hardware evidence in this file**, and
+   they are one AP, one phone, unpaired before-and-after, sampled at 240 ms
+   from the receiver's own log. They do not cover a stall, and they do not
+   cover underrun, which no build can currently report.

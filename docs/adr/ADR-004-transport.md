@@ -2,10 +2,12 @@
 
 - Status: accepted, assumption **confirmed** with corrections; the firewall
   consequence was **amended on 2026-08-28** and the transport-aware depth
-  consequence on **2026-09-04**
+  consequence **twice on 2026-09-04**, the second time on measurement
 - Date: 2026-08-27
 - Amended: 2026-08-28, see [Windows Firewall blocks the return path](#consequences-and-the-assumptions-that-were-wrong)
 - Amended: 2026-09-04, see [Buffer depth is transport-aware](#additional-consequences)
+- Amended: 2026-09-04, later the same day, on measurement of the access point;
+  the depth stands, the reasoning recorded for it does not
 
 ## Context
 
@@ -129,6 +131,48 @@ Additional consequences:
   hand-off is refilled on arrival and during a stall there are no arrivals.
   The evidence, the harness and the limits of both are in
   `research/jitter-and-drift.md`.
+
+  **Amended again 2026-09-04, later the same day, on measurement.** The
+  paragraphs immediately above were written from a simulation, because the
+  access point could not be reached. It has now been measured -- cable in for
+  adb only, tethering off, audio on Wi-Fi -- over eight 300 s runs, three on the
+  200 ms build and five on the 80 ms one.
+
+  **The decision stands. Three of the reasons given for it do not.**
+
+  - As originally reasoned: *200 ms was not a ceiling, it was the operating
+    point.* As measured, and as it stands: **on this access point the 200 ms
+    build held a median depth of 30 ms, a 95th percentile of 60 ms and a
+    maximum of 78 ms, and never came within 120 ms of its ceiling.** The 122
+    and 194 ms figures describe the harness's generated timeline and this
+    radio's behaviour is nothing like it.
+  - As originally reasoned: *an access point that hands over its queue slower
+    than four times real time leaves the surplus as permanent depth.* As
+    measured: **this radio releases a backlog at a median of 0.016 ms per
+    packet**, about 375 times real time and roughly ninety times clear of the
+    threshold `WIRE_SPEED_RATIO` tests for, so the wire-speed test fires and a
+    burst never becomes depth. It does delay packets -- p99 relative one-way
+    delay of 24 to 62 ms -- but it does not hold a backlog. The mechanism the
+    change was reasoned from is absent here.
+  - As originally reasoned: *the largest target the estimator produces on a bad
+    radio is about 50 ms,* which was half the argument for choosing 80 rather
+    than less. As measured: **the 80 ms build reached exactly 80 and was
+    clamped there**, once in 25 minutes. The ceiling is live, not inert.
+
+  What survives, and is now the justification: with the ceiling at 80 the
+  target tracks continuously in a 30 to 35 ms band, making 48 downward moves
+  against 44 upward, where the 200 ms build managed three downward moves in
+  fifteen minutes; the median held target is 4 ms lower; and sender-side
+  end-to-end p95 fell from 100.6 ms to 79.2 ms. **The change is defensible on
+  what it did to the target's behaviour and to the figure the maintainer sees,
+  not on a depth it never removed.**
+
+  The underrun claim above cannot be checked at all.
+  `PlaybackCounters::frames_underrun` is incremented on the phone and read by
+  nothing, so "identical at 200, 120, 80 and 60" remains a harness result and
+  no hardware evidence for or against it exists. That gap is in the roadmap.
+  Measured figures and their limits: `research/jitter-and-drift.md` and
+  `latency-budget.md` section 6.
 
   That both links now stop at the same figure is a coincidence of two
   different arguments -- 80 ms is the top of the Wi-Fi band and was already

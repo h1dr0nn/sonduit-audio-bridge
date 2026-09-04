@@ -261,6 +261,14 @@ fn a_stalling_access_point_does_not_walk_the_receiver_up_to_its_ceiling() {
     // Twenty-five of those stalls used to leave the receiver holding a median
     // of 122 ms and a 95th percentile of 194 ms, against a link whose whole
     // budget in docs/latency-budget.md is 40 to 80 ms.
+    //
+    // Those figures, and the two-millisecond release above, describe this
+    // timeline and not any measured radio. The one access point since read
+    // empties a backlog at 0.016 ms a packet -- a hundred and twenty-five
+    // times faster -- so the wire-speed test fires there and none of this
+    // becomes depth. See docs/research/jitter-and-drift.md. The property
+    // asserted below is still the one that matters: whatever puts audio into
+    // the buffer, the ceiling has to bound what it holds.
     let stall_nanos = 120_000_000_u64;
     let stall_every = 12_000_000_000_u64;
     let burst_gap = 2_000_000_u64;

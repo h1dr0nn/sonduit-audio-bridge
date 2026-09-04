@@ -56,6 +56,17 @@ const JITTER_GAIN: f64 = 1.0 / 16.0;
 /// emptied at wire speed does nothing else. The comparison is against the
 /// packet's *own* timestamp delta, so it holds at any packet size or rate
 /// without a second constant to keep in step.
+///
+/// Measured on one real access point rather than argued: 60 bursts of 32
+/// packets, timestamped per datagram with `CLOCK_MONOTONIC` on the phone and
+/// repeated an hour apart, put the release of a backlog at a median of
+/// 0.016 ms per packet. That is about 375 times real time, roughly ninety
+/// times clear of the millisecond and a half this ratio tests for, so the
+/// test fires and a burst on that radio never becomes depth. Its failure is
+/// delay rather than backlog: under a paced 6 ms stream the arrival gaps were
+/// p50 5.89 / p95 9.75 / p99 18.7 ms, with relative one-way delay reaching 24
+/// to 62 ms at p99. This constant does nothing about that and is not meant
+/// to.
 const WIRE_SPEED_RATIO: i64 = 4;
 
 /// Rebuilds a monotonic 64-bit counter from wrapping 16-bit sequence numbers.
@@ -264,31 +275,45 @@ impl JitterConfig {
             Transport::WiFi => Self {
                 target_ms: 30,
                 min_ms: 10,
-                // The top of the Wi-Fi band in docs/latency-budget.md, and not
-                // a number the adaptation is expected to reach: the largest
-                // target the estimator produces on a bad radio is about 50 ms,
-                // and the hand-off ring downstream cannot hold more than five
-                // packets, so 80 leaves the ceiling inert on any session that
-                // is behaving.
+                // The top of the Wi-Fi band in docs/latency-budget.md, and a
+                // bound on the worst case rather than a depth the adaptation
+                // is meant to sit at. Not decoration either: over eight
+                // measured 300 s runs the ceiling was reached exactly once in
+                // 25 minutes, where the estimator produced a target of 80 and
+                // it was clamped here.
                 //
-                // It was 200, and 200 was not a ceiling, it was the operating
-                // point. `shed_over_budget` is the only thing that bounds what
-                // the receiver holds once a burst has got past the wire-speed
-                // test in `push` -- which any access point draining its
-                // backlog slower than four times real time does -- so the
-                // depth walks up to this number and sits there. Driven over a
-                // 300 s timeline with 120 ms stalls every 12 s, the receiver
-                // held a median of 122 ms and a 95th percentile of 194 ms, and
-                // the same run at 80 ms held 67 and 83.
+                // It was 200, and the reason recorded here for cutting it was
+                // that 200 had stopped being a ceiling and become the
+                // operating point -- that an access point draining a backlog
+                // slower than four times real time leaves the surplus as
+                // permanent depth, so the depth walks up to the ceiling and
+                // sits there, a median of 122 ms and a 95th percentile of
+                // 194 ms over a 300 s timeline. That was a simulation, and
+                // measurement on the access point that prompted the change
+                // contradicts it. Before the change, on that radio, the depth
+                // held p50 30 ms, p95 60 ms and a maximum of 78 ms, and never
+                // came within 120 ms of 200. The backlog mechanism is not what
+                // this radio does: it releases at wire speed, see
+                // WIRE_SPEED_RATIO.
                 //
-                // Nothing was bought with the difference. Underrun was
-                // identical at 200, 120, 80 and 60 ms, to the millisecond, in
-                // every arrival pattern tried: audio the buffer holds past the
-                // hand-off ring cannot reach the audio callback during a
-                // stall, because the hand-off is driven by arrivals and during
-                // a stall there are none. Depth beyond the ring is latency
-                // that protects nothing. See the example named in
-                // docs/research/jitter-and-drift.md.
+                // What the measurement does support, and what this number now
+                // rests on: at 80 the target tracks continuously in a 30 to
+                // 35 ms band, 48 downward moves against 44 upward, where the
+                // 200 build managed three downward moves in fifteen minutes;
+                // the median held target is 4 ms lower; and sender end-to-end
+                // p95 fell from 100.6 ms to 79.2 ms. The depth p95 difference
+                // between the two builds is inside the run-to-run spread and
+                // is not a result.
+                //
+                // Whether underrun changed is unknown and cannot currently be
+                // known on hardware: PlaybackCounters::frames_underrun is
+                // incremented and read by nothing. The claim that underrun was
+                // identical at 200, 120, 80 and 60 ms is a harness figure. Its
+                // reasoning stands -- audio held past the hand-off ring cannot
+                // reach the callback during a stall, because the ring is
+                // refilled on arrival and during a stall there are no arrivals
+                // -- but it has never been checked on a phone. Figures and
+                // their limits in docs/research/jitter-and-drift.md.
                 max_ms: 80,
                 jitter_multiplier: 3.0,
                 max_packets: 256,
@@ -510,11 +535,19 @@ impl JitterBuffer {
     /// the estimate as well, and that is what made shrinking unreachable: the
     /// shrink rule below asks whether the held target is `shrink_threshold`
     /// times what the estimate suggests, and an estimate that can never read
-    /// below 30 ms cannot answer yes for any target under 51. Every target the
-    /// adaptation actually produces on Wi-Fi lands in that band, so the
-    /// counter for shrinking read zero in every measured run. roc, which is
+    /// below 30 ms cannot answer yes for any target under 51. roc, which is
     /// where the 1.7 came from, applies its own `min_target_latency` to the
     /// result and not to the estimate, for this reason.
+    ///
+    /// The defect was written down here as impossibility -- the shrink counter
+    /// read zero in every run of the harness, and no target the estimator
+    /// produces was thought to reach 51 ms. Measured on a real access point,
+    /// that is too strong. The build carrying the bug shrank three times in
+    /// fifteen minutes, from held targets of 66 and 69 ms, so the estimator
+    /// does get above the floor on a real radio. What it could not do was
+    /// move often or gently: each of those three was a single 36 ms jump,
+    /// where the corrected code makes 48 downward moves over a comparable
+    /// window and walks.
     #[must_use]
     pub fn suggested_target_ms(&self) -> f64 {
         let packet_ms = self
@@ -577,6 +610,11 @@ impl JitterBuffer {
     /// as a jump, and it is the whole difference between hysteresis and a
     /// switch. The step is derived from the threshold rather than written down
     /// beside it, because the two only make sense together.
+    ///
+    /// Visible on hardware: one measured run walked the target down
+    /// 80 -> 64 -> 50 -> 40 -> 32 -> 30 ms over successive cooldowns, and
+    /// across eight runs the target made 48 downward moves against 44 upward
+    /// while holding a 30 to 35 ms band.
     fn retarget(&mut self) {
         let permitted = self.permitted_target_ms();
 

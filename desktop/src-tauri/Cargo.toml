@@ -33,6 +33,11 @@ path = "src/bin/verify_follow.rs"
 required-features = ["verify"]
 
 [[bin]]
+name = "verify_wifi_depth"
+path = "src/bin/verify_wifi_depth.rs"
+required-features = ["verify"]
+
+[[bin]]
 name = "verify_reach"
 path = "src/bin/verify_reach.rs"
 required-features = ["verify"]

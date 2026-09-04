@@ -9,11 +9,13 @@ Targets: **40-80 ms over Wi-Fi**, **25-50 ms over USB**, mouth to ear, at
 > Nothing in the chain has been measured against a loopback cable, and there is
 > still no signed capture driver (`environment.md`).
 >
-> One live session has since been read off the running telemetry panel. It is
-> written down in [section 6](#6-the-one-session-that-has-been-read), on its own
-> and outside the table, so that it cannot be mistaken for a budget line. It
-> does not confirm the table: it never settled, it covers seven of the nine
-> stages, and it found a buffer this document does not list at all.
+> Two lots of measured content have since been read off running sessions. Both
+> are in [section 6](#6-the-sessions-that-have-been-read), on their own and
+> outside the table, so that neither can be mistaken for a budget line. One is a
+> USB session read off the telemetry panel; the other is eight Wi-Fi runs read
+> off the phone's log and the sender's snapshot. Neither confirms the table:
+> between them they cover seven of the nine stages, one of them never settled,
+> and they found a buffer this document does not list at all.
 
 ---
 
@@ -91,10 +93,18 @@ waits through the sum.
 
 That bound is **80 ms on Wi-Fi and 80 ms on USB**. The Wi-Fi figure was 200 ms
 until 2026-09-04, which is two and a half times the whole band this document
-targets, and on a stalling link it was where the depth settled rather than a
-limit it approached. Cutting it costs nothing measurable: audio held past the
-hand-off ring cannot reach the callback during a stall, so underrun was
-identical at every ceiling from 200 ms down to 60. See
+targets. It was cut on a simulation which said that on a stalling link 200 ms
+was where the depth settled rather than a limit it approached, and that
+underrun was identical at every ceiling from 200 ms down to 60.
+
+**Measurement on a real access point later that day contradicts the first of
+those and cannot check the second.** On that radio, with the 200 ms ceiling in
+place, the depth held a median of 30 ms and a p95 of 60 ms and never came within
+120 ms of the ceiling: 200 was not the operating point there. Underrun cannot be
+measured on hardware at all, because no build reports a frame count for it. What
+the cut did buy, measured, is a target that moves continuously instead of in
+rare jumps, and a sender-side p95 that fell from 100.6 ms to 79.2 ms. The
+figures are in [section 6](#the-eight-wi-fi-runs-2026-09-04); see also
 [ADR-004](adr/ADR-004-transport.md) and `research/jitter-and-drift.md`.
 
 **No line in the table above moves.** This is a bound on the worst case, not
@@ -124,14 +134,19 @@ Honestly ranked by how much they could move:
 - **Stages 4 and 6 are conservative.** Both are a copy and a syscall.
 - **Stage 7 is a policy, not a measurement**, and the code reports its actual
   depth and target at runtime through `Telemetry`.
-- **One live session has been read.** It is in section 6 rather than in this
-  list, because a panel reading is weaker evidence than the arithmetic above
-  and must not be filed beside it.
+- **Two sets of readings have been taken from running sessions**, one over USB
+  and one over Wi-Fi. They are in section 6 rather than in this list, because a
+  reading of the software's own account of itself is weaker evidence than the
+  arithmetic above and must not be filed beside it.
 
-## 6. The one session that has been read
+## 6. The sessions that have been read
 
-**This is the only measured content in this document.** Nothing in it feeds the
-table above, and nothing in the table above came from it.
+**This section and section 7 are the only measured content in this document.**
+Nothing in either feeds the table above, and nothing in the table above came
+from them. Two sessions are recorded here: a USB one read off the telemetry
+panel, and eight Wi-Fi runs read off the phone's log.
+
+### The USB session, 28 August 2026
 
 On 28 August 2026, between 13:00 and 13:05 local time, a desktop build bridged
 WASAPI loopback capture to a Google Pixel 7a at 10.10.22.160:4010 over USB
@@ -163,12 +178,16 @@ Three things follow, and none of them is a validation of the table.
    dishonest.
 
    *Added 2026-09-04.* "Never once shrank" was literally true of the code as
-   well as of this session. The adaptive target could not shrink at all until
-   the retargeting fix of that date: the shrink rule compared the held target
-   against a suggestion the configuration had already floored, so no target
-   below 1.7 times the configured depth could satisfy it, and no target the
-   estimator produces on either link gets above that. This session is the only
-   direct observation of it there is.
+   well as of this session. The shrink rule compared the held target against a
+   suggestion the configuration had already floored, so on Wi-Fi no target
+   below 51 ms could satisfy it.
+
+   *Corrected later the same day, on measurement.* The second half of that note
+   said no target the estimator produces on either link gets above 51 ms, and
+   that is wrong. On the Wi-Fi runs below, the build carrying the bug reached
+   held targets of 66 and 69 ms and shrank three times in fifteen minutes. The
+   defect was rarity and a 36 ms jump, not impossibility. This USB session
+   remains the only direct observation of a target that only climbed.
 2. **The panel's figure is stages 1 to 7 and nothing else.** It is the sender's
    own 16 ms, plus a halved round trip, plus the depth the receiver reports.
    Stages 8 and 9 are not in it. Neither is the buffer described below.
@@ -198,7 +217,7 @@ all. **The panel understates the path it describes by more than the entire USB
 budget.** That is an accounting defect rather than a slow link, and it is the
 most useful thing this session produced.
 
-### What this reading is not
+### What the USB reading is not
 
 - One session, one phone, one machine, one cable. Not a benchmark.
 - Read off a telemetry panel, not against a loopback cable. Every figure in it
@@ -213,6 +232,70 @@ most useful thing this session produced.
 - Silent on jitter, late packets and reordering. The feedback protocol does not
   carry them and `TelemetryView` sets all three to `None` deliberately, so the
   panel shows nothing for them and this session measured nothing for them.
+
+### The eight Wi-Fi runs, 2026-09-04
+
+**Measured content, and not a budget line.** No figure below belongs in the
+table in section 2, and nothing in that table came from these runs.
+
+On 4 September 2026 the cable went in **for adb only, with tethering
+deliberately off**, so the audio stayed on Wi-Fi and the access point under test
+is the one the latency complaint came from. Three runs of 300 s on the build
+with `max_ms` 200, five on the build with `max_ms` 80, the first 60 s of each
+discarded, sampled from the phone's own log line and from the sender's telemetry
+snapshot.
+
+| | before, `max_ms` 200 | after, `max_ms` 80 |
+| --- | --- | --- |
+| Jitter buffer depth, p50 / p95 / max | 30 / 60 / 78 ms | 30 / 36 / 84 ms |
+| Depth + hand-off queue, p50 / p95 | 48 / 80 ms | 48 / 56 ms |
+| Sender end-to-end, p50 / p95 / max | 70.8 / 100.6 / 123.7 ms | 67.8 / 79.2 / 166.4 ms |
+| Target moves downward | 3 in 15 min | 48, against 44 upward |
+| Median held target | 35 ms | 31 ms |
+| Receiver packet loss, p50 | 0.02% | 0.01% |
+
+Per-run p95 depth was 66 / 36 / 66 before and 36 / 72 / 36 / 36 / 36 after.
+**The p95 depth difference between the builds is inside the run-to-run spread**
+and is not a result. The maximum end-to-end reading and the maximum depth both
+moved the wrong way, 123.7 to 166.4 ms and 78 to 84 ms, and are recorded rather
+than explained.
+
+How this compares with what the table predicts:
+
+- **Stage 7 is close to its budget on this link.** The table budgets 30 ms of
+  jitter buffer on Wi-Fi. The measured depth is a median of 30 ms in both
+  builds, with a p95 of 36 to 60 ms. This is the one stage the table gets right
+  so far, and it gets it right on the depth rather than on the total.
+- **The stage the table still does not have costs 18 ms here.** Depth plus
+  hand-off queue is 48 ms at p50 against a depth of 30, so the ring described
+  under *The stage this table does not have* held about 18 ms. That is far less
+  than the 110 ms the USB session found, but it is not zero and it has no line.
+- **The end-to-end figure is not comparable with the 64 ms total.** 70.8 ms at
+  p50 is the sender's own account of stages 1 to 7, the same accounting as the
+  panel in the USB session: it excludes stages 8 and 9 entirely. Against the
+  table's stages 1 to 7, which sum to 48 ms, the measured p50 is 22.8 ms
+  heavier, and at p95 the 200 ms build was 52.6 ms heavier.
+- **Nothing here measures stages 8 or 9**, which are 16 ms of the budget and
+  the two weakest lines in section 4. The gap above is therefore a floor on the
+  disagreement, not the disagreement.
+- **Loss is not the problem.** 0.01-0.02% at p50 across eight runs on a radio.
+
+**Underrun is not in this table and could not have been.**
+`PlaybackCounters::frames_underrun` is incremented on the phone and read by
+nothing, so every underrun claim in this project rests either on a harness or on
+reading `depth 0 + queued 0` out of a log line printed every 240 ms. That is a
+proxy for an empty queue sampled four times a second, not a frame count.
+
+#### What these runs are not
+
+- One access point, one phone, one afternoon.
+- Not paired: three runs against five, on different builds at different times,
+  not interleaved.
+- The software's own account of itself at both ends. No loopback cable, no
+  external timing, nothing measuring the analogue path.
+- Silent on stalls. No run lost the medium for the sort of interval the
+  simulation in `research/jitter-and-drift.md` models, so these runs neither
+  confirm nor refute what the buffer does in one.
 
 ## 7. What encryption costs, measured
 
@@ -264,12 +347,14 @@ band needs a compensating reduction elsewhere or an explicit decision to move
 the target.
 
 When real measurements exist they replace the budget column, and this notice
-comes off. Section 6 is not that: it covers seven of the nine stages, it never
-settled, and it found a buffer this table does not list. The honest summary is
-still:
+comes off. Section 6 is not that: between them the two sessions cover seven of
+the nine stages, one of them never settled, they measure the software against
+itself rather than against a cable, and they found a buffer this table does not
+list. The honest summary is still:
 
-> These are the numbers the design is aiming at, not numbers it has hit. One
-> session has been read, in section 6, and it does not agree with them.
+> These are the numbers the design is aiming at, not numbers it has hit. A USB
+> session and eight Wi-Fi runs have been read, in section 6, and neither agrees
+> with them.
 
 ## Sources
 

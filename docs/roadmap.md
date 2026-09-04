@@ -18,7 +18,7 @@ These cannot be done from a development machine and are not code problems.
 | --- | --- |
 | **Measure latency on the phone** | Audio has been heard on a real device over USB tethering, so the largest unknown is gone. Nothing has been *measured*: no loopback-cable timing, no round-trip figure, and no record of whether AAudio granted exclusive low-latency mode. Every figure in `latency-budget.md` is still arithmetic. The app already reports the granted sharing mode and the burst size, so one session on hardware answers most of it. |
 | **Re-test after the swing and crackle fixes** | Three fixes landed after the session that found them -- the wired-link flag, tethered-adapter detection, and pacing the jitter-buffer drain -- and none has been run on the phone. See the README status section. |
-| **Hear it over Wi-Fi** | The session that produced sound was over USB tethering. The Wi-Fi path differs only in the interface it binds, which is an argument rather than evidence. |
+| **Hear it over Wi-Fi on a second access point** | Cleared once, on 2026-09-04: eight runs on the reporter's AP, audio on Wi-Fi with the cable carrying adb only. One radio is one data point, and it is the radio the code was tuned against. |
 | **Test tethering on real OEM builds** | Carrier entitlement can veto USB tethering, and one phone is one data point. Samsung, Xiaomi and OPPO, with and without a SIM. The biggest remaining risk to ADR-004. |
 | **Android release keystore** | Release APK signing. A credential this repository must never hold; until it exists `release.yml` publishes an unsigned APK on purpose, and says so in the release notes. |
 | **Resolve the driver signing question** | Whether an attestation-signed kernel driver still loads under the April 2026 policy decides whether Tier 2 of ADR-002 is weeks or months. Needs Microsoft Partner Center support. |
@@ -48,6 +48,48 @@ live that is not a plain text file in the user's profile, which on Windows
 means DPAPI, and it needs a way for the user to see and revoke what is stored.
 Neither is written.
 
+### 1.3 A restarted sender can leave the receiver deaf for a minute
+
+Observed once, on 2026-09-04, and not reproduced since. A sender was restarted
+against a receiver that had never stopped, so its sequence numbers and its
+timestamp base began again while the receiver's state carried on. The phone then
+sat at **`depth 0 + queued 0` while accepting every packet at full rate**, with
+the drift estimate reading **up to 5.2 billion ppm**, for about **60 seconds**,
+after which it healed itself with no intervention.
+
+What healed it is not known, and nothing is written that was meant to. The
+buffer has a `reset` for a new sender, `resync_if_hopeless` for a runaway queue,
+and a two-second gap rule that discards drift history; which of them fired, if
+any, was not captured. A minute of silence that the receiver reports as a
+perfectly healthy session is the worst failure shape this project has, because
+nothing in the telemetry says anything is wrong.
+
+Wanted, in order: the log from a second occurrence, a synthetic test in
+`sonduit-core` that restarts the sequence and timestamp base under a running
+buffer, and only then a fix. It is written down here because one observation is
+not enough to fix from and is easily lost.
+
+### 1.4 Underrun cannot be measured on hardware
+
+`PlaybackCounters::frames_underrun` is incremented in the AAudio callback
+(`crates/sonduit-playback-android/src/aaudio.rs`) and **read by nothing**. Not
+the FFI telemetry, which reads `frames_played` out of the same struct and stops
+there; not the receiver's log line; not the phone's UI; not the feedback report
+the sender's panel renders.
+
+So **every underrun claim this project has made is either a harness figure or a
+proxy**. The proxy is `depth 0 + queued 0` in a log line printed once every 40
+packets, which is 240 ms: an empty-queue indication sampled four times a second,
+which cannot tell a callback that wrote one buffer of silence from one that
+wrote forty. "Underrun is unchanged at ceilings of 200, 120, 80 and 60 ms" is a
+statement about `examples/jitter_timeline.rs` and has never been checked on a
+device.
+
+The counter, the percentage helper and the atomics are already written. What is
+missing is a path from `PlaybackCounters` into the feedback report and the log
+line, beside `frames_played`. Until that exists, the quality metric this product
+is judged on is the one metric it does not report.
+
 ---
 
 ## 1a. Already cleared
@@ -65,8 +107,9 @@ not as everything there ever was.
 | The tethered phone had to be typed in | Adapter enumeration reads the gateway from the routing table; probes go to it directly |
 | Tether detection matched no real device | "Remote NDIS" is two words and `UsbNcm` is one; the tokens now match both |
 | The buffer target chased the jitter estimate | Asymmetric retargeting with a 1.7x shrink threshold and cooldowns |
-| The target could grow and never shrink | The 1.7 was compared against a suggestion the configuration had already floored, so no target below 51 ms on Wi-Fi could satisfy it. The floor is on the target now, as it is in roc, and a shrink steps down by roc's factor rather than jumping |
-| A Wi-Fi receiver could hold 200 ms | 80 ms, the top of the band `latency-budget.md` targets. Underrun was identical at every ceiling from 200 down to 60, so the difference was latency that protected nothing; see ADR-004 |
+| The target shrank rarely and violently | The 1.7 was compared against a suggestion the configuration had already floored, so on Wi-Fi only a target above 51 ms could satisfy it. Measured on a real access point, the old build managed three shrinks in fifteen minutes, each a single 36 ms jump; the corrected code, with roc's floor on the target and roc's proportional step, makes 48 downward moves against 44 upward and walks (`80 -> 64 -> 50 -> 40 -> 32 -> 30`). "Structurally zero" was true of the harness, not of the link |
+| A Wi-Fi receiver could hold 200 ms | 80 ms, the top of the band `latency-budget.md` targets. Measured on the access point that prompted it, sender end-to-end p95 fell from 100.6 ms to 79.2 ms. The reason first recorded -- that 200 ms was where the depth settled -- is withdrawn: on that radio the depth held p50 30 / p95 60 ms with the old ceiling in place. Whether underrun changed is unknown, see section 1.4; see ADR-004 |
+| Nothing had been heard, let alone measured, over Wi-Fi | Eight 300 s runs on the reporter's own access point, cable in for adb only with tethering off. `latency-budget.md` section 6 and `research/jitter-and-drift.md`. One AP, one phone, unpaired before-and-after, and still nothing timed against a loopback cable |
 | Drift history survived a sleep or a route change | A gap of two seconds discards it, and the correction with it |
 | The installer left the firewall shut | Withdrawn rather than cleared. The NSIS hook is deleted: a per-user install has no rights for `netsh`, and a port-scoped rule cannot suppress a prompt Windows raises per program. Windows asks once on first run; see ADR-004 |
 | The audio callback took a mutex | The handoff is lock-free; the callback holds one half and takes no lock at all |
@@ -86,8 +129,10 @@ Honest list of things that exist but are not finished.
 | The bundled FFmpeg is 110 MB installed, about 35 MB inside the LZMA installer; no smaller LGPL build is published | `tools/fetch-ffmpeg.mjs` |
 | `driver/` does not exist in the tree at all | ADR-002 |
 | The About screen names FFmpeg and points at `FFMPEG-LICENSE.txt` only; `THIRD-PARTY-LICENSES.txt` is installed but not signposted | `docs/licensing.md` section 5.1 |
-| **Buffer depth past the hand-off ring protects nothing.** The ring is refilled on arrival, so during a stall the callback drains its five packets and then plays silence however deep the jitter buffer is. Measured: underrun identical at ceilings of 200, 120, 80 and 60 ms | `sonduit-core::pacing`, `research/jitter-and-drift.md` |
-| **The target is close to blind to the failure Wi-Fi has.** RFC 3550's estimator is a mean absolute first difference, and a stall is one large difference followed by a run of small ones: 120 ms stalls every 12 s moved the estimate to 9.3 ms and the target to 34. roc's `MAX(peak * 1.2, mean * 3.0)` has a peak term for this and Sonduit has only the mean | `sonduit-core::jitter`, `research/jitter-and-drift.md` |
+| **Buffer depth past the hand-off ring protects nothing.** The ring is refilled on arrival, so during a stall the callback drains its five packets and then plays silence however deep the jitter buffer is. The figure behind it -- underrun identical at ceilings of 200, 120, 80 and 60 ms -- is a harness result and cannot currently be checked on a device; see section 1.4 | `sonduit-core::pacing`, `research/jitter-and-drift.md` |
+| **The target is close to blind to the failure Wi-Fi has.** RFC 3550's estimator is a mean absolute first difference, and a stall is one large difference followed by a run of small ones: simulated 120 ms stalls every 12 s moved the estimate to 9.3 ms and the target to 34. roc's `MAX(peak * 1.2, mean * 3.0)` has a peak term for this and Sonduit has only the mean. Unconfirmed on hardware: the measured access point ran an estimate of 3.2-6.4 ms and was never seen to stall that way | `sonduit-core::jitter`, `research/jitter-and-drift.md` |
+| **Underrun is incremented and read by nothing**, so the one quality figure this product is judged on is the one it does not report | `sonduit-playback-android`, section 1.4 |
+| **A sender restart can strand the receiver at `depth 0 + queued 0` for a minute** while it accepts every packet, with drift reading billions of ppm. Seen once, not reproduced, no test | `sonduit-core::jitter`, `sonduit-ffi`, section 1.3 |
 
 ---
 
